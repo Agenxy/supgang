@@ -33,9 +33,12 @@ Private hive, full node, account, and network identifiers are intentionally omit
 | Replacement recovery | After replacing and restarting both binaries, each host reported one active peer. |
 | Peer restart | A later `MacSolis` restart advanced its signed sequence and re-established the session. |
 | No-egress discovery | Automatic publication succeeded under a macOS sandbox denying all network operations. |
+| Installed command | From `/tmp`, `command -v supgang` selected `$HOME/.local/bin/supgang`. |
+| Installed behavior | The installed command passed help, doctor, status, name, bare peer view, and named resolution. |
+| Offline install | `make install` succeeded under a macOS sandbox denying every network operation. |
 
-The final services remained running in the foreground and each reported one known, active,
-authenticated peer.
+The final services remained running in the foreground from their installed paths and each reported
+one known, active, authenticated peer.
 
 ## Security interpretation
 
