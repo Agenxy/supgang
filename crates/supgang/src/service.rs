@@ -10,7 +10,9 @@ use crate::{
     contact::PeerContact,
     control::{self, ControlListener},
     ids::NodeId,
+    network,
     peer_directory::{PeerDirectory, PeerDirectoryError},
+    profile::PeerName,
     record::Capabilities,
     session,
     state::{self, LocalState, StateError},
@@ -22,12 +24,10 @@ use crate::{
 mod local_control;
 
 use local_control::{
-    import_received, merge_and_broadcast_revocations, poll_control, process_peer_events, shutdown_receiver,
-    spawn_revocation_listener, stop_if_requested,
+    import_received, initial_retry_delay, merge_and_broadcast_revocations, poll_control, process_peer_events,
+    shutdown_receiver, spawn_revocation_listener, stop_if_requested,
 };
 
-/// Maximum candidates tried for one peer during one retry round.
-pub const MAX_DIAL_CANDIDATES_PER_ROUND: usize = 4;
 /// Full-handshake deadline for one address candidate.
 pub const CONNECT_TIMEOUT_SECONDS: u64 = 4;
 /// Mutual-authentication and one-page reconciliation deadline.
@@ -46,6 +46,8 @@ pub const MAX_REFLEXIVE_CANDIDATES: usize = 4;
 /// Explicit service network policy. Nothing is discovered through a public dependency.
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
+    /// Device-signed human label advertised with every endpoint refresh.
+    pub display_name: PeerName,
     /// Local UDP socket on which QUIC accepts connections.
     pub listen: SocketAddr,
     /// Addresses intentionally published in this device's signed record.
@@ -65,6 +67,7 @@ impl ServiceConfig {
     /// scope, retry below one second, and record lifetime outside one hour to
     /// seven days.
     pub fn new(
+        display_name: PeerName,
         listen: SocketAddr,
         local_addresses: &[SocketAddr],
         direct_addresses: &[SocketAddr],
@@ -92,6 +95,7 @@ impl ServiceConfig {
         candidates.sort_unstable();
         candidates.dedup();
         Ok(Self {
+            display_name,
             listen,
             candidates,
             retry_interval: Duration::from_secs(DEFAULT_RETRY_SECONDS),
@@ -340,6 +344,7 @@ async fn service_loop(
             directory,
             &active,
             config.listen,
+            &config.display_name,
         )
         .await
         {
@@ -414,6 +419,7 @@ fn make_local_contact(
     let now = unix_time()?;
     let membership = state.local_membership().cloned().ok_or(StateError::IdentityMismatch)?;
     let endpoint = state.sign_endpoint_record(
+        config.display_name.clone(),
         transport_identity.key_id(),
         config.candidates.clone(),
         Capabilities::NONE,
@@ -458,13 +464,15 @@ async fn dial_peer(
     expected: &PeerContact,
     page: &SyncPage,
 ) -> Option<(AuthenticatedExchange, Connection)> {
-    for candidate in expected
-        .endpoint
-        .record
-        .candidates
-        .iter()
-        .take(MAX_DIAL_CANDIDATES_PER_ROUND)
+    let candidates = &expected.endpoint.record.candidates;
+    let local_networks = network::interface_networks().unwrap_or_default();
+    for candidate_index in network::candidate_dial_order(candidates, &local_networks)
+        .into_iter()
+        .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
     {
+        let Some(candidate) = candidates.get(candidate_index) else {
+            continue;
+        };
         let client_config = transport::pinned_client_config(expected.endpoint.record.transport_key_id).ok()?;
         let Ok(connecting) = endpoint.connect_with(client_config, candidate.address(), "supgang.invalid") else {
             continue;
@@ -685,15 +693,6 @@ fn unix_time() -> Result<u64, ServiceError> {
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|_| ServiceError::InvalidSystemTime)
-}
-
-fn initial_retry_delay(node: NodeId, interval: Duration) -> Duration {
-    let bytes = node.as_bytes();
-    let seed = u16::from_be_bytes([bytes[0], bytes[1]]);
-    let maximum_millis = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX).max(1);
-    let minimum_millis = 250_u64.min(maximum_millis);
-    let jitter_window = maximum_millis.saturating_sub(minimum_millis).max(1);
-    Duration::from_millis(minimum_millis + (u64::from(seed) % jitter_window))
 }
 
 #[cfg(test)]

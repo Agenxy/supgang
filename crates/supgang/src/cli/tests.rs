@@ -61,7 +61,12 @@ fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::
     );
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let init: serde_json::Value = serde_json::from_slice(&output)?;
-    assert_eq!(init.get("schema"), Some(&serde_json::json!("supgang.init/v1")));
+    assert_eq!(init.get("schema"), Some(&serde_json::json!("supgang.init/v2")));
+    assert!(
+        init.get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+    );
     assert!(init.get("secret").is_none());
 
     output.clear();
@@ -83,7 +88,7 @@ fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::
     );
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let status: serde_json::Value = serde_json::from_slice(&output)?;
-    assert_eq!(status.get("schema"), Some(&serde_json::json!("supgang.status/v1")));
+    assert_eq!(status.get("schema"), Some(&serde_json::json!("supgang.status/v2")));
     assert_eq!(status.get("service"), Some(&serde_json::json!("stopped")));
     Ok(())
 }
@@ -165,6 +170,8 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         bundle_text,
     ])?;
     run_json(&["supgang", "--json", "--state-dir", joiner_text, "join", bundle_text])?;
+    let renamed = run_json(&["supgang", "--json", "--state-dir", joiner_text, "name", "set", "Solis"])?;
+    assert_eq!(renamed.get("name"), Some(&serde_json::json!("Solis")));
     write_endpoints(&endpoints, "127.0.0.1:4433", "local")?;
     run_json(&[
         "supgang",
@@ -191,5 +198,35 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         .and_then(serde_json::Value::as_str)
         .ok_or("resolved address missing")?;
     assert_eq!(address, "127.0.0.1:4433");
+
+    let named = run_json(&["supgang", "--json", "--state-dir", founder_text, "resolve", "Solis"])?;
+    assert_eq!(named.get("node_id"), requested.get("node_id"));
+    let listed = run_json(&["supgang", "--json", "--state-dir", founder_text])?;
+    assert_eq!(listed.get("schema"), Some(&serde_json::json!("supgang.peers/v2")));
+    let row = listed
+        .get("peers")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|peers| peers.first())
+        .ok_or("listed peer missing")?;
+    assert_eq!(row.get("name"), Some(&serde_json::json!("Solis")));
+    assert_eq!(
+        row.get("addresses")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|addresses| addresses.first())
+            .and_then(|address| address.get("scope")),
+        Some(&serde_json::json!("local"))
+    );
+    let mut human = Vec::new();
+    let mut human_error = Vec::new();
+    assert_eq!(
+        run(["supgang", "--state-dir", founder_text], &mut human, &mut human_error,),
+        std::process::ExitCode::SUCCESS
+    );
+    let human = String::from_utf8(human)?;
+    assert!(human.contains("Solis ["));
+    assert!(human.contains("127.0.0.1:4433"));
+    assert!(human.contains("device-signed"));
+    assert!(human.contains("supgang --help"));
+    assert!(human_error.is_empty());
     Ok(())
 }

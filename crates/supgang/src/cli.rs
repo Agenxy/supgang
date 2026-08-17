@@ -12,14 +12,15 @@ use clap::{Parser, Subcommand, error::ErrorKind};
 use serde::Serialize;
 
 use crate::{
-    VERSION, artifact, cli_control, cli_peer, cli_service, control,
+    VERSION, artifact, cli_control, cli_peer, cli_profile, cli_service, control,
+    endpoint_config::DEFAULT_PORT,
     ids::NodeId,
     invitation::{
         JoinBundle, MAX_JOIN_BUNDLE_BYTES, MAX_JOIN_REQUEST_BYTES, decode_join_bundle, decode_join_request,
         encode_join_bundle, encode_join_request,
     },
     membership::MembershipRoles,
-    state, storage,
+    profile, state, storage,
 };
 
 const EXIT_USAGE: u8 = 2;
@@ -41,7 +42,7 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     state_dir: Option<PathBuf>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 /// Stable local and sovereign peer command surface.
@@ -53,6 +54,11 @@ enum Command {
     Doctor,
     /// Show this computer's non-secret hive and node identifiers.
     Status,
+    /// Show or change this computer's signed human-readable name.
+    Name {
+        #[command(subcommand)]
+        command: Option<NameCommand>,
+    },
     /// Create a recipient-bound request on the computer that will join.
     JoinRequest {
         /// New owner-only request file to carry to an existing member.
@@ -84,7 +90,10 @@ enum Command {
         output: PathBuf,
         /// Owner-only endpoint configuration file.
         #[arg(long, value_name = "PATH")]
-        endpoints: PathBuf,
+        endpoints: Option<PathBuf>,
+        /// Stable UDP port used by automatic interface discovery.
+        #[arg(long, default_value_t = DEFAULT_PORT, conflicts_with = "endpoints")]
+        port: u16,
         /// Signed contact lifetime from 1 through 168 hours.
         #[arg(long, default_value_t = 24)]
         hours: u16,
@@ -101,19 +110,22 @@ enum Command {
         #[arg(value_name = "NODE_ID")]
         node_id: NodeId,
     },
-    /// List known peers without disclosing their addresses.
+    /// List known computers and their signed local and public addresses.
     Peers,
-    /// Show fresh signed addresses for one exact node identifier.
+    /// Show fresh signed addresses for one computer.
     Resolve {
-        /// Stable 64-character node identifier.
-        #[arg(value_name = "NODE_ID")]
-        node_id: NodeId,
+        /// Computer name, shown fingerprint, or stable 64-character node ID.
+        #[arg(value_name = "PEER")]
+        peer: String,
     },
     /// Run the sovereign peer service in the foreground.
     Run {
         /// Owner-only endpoint configuration file.
         #[arg(long, value_name = "PATH")]
-        endpoints: PathBuf,
+        endpoints: Option<PathBuf>,
+        /// Stable UDP port used by automatic interface discovery.
+        #[arg(long, default_value_t = DEFAULT_PORT, conflicts_with = "endpoints")]
+        port: u16,
         /// Delay between remembered-peer attempts, from 1 through 3600 seconds.
         #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..=3_600))]
         retry_seconds: u64,
@@ -123,12 +135,23 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum NameCommand {
+    /// Change the name this computer signs into future peer records.
+    Set {
+        /// Portable 1-63 character computer name.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+}
+
 #[derive(Debug, Serialize)]
 struct InitOutput {
     schema: &'static str,
     status: &'static str,
     hive_id: String,
     node_id: String,
+    name: String,
     key_protection: &'static str,
 }
 
@@ -201,41 +224,55 @@ where
     };
 
     match cli.command {
-        Command::Init => init(&state_directory, cli.json, output, error),
-        Command::Doctor => doctor(&state_directory, cli.json, output, error),
-        Command::Status => cli_control::status(&state_directory, cli.json, output, error),
-        Command::JoinRequest { output: request_file } => {
+        None => {
+            let code = cli_control::peers(&state_directory, cli.json, output, error);
+            if code == ExitCode::SUCCESS
+                && !cli.json
+                && writeln!(output, "Run `supgang --help` for setup and security commands.").is_err()
+            {
+                return ExitCode::from(EXIT_FAILURE);
+            }
+            code
+        }
+        Some(Command::Init) => init(&state_directory, cli.json, output, error),
+        Some(Command::Doctor) => doctor(&state_directory, cli.json, output, error),
+        Some(Command::Status) => cli_control::status(&state_directory, cli.json, output, error),
+        Some(Command::Name { command }) => cli_profile::name(&state_directory, command, cli.json, output, error),
+        Some(Command::JoinRequest { output: request_file }) => {
             join_request(&state_directory, &request_file, cli.json, output, error)
         }
-        Command::Invite {
+        Some(Command::Invite {
             request,
             output: bundle_file,
             days,
-        } => invite(&state_directory, &request, &bundle_file, days, cli.json, output, error),
-        Command::Join { bundle } => join(&state_directory, &bundle, cli.json, output, error),
-        Command::Publish {
+        }) => invite(&state_directory, &request, &bundle_file, days, cli.json, output, error),
+        Some(Command::Join { bundle }) => join(&state_directory, &bundle, cli.json, output, error),
+        Some(Command::Publish {
             output: contact_file,
             endpoints,
+            port,
             hours,
-        } => match cli_peer::publish(&state_directory, &contact_file, &endpoints, hours) {
+        }) => match cli_peer::publish(&state_directory, &contact_file, endpoints.as_deref(), port, hours) {
             Ok(result) => render_publish(&result, cli.json, output, error),
             Err(message) => render_error(cli.json, &message, output, error),
         },
-        Command::Import { input } => match cli_peer::import(&state_directory, &input) {
+        Some(Command::Import { input }) => match cli_peer::import(&state_directory, &input) {
             Ok(result) => render_import(&result, cli.json, output, error),
             Err(message) => render_error(cli.json, &message, output, error),
         },
-        Command::Revoke { node_id } => cli_control::revoke(&state_directory, node_id, cli.json, output, error),
-        Command::Peers => cli_control::peers(&state_directory, cli.json, output, error),
-        Command::Resolve { node_id } => cli_control::resolve(&state_directory, node_id, cli.json, output, error),
-        Command::Run {
+        Some(Command::Revoke { node_id }) => cli_control::revoke(&state_directory, node_id, cli.json, output, error),
+        Some(Command::Peers) => cli_control::peers(&state_directory, cli.json, output, error),
+        Some(Command::Resolve { peer }) => cli_control::resolve(&state_directory, &peer, cli.json, output, error),
+        Some(Command::Run {
             endpoints,
+            port,
             retry_seconds,
             record_hours,
-        } => match cli_service::run(
+        }) => match cli_service::run(
             &state_directory,
             cli_service::RunOptions {
-                endpoints: &endpoints,
+                endpoints: endpoints.as_deref(),
+                port,
                 retry_seconds,
                 record_hours,
                 json: cli.json,
@@ -436,19 +473,26 @@ fn unix_time() -> Result<u64, &'static str> {
 fn init(state_directory: &PathBuf, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
     match state::initialize(state_directory) {
         Ok(state) => {
+            let name = match profile::load_or_create(state_directory, state.identity().device.node_id()) {
+                Ok(name) => name,
+                Err(profile_error) => return render_error(json, &profile_error.to_string(), output, error),
+            };
             let result = InitOutput {
-                schema: "supgang.init/v1",
+                schema: "supgang.init/v2",
                 status: "ok",
                 hive_id: state.identity().hive_id.to_string(),
                 node_id: state.identity().device.node_id().to_string(),
+                name: name.to_string(),
                 key_protection: "owner-only-file",
             };
             if json {
                 render_json(&result, output, error)
             } else if writeln!(
                 output,
-                "Supgang initialized.\nHive: {}\nThis computer: {}\nKey protection: owner-only file (0600)",
-                result.hive_id, result.node_id
+                "Supgang initialized.\nHive: {}\nThis computer: {} [{}]\nKey protection: owner-only file (0600)",
+                result.hive_id,
+                result.name,
+                &result.node_id[..8]
             )
             .is_ok()
             {

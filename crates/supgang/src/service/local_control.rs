@@ -190,6 +190,15 @@ pub(super) fn shutdown_receiver() -> Result<tokio::sync::mpsc::Receiver<()>, Ser
     Ok(receiver)
 }
 
+pub(super) fn initial_retry_delay(node: NodeId, interval: Duration) -> Duration {
+    let bytes = node.as_bytes();
+    let seed = u16::from_be_bytes([bytes[0], bytes[1]]);
+    let maximum_millis = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX).max(1);
+    let minimum_millis = 250_u64.min(maximum_millis);
+    let jitter_window = maximum_millis.saturating_sub(minimum_millis).max(1);
+    Duration::from_millis(minimum_millis + (u64::from(seed) % jitter_window))
+}
+
 pub(super) async fn poll_control(
     listener: &ControlListener,
     wait: Duration,
@@ -197,12 +206,13 @@ pub(super) async fn poll_control(
     directory: &mut PeerDirectory,
     active: &BTreeMap<NodeId, Connection>,
     listen: SocketAddr,
+    display_name: &crate::profile::PeerName,
 ) -> bool {
     let Ok(accepted) = tokio::time::timeout(wait, listener.accept()).await else {
         return false;
     };
     if let Ok(mut stream) = accepted {
-        handle_control(&mut stream, local_state, directory, active, listen).await;
+        handle_control(&mut stream, local_state, directory, active, listen, display_name).await;
     }
     true
 }
@@ -213,11 +223,13 @@ async fn handle_control(
     directory: &mut PeerDirectory,
     active: &BTreeMap<NodeId, Connection>,
     listen: SocketAddr,
+    display_name: &crate::profile::PeerName,
 ) {
     let request = tokio::time::timeout(Duration::from_secs(2), control::read_request(stream)).await;
     let (reply, _changed) = match request {
         Ok(Ok(ControlRequest::Status)) => ControlReply::Status {
             value: ControlStatus {
+                name: display_name.to_string(),
                 hive_id: local_state.identity().hive_id.to_string(),
                 node_id: local_state.identity().device.node_id().to_string(),
                 listen: listen.to_string(),

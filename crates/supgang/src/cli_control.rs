@@ -1,5 +1,6 @@
 //! CLI routing and rendering through the running service's private socket.
 
+use std::str::FromStr;
 use std::{io::Write, path::Path, process::ExitCode, time::SystemTime};
 
 use serde::Serialize;
@@ -20,6 +21,7 @@ struct StatusOutput {
     schema: &'static str,
     status: &'static str,
     version: &'static str,
+    name: String,
     hive_id: String,
     node_id: String,
     service: &'static str,
@@ -40,7 +42,15 @@ struct RevokeOutput {
 pub fn status(state_directory: &Path, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
     match control::request(state_directory, ControlRequest::Status) {
         Ok(Some(ControlReply::Status { value })) => {
-            return render_status(&value.hive_id, &value.node_id, Some(&value), json, output, error);
+            return render_status(
+                &value.name,
+                &value.hive_id,
+                &value.node_id,
+                Some(&value),
+                json,
+                output,
+                error,
+            );
         }
         Ok(Some(ControlReply::Error { message })) => return render_error(json, &message, output, error),
         Ok(Some(_)) => return unexpected(json, output, error),
@@ -48,14 +58,22 @@ pub fn status(state_directory: &Path, json: bool, output: &mut dyn Write, error:
         Err(control_error) => return render_error(json, &control_error.to_string(), output, error),
     }
     match state::open(state_directory) {
-        Ok(state) => render_status(
-            &state.identity().hive_id.to_string(),
-            &state.identity().device.node_id().to_string(),
-            None,
-            json,
-            output,
-            error,
-        ),
+        Ok(state) => {
+            let node_id = state.identity().device.node_id();
+            let name = match crate::profile::load_or_create(state_directory, node_id) {
+                Ok(name) => name,
+                Err(profile_error) => return render_error(json, &profile_error.to_string(), output, error),
+            };
+            render_status(
+                name.as_str(),
+                &state.identity().hive_id.to_string(),
+                &node_id.to_string(),
+                None,
+                json,
+                output,
+                error,
+            )
+        }
         Err(storage_error) => render_error(json, &storage_error.to_string(), output, error),
     }
 }
@@ -75,6 +93,31 @@ pub fn peers(state_directory: &Path, json: bool, output: &mut dyn Write, error: 
 
 pub fn resolve(
     state_directory: &Path,
+    selector: &str,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> ExitCode {
+    if let Ok(node_id) = NodeId::from_str(selector) {
+        return resolve_node(state_directory, node_id, json, output, error);
+    }
+    match control::request(state_directory, ControlRequest::Peers) {
+        Ok(Some(ControlReply::Peers { value })) => match cli_peer::resolve_selector_from_rows(&value.peers, selector) {
+            Ok(node_id) => resolve_node(state_directory, node_id, json, output, error),
+            Err(message) => render_error(json, &message, output, error),
+        },
+        Ok(Some(ControlReply::Error { message })) => render_error(json, &message, output, error),
+        Ok(Some(_)) => unexpected(json, output, error),
+        Ok(None) => match cli_peer::resolve(state_directory, selector) {
+            Ok(result) => render_resolve(&result, json, output, error),
+            Err(message) => render_error(json, &message, output, error),
+        },
+        Err(control_error) => render_error(json, &control_error.to_string(), output, error),
+    }
+}
+
+fn resolve_node(
+    state_directory: &Path,
     node_id: NodeId,
     json: bool,
     output: &mut dyn Write,
@@ -84,7 +127,7 @@ pub fn resolve(
         Ok(Some(ControlReply::Resolve { value })) => render_resolve(&value, json, output, error),
         Ok(Some(ControlReply::Error { message })) => render_error(json, &message, output, error),
         Ok(Some(_)) => unexpected(json, output, error),
-        Ok(None) => match cli_peer::resolve(state_directory, node_id) {
+        Ok(None) => match cli_peer::resolve(state_directory, &node_id.to_string()) {
             Ok(result) => render_resolve(&result, json, output, error),
             Err(message) => render_error(json, &message, output, error),
         },
@@ -134,6 +177,7 @@ pub fn revoke(
 }
 
 fn render_status(
+    name: &str,
     hive_id: &str,
     node_id: &str,
     runtime: Option<&ControlStatus>,
@@ -142,9 +186,10 @@ fn render_status(
     error: &mut dyn Write,
 ) -> ExitCode {
     let result = StatusOutput {
-        schema: "supgang.status/v1",
+        schema: "supgang.status/v2",
         status: "ok",
         version: VERSION,
+        name: name.to_owned(),
         hive_id: hive_id.to_owned(),
         node_id: node_id.to_owned(),
         service: if runtime.is_some() { "running" } else { "stopped" },
@@ -162,8 +207,11 @@ fn render_status(
 fn render_status_human(result: &StatusOutput, output: &mut dyn Write) -> ExitCode {
     let header = writeln!(
         output,
-        "Hive: {}\nThis computer: {}\nService: {}",
-        result.hive_id, result.node_id, result.service
+        "Hive: {}\nThis computer: {} [{}]\nService: {}",
+        result.hive_id,
+        result.name,
+        result.node_id.chars().take(8).collect::<String>(),
+        result.service
     );
     let runtime = result.listen.as_ref().zip(result.active_peers).zip(result.known_peers);
     if header.is_err()
@@ -189,14 +237,27 @@ fn render_peers(result: &cli_peer::PeersOutput, json: bool, output: &mut dyn Wri
         };
     }
     for peer in &result.peers {
-        if writeln!(
-            output,
-            "{}  {}  generation {} sequence {}  {} candidate(s)",
-            peer.node_id, peer.status, peer.generation, peer.sequence, peer.candidate_count
-        )
-        .is_err()
-        {
+        if writeln!(output, "{} [{}]  {}", peer.name, peer.fingerprint, peer.status).is_err() {
             return ExitCode::from(EXIT_FAILURE);
+        }
+        if peer.addresses.is_empty() && writeln!(output, "  no signed addresses").is_err() {
+            return ExitCode::from(EXIT_FAILURE);
+        }
+        for candidate in &peer.addresses {
+            let preferred = if candidate.preferred { "  preferred" } else { "" };
+            if writeln!(
+                output,
+                "  {:<6} {:<52} {:<11} {}{}",
+                candidate.scope,
+                candidate.address,
+                human_candidate_kind(&candidate.kind),
+                candidate.provenance,
+                preferred
+            )
+            .is_err()
+            {
+                return ExitCode::from(EXIT_FAILURE);
+            }
         }
     }
     ExitCode::SUCCESS
@@ -213,8 +274,8 @@ fn render_resolve(
     }
     if writeln!(
         output,
-        "Peer {}: generation {}, sequence {}, expires {}",
-        result.node_id, result.generation, result.sequence, result.expires_at
+        "{} [{}]: generation {}, sequence {}, expires {}",
+        result.name, result.fingerprint, result.generation, result.sequence, result.expires_at
     )
     .is_err()
     {
@@ -223,8 +284,12 @@ fn render_resolve(
     for candidate in &result.candidates {
         if writeln!(
             output,
-            "{} {} {}",
-            candidate.kind, candidate.transport, candidate.address
+            "{} {} {} {}{}",
+            candidate.scope,
+            human_candidate_kind(&candidate.kind),
+            candidate.transport,
+            candidate.address,
+            if candidate.preferred { " preferred" } else { "" }
         )
         .is_err()
         {
@@ -232,6 +297,15 @@ fn render_resolve(
         }
     }
     ExitCode::SUCCESS
+}
+
+fn human_candidate_kind(kind: &str) -> &str {
+    match kind {
+        "local" => "interface",
+        "reflexive" => "peer-seen",
+        "mapped" => "router-map",
+        value => value,
+    }
 }
 
 fn unexpected(json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {

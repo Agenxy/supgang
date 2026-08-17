@@ -1,6 +1,10 @@
 //! Owner-only, bounded configuration for listening and advertised endpoints.
 
-use std::{collections::BTreeSet, net::SocketAddr, path::Path};
+use std::{
+    collections::BTreeSet,
+    net::{IpAddr, Ipv6Addr, SocketAddr},
+    path::Path,
+};
 
 use serde::Deserialize;
 
@@ -11,6 +15,8 @@ use crate::{
 
 /// Maximum accepted endpoint configuration size.
 const MAX_ENDPOINT_CONFIG_BYTES: usize = 4 * 1024;
+/// Default stable UDP port used by automatic local discovery.
+pub const DEFAULT_PORT: u16 = 44_330;
 
 /// Validated local endpoint configuration.
 #[derive(Clone, Debug)]
@@ -42,6 +48,48 @@ enum ConfiguredKind {
 }
 
 impl EndpointConfig {
+    /// Discovers active macOS or Linux interface addresses without contacting
+    /// any network service.
+    ///
+    /// Private and non-global addresses become local candidates. Globally
+    /// routed interface addresses become direct public candidates. NAT public
+    /// addresses are learned separately from authenticated peers; discovery
+    /// here never claims reachability it did not observe.
+    ///
+    /// # Errors
+    ///
+    /// Rejects port zero, interface-enumeration failure, or a host with no
+    /// usable active non-loopback IP address.
+    pub fn automatic(port: u16) -> Result<Self, String> {
+        if port == 0 {
+            return Err("automatic endpoint port must not be zero".to_owned());
+        }
+        let networks = crate::network::interface_networks().map_err(|error| error.to_string())?;
+        let mut local = BTreeSet::new();
+        let mut direct = BTreeSet::new();
+        for network in networks {
+            let ip = network.address();
+            if matches!(ip, IpAddr::V6(value) if value.is_unicast_link_local()) {
+                continue;
+            }
+            let address = SocketAddr::new(ip, port);
+            if EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, address).is_ok() {
+                direct.insert(address);
+            } else if EndpointCandidate::new(CandidateKind::Local, CandidateTransport::QuicV1, address).is_ok() {
+                local.insert(address);
+            }
+        }
+        let (local, direct) = bounded_discovery(local, direct);
+        if local.is_empty() && direct.is_empty() {
+            return Err("no usable active network interface was discovered; pass --endpoints".to_owned());
+        }
+        Ok(Self {
+            listen: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
+            local,
+            direct,
+        })
+    }
+
     /// Loads a mode-0600 regular JSON file without following a final symlink.
     ///
     /// # Errors
@@ -105,6 +153,26 @@ impl EndpointConfig {
     pub fn direct(&self) -> &[SocketAddr] {
         &self.direct
     }
+}
+
+fn bounded_discovery(local: BTreeSet<SocketAddr>, direct: BTreeSet<SocketAddr>) -> (Vec<SocketAddr>, Vec<SocketAddr>) {
+    let mut local = local.into_iter().collect::<Vec<_>>();
+    let mut direct = direct.into_iter().collect::<Vec<_>>();
+    if local.len().saturating_add(direct.len()) <= MAX_CANDIDATES {
+        return (local, direct);
+    }
+    if local.is_empty() {
+        direct.truncate(MAX_CANDIDATES);
+        return (local, direct);
+    }
+    if direct.is_empty() {
+        local.truncate(MAX_CANDIDATES);
+        return (local, direct);
+    }
+    let direct_reserve = direct.len().min(MAX_CANDIDATES / 2);
+    local.truncate(MAX_CANDIDATES.saturating_sub(direct_reserve));
+    direct.truncate(MAX_CANDIDATES.saturating_sub(local.len()));
+    (local, direct)
 }
 
 #[cfg(test)]

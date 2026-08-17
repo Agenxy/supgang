@@ -55,6 +55,7 @@ mod tests {
                 protocol_version: ENDPOINT_RECORD_VERSION,
                 hive_id: HiveId::from_bytes([1; 32]),
                 node_id: identity.node_id(),
+                display_name: Some(crate::profile::PeerName::new("Test Peer")?),
                 transport_key_id: TransportKeyId::from_public_material(b"transport"),
                 generation,
                 sequence,

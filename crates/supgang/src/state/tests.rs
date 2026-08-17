@@ -110,6 +110,7 @@ fn endpoint_signature_is_returned_only_after_sequence_persistence() -> Result<()
     let mut state = initialize(&path)?;
     let now = unix_time()?;
     let signed = state.sign_endpoint_record(
+        crate::profile::PeerName::new("Test Computer")?,
         TransportKeyId::from_public_material(b"ephemeral transport key"),
         vec![EndpointCandidate::new(
             CandidateKind::Local,

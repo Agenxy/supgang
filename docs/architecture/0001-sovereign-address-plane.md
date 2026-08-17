@@ -66,6 +66,7 @@ An endpoint record contains:
 | --- | --- |
 | `protocol_version` | Exact schema and downgrade boundary. |
 | `hive_id`, `node_id` | Cross-hive and signer binding. |
+| `display_name` | Device-signed human label; never an authorization identity. |
 | `transport_key_id` | Hash pin of the current TLS certificate. |
 | `generation`, `sequence` | Monotonic register position. |
 | `issued_at`, `expires_at` | Bounded freshness. |
@@ -73,9 +74,19 @@ An endpoint record contains:
 | `capabilities` | Versioned authorization-compatible bitset. |
 | `signature` | Domain-separated Ed25519 signature over canonical bytes. |
 
-M1 supports local, direct global, and authenticated-peer-observed reflexive candidates. Candidate
-types have strict address-scope checks. A peer-observed socket is an address hint only; the target
-still has to prove its membership, device signature, transport pin, and TLS exporter binding.
+M1 supports local, direct public, and authenticated-peer-observed reflexive candidates. Active
+non-loopback interface addresses are discovered from the local kernel without network egress.
+Private and non-global addresses are local; globally routed interface addresses are direct public
+candidates. An owner-only explicit configuration can replace automatic discovery. Candidate types
+have strict address-scope checks. A peer-observed socket is an address hint only; the target still
+has to prove its membership, device signature, transport pin, and TLS exporter binding.
+
+Endpoint record v2 adds a bounded portable ASCII display name under a new signature domain. The
+decoder continues to verify v1 records under the v1 domain, using a fingerprint-derived fallback
+label until the peer publishes v2. A name change advances the endpoint sequence and does not require
+root re-enrollment. Names never participate in membership, merge authority, transport pinning, or
+revocation. Human output always pairs a name with a stable fingerprint, and ambiguous name lookup
+fails closed.
 
 Merge is deterministic:
 
@@ -152,7 +163,8 @@ Supgang can converge only while some usable edge crosses every relevant partitio
 4. new candidates learned through another reachable member.
 
 There is no M1 multicast rendezvous, automatic router mapping, public address oracle, coordinated
-hole punching, or relay. An operator must explicitly seed at least one contact path.
+hole punching, or relay. Local interfaces are enumerated automatically, but an operator must still
+seed at least one contact path.
 
 ## Milestones
 
@@ -160,6 +172,7 @@ hole punching, or relay. An operator must explicitly seed at least one contact p
 
 - identity, membership, recipient-bound offline join, and revocation;
 - canonical signed endpoint records and deterministic merge;
+- signed display names and no-egress local interface address discovery;
 - durable state, peer cache, local control, and foreground service;
 - pinned QUIC, mutual application authentication, bounded reconciliation, and direct candidates;
 - macOS live two-physical-host validation and repository quality gate.
@@ -183,7 +196,8 @@ hole punching, or relay. An operator must explicitly seed at least one contact p
 - Keychain and Linux protected-key providers;
 - LaunchAgent and systemd user packages, manpage, and completions;
 - Linux and macOS architecture matrix, fuzzing, and load tests;
-- signed reproducible artifacts, checksums, provenance, and upgrade policy.
+- embedded-root TUF verification, signed reproducible artifacts, provenance, and atomic upgrades as
+  specified in `docs/security/secure-updates.md`.
 
 ## Consequences
 

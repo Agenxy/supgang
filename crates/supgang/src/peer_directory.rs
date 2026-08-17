@@ -351,6 +351,7 @@ mod tests {
                 protocol_version: crate::record::ENDPOINT_RECORD_VERSION,
                 hive_id: founder.identity().hive_id,
                 node_id: device.node_id(),
+                display_name: Some(crate::profile::PeerName::new("Test Peer")?),
                 transport_key_id: crate::ids::TransportKeyId::from_public_material(b"transport"),
                 generation: 0,
                 sequence,

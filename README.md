@@ -10,10 +10,12 @@ user supplies.
 
 Status: pre-release M1 implementation for macOS and Linux. The direct peer protocol and CLI are
 working and adversarially tested, including a
-[two-physical-host macOS run](docs/validation/2026-08-17-two-host-e2e.md). Automatic LAN
-rendezvous, NAT hole punching, router mapping, user-owned relay mode, topology health, native key
-stores, and service packages are later milestones. Do not treat this snapshot as a production
-remote-access guarantee.
+[two-physical-host macOS run](docs/validation/2026-08-17-two-host-e2e.md) and a
+[human-name and automatic-address rerun](docs/validation/2026-08-17-human-peer-address-e2e.md).
+Local interface address discovery is automatic. Encrypted LAN rendezvous, NAT hole punching,
+router mapping, user-owned relay mode, topology health, native key stores, secure updates, and
+service packages remain later milestones. Do not treat this snapshot as a production remote-access
+guarantee.
 
 ## What works now
 
@@ -27,14 +29,18 @@ remote-access guarantee.
   corruption refusal, exclusive ownership, and atomic peer-cache compaction.
 - TLS 1.3 QUIC with a signed certificate pin, disabled 0-RTT, channel-bound mutual application
   authentication, bounded streams, and small authenticated anti-entropy pages.
-- Direct local, global IPv4, and global IPv6 candidates supplied by the user.
+- Automatic active-interface discovery for private local, global IPv4, and global IPv6 candidates,
+  with an owner-only explicit configuration override.
+- Device-signed, bounded computer names derived from the operating-system hostname and replaceable
+  by the user. Stable node fingerprints remain visible and authoritative.
 - Authenticated peer observation of global source addresses. An observation is never accepted as a
   device identity or authorization by itself.
 - Deterministic single-initiator connections, bounded retries, graceful shutdown, and immediate
   root-signed revocation notices over established links.
 - An owner-only local Unix socket with same-UID peer checks, allowing `status`, `doctor`, `peers`,
   `resolve`, and `revoke` while the service owns mutable state.
-- Human output and versioned JSON output with no ordinary logging of secrets or peer addresses.
+- A zero-argument peer view with names, short fingerprints, signed local and public addresses, and
+  explicit provenance. There is no background logging of secrets or peer addresses.
 
 ## The irreducible boundary
 
@@ -109,10 +115,31 @@ Artifacts are created with owner-only permissions and never overwrite an existin
 and bundle are sensitive authorization material even though neither contains the joining device's
 private key. Move or destroy them according to your own backup policy after the join succeeds.
 
+## Name each computer
+
+The default name is derived from the computer hostname. Inspect it or replace it before publishing:
+
+```text
+supgang --state-dir "$HOME/.local/share/supgang" name
+supgang --state-dir "$HOME/.local/share/supgang" name set "Solis"
+```
+
+Names are signed human labels, not authorization identities. Supgang accepts portable ASCII names
+and always shows a short stable fingerprint beside them. Duplicate names are allowed on the wire,
+but ambiguous CLI selection fails closed and asks for the fingerprint.
+
 ## Bootstrap direct contact
 
 The current milestone intentionally requires one explicit initial contact exchange. On each
-computer, create an owner-only endpoint file without putting addresses in process arguments:
+computer, publish a signed contact. Supgang discovers active non-loopback interface addresses
+without contacting any network service and uses UDP port 44330 by default:
+
+```text
+supgang --state-dir "$HOME/.local/share/supgang" publish ./this-computer.contact
+```
+
+For explicit policy, create an owner-only endpoint file without putting addresses in process
+arguments:
 
 ```text
 {
@@ -124,7 +151,7 @@ computer, create an owner-only endpoint file without putting addresses in proces
 ```
 
 Set the file to mode `0600`. Use `kind: "direct"` with `[PUBLIC_IPV6]:44330` or
-`PUBLIC_IPV4:44330` only for a genuinely globally routed address. Then publish a signed contact:
+`PUBLIC_IPV4:44330` only for a genuinely globally routed address. Then publish with the override:
 
 ```text
 supgang --state-dir "$HOME/.local/share/supgang" publish ./this-computer.contact \
@@ -137,7 +164,13 @@ Carry each signed contact to the other computer and import it:
 supgang --state-dir "$HOME/.local/share/supgang" import ./other-computer.contact
 ```
 
-Then run the service in the foreground on each computer:
+Then run the service in the foreground on each computer. Automatic discovery is the default:
+
+```text
+supgang --state-dir "$HOME/.local/share/supgang" run
+```
+
+The explicit configuration remains available:
 
 ```text
 supgang --state-dir "$HOME/.local/share/supgang" run \
@@ -151,14 +184,28 @@ inbound QUIC.
 Inspect non-secret state:
 
 ```text
+supgang --state-dir "$HOME/.local/share/supgang"
 supgang --state-dir "$HOME/.local/share/supgang" status
 supgang --json --state-dir "$HOME/.local/share/supgang" doctor
 supgang --state-dir "$HOME/.local/share/supgang" peers
-supgang --state-dir "$HOME/.local/share/supgang" resolve NODE_ID
+supgang --state-dir "$HOME/.local/share/supgang" resolve Solis
 ```
 
-`peers` deliberately hides addresses. `resolve` reveals candidates only for the exact requested
-node and only while its signed record is fresh, non-conflicting, and non-revoked.
+The bare command and `peers` show every known computer and all retained signed address claims.
+`local` means a private or non-global interface candidate. `public` means a direct globally routed
+interface address, an address learned from an authenticated peer, an explicit router mapping, or a
+user-owned relay. `device-signed` means the address is integrity-bound to that device's authorized
+key; it does not mean Supgang independently proved the address reachable.
+
+When a private candidate is on one of this computer's attached IP prefixes, Supgang marks it
+preferred. Otherwise it marks the first public candidate preferred. Both remain visible. A direct
+public address can still be blocked by a firewall. A NAT public address appears as a reflexive
+candidate only after an authenticated peer on the far side observes it; Supgang does not query a
+public IP service.
+
+`resolve` accepts an exact computer name, a unique fingerprint prefix of at least eight characters,
+or the full node ID. It returns addresses only while the signed record is fresh, non-conflicting,
+and non-revoked.
 
 ## Revoke a computer
 
@@ -189,6 +236,10 @@ it, exits, and refuses future startup. Repeating the command is idempotent.
   same-UID socket credentials do not isolate hostile software already running as the owner.
 - A restored full-disk snapshot can restore old counters and revocation state. Generation recovery
   and an external rollback witness are not implemented yet.
+- Secure updates are designed around an embedded TUF root, offline threshold keys, reproducible
+  artifacts, and untrusted replaceable transports. No updater is shipped before the signing
+  ceremony and adversarial installer acceptance gates are complete. Apple Developer ID may later
+  be an optional second layer, not a sovereign requirement.
 
 Read the repository-backed [threat model](docs/security/threat-model.md) before exposing a listener
 beyond a trusted network.
@@ -198,8 +249,10 @@ beyond a trusted network.
 - [Architecture decision](docs/architecture/0001-sovereign-address-plane.md)
 - [Stack and prior-art research](docs/research/stack-and-prior-art.md)
 - [Threat model](docs/security/threat-model.md)
+- [Sovereign update and peer-report security design](docs/security/secure-updates.md)
 - [Dependency identity exceptions](docs/security/dependency-exceptions.md)
 - [Two-host end-to-end validation](docs/validation/2026-08-17-two-host-e2e.md)
+- [Human peer and automatic address validation](docs/validation/2026-08-17-human-peer-address-e2e.md)
 - [Security policy](SECURITY.md)
 
 Supgang is an [Agenxy](https://github.com/Agenxy) project and is licensed under Apache-2.0.

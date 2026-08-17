@@ -37,7 +37,7 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum ControlRequest {
     /// Return non-secret service and identity status.
     Status,
-    /// Return known peers without addresses.
+    /// Return known peers with their signed addresses.
     Peers,
     /// Return fresh signed candidates for exactly one peer.
     Resolve(NodeId),
@@ -48,6 +48,8 @@ pub enum ControlRequest {
 /// Non-secret status returned by a running service.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ControlStatus {
+    /// Device-signed human label.
+    pub name: String,
     /// Hive identifier.
     pub hive_id: String,
     /// This device's stable identifier.
@@ -73,7 +75,7 @@ pub enum ControlReply {
         /// Non-secret service status.
         value: ControlStatus,
     },
-    /// Address-redacted peer summary.
+    /// Human-oriented peer and address summary.
     Peers {
         /// Stable CLI peer result.
         value: cli_peer::PeersOutput,

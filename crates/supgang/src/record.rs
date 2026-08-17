@@ -9,13 +9,16 @@ use crate::{
     identity::{DeviceIdentity, verify_domain},
     ids::{HiveId, NodeId, TransportKeyId},
     membership::{MembershipError, MembershipRoles, SignedMembership},
+    profile::PeerName,
     wire,
 };
 
-/// Domain separator for endpoint-record signatures.
-pub const ENDPOINT_RECORD_SIGNATURE_DOMAIN: &[u8] = b"supgang/endpoint-record/v1\0";
+const ENDPOINT_RECORD_SIGNATURE_DOMAIN_V1: &[u8] = b"supgang/endpoint-record/v1\0";
+const ENDPOINT_RECORD_SIGNATURE_DOMAIN_V2: &[u8] = b"supgang/endpoint-record/v2\0";
+/// First endpoint-record protocol version, retained for verified migration.
+pub const ENDPOINT_RECORD_VERSION_V1: u16 = 1;
 /// Current endpoint-record protocol version.
-pub const ENDPOINT_RECORD_VERSION: u16 = 1;
+pub const ENDPOINT_RECORD_VERSION: u16 = 2;
 /// Maximum lifetime of one endpoint record, in seconds.
 pub const MAX_RECORD_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Maximum tolerated future clock skew, in seconds.
@@ -77,6 +80,8 @@ pub struct EndpointRecord {
     pub hive_id: HiveId,
     /// Stable author identity.
     pub node_id: NodeId,
+    /// Human label signed by the device; never an authorization identifier.
+    pub display_name: Option<PeerName>,
     /// Current short-lived transport certificate or public-key identifier.
     pub transport_key_id: TransportKeyId,
     /// Explicit recovery generation.
@@ -100,8 +105,14 @@ impl EndpointRecord {
     ///
     /// Returns the first violated record invariant.
     pub fn validate_shape(&self) -> Result<(), RecordError> {
-        if self.protocol_version != ENDPOINT_RECORD_VERSION {
+        if !matches!(
+            self.protocol_version,
+            ENDPOINT_RECORD_VERSION_V1 | ENDPOINT_RECORD_VERSION
+        ) {
             return Err(RecordError::UnsupportedVersion);
+        }
+        if (self.protocol_version == ENDPOINT_RECORD_VERSION_V1) != self.display_name.is_none() {
+            return Err(RecordError::InvalidDisplayName);
         }
         if self.sequence == 0 {
             return Err(RecordError::ZeroSequence);
@@ -167,7 +178,7 @@ impl SignedEndpointRecord {
         }
         let payload = wire::encode_endpoint_record(&record).map_err(|_| RecordError::Encoding)?;
         let signature = identity
-            .sign_domain(ENDPOINT_RECORD_SIGNATURE_DOMAIN, &payload)
+            .sign_domain(signature_domain(record.protocol_version)?, &payload)
             .to_vec();
         Ok(Self { record, signature })
     }
@@ -188,7 +199,12 @@ impl SignedEndpointRecord {
             .try_into()
             .map_err(|_| RecordError::InvalidSignature)?;
         let payload = wire::encode_endpoint_record(&self.record).map_err(|_| RecordError::Encoding)?;
-        if !verify_domain(key, ENDPOINT_RECORD_SIGNATURE_DOMAIN, &payload, &signature) {
+        if !verify_domain(
+            key,
+            signature_domain(self.record.protocol_version)?,
+            &payload,
+            &signature,
+        ) {
             return Err(RecordError::InvalidSignature);
         }
         Ok(())
@@ -240,6 +256,9 @@ pub enum RecordError {
     /// The protocol version is not supported.
     #[error("endpoint record protocol version is not supported")]
     UnsupportedVersion,
+    /// The display-name field does not match the record version.
+    #[error("endpoint record display name is invalid for this protocol version")]
+    InvalidDisplayName,
     /// Sequence zero is reserved and never published.
     #[error("endpoint record sequence must be greater than zero")]
     ZeroSequence,
@@ -299,6 +318,14 @@ fn strictly_sorted<T: Ord>(items: &[T]) -> bool {
         .all(|pair| matches!(pair, [first, second] if first < second))
 }
 
+const fn signature_domain(protocol_version: u16) -> Result<&'static [u8], RecordError> {
+    match protocol_version {
+        ENDPOINT_RECORD_VERSION_V1 => Ok(ENDPOINT_RECORD_SIGNATURE_DOMAIN_V1),
+        ENDPOINT_RECORD_VERSION => Ok(ENDPOINT_RECORD_SIGNATURE_DOMAIN_V2),
+        _ => Err(RecordError::UnsupportedVersion),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -315,6 +342,7 @@ mod tests {
             protocol_version: ENDPOINT_RECORD_VERSION,
             hive_id: HiveId::from_bytes([1; 32]),
             node_id: identity.node_id(),
+            display_name: Some(crate::profile::PeerName::new("Test Computer")?),
             transport_key_id: TransportKeyId::from_public_material(b"transport"),
             generation: 0,
             sequence: 1,
