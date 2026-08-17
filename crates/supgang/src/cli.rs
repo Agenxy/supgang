@@ -110,8 +110,12 @@ enum Command {
         #[arg(value_name = "NODE_ID")]
         node_id: NodeId,
     },
-    /// List known computers and their signed local and public addresses.
-    Peers,
+    /// List computers and their most useful signed addresses.
+    Peers {
+        /// Show every retained address and its security provenance.
+        #[arg(long)]
+        all: bool,
+    },
     /// Show fresh signed addresses for one computer.
     Resolve {
         /// Computer name, shown fingerprint, or stable 64-character node ID.
@@ -225,11 +229,8 @@ where
 
     match cli.command {
         None => {
-            let code = cli_control::peers(&state_directory, cli.json, output, error);
-            if code == ExitCode::SUCCESS
-                && !cli.json
-                && writeln!(output, "Run `supgang --help` for setup and security commands.").is_err()
-            {
+            let code = cli_control::peers(&state_directory, cli.json, false, output, error);
+            if code == ExitCode::SUCCESS && !cli.json && writeln!(output, "Help: supgang --help").is_err() {
                 return ExitCode::from(EXIT_FAILURE);
             }
             code
@@ -261,7 +262,7 @@ where
             Err(message) => render_error(cli.json, &message, output, error),
         },
         Some(Command::Revoke { node_id }) => cli_control::revoke(&state_directory, node_id, cli.json, output, error),
-        Some(Command::Peers) => cli_control::peers(&state_directory, cli.json, output, error),
+        Some(Command::Peers { all }) => cli_control::peers(&state_directory, cli.json, all, output, error),
         Some(Command::Resolve { peer }) => cli_control::resolve(&state_directory, &peer, cli.json, output, error),
         Some(Command::Run {
             endpoints,

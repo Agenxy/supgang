@@ -344,7 +344,7 @@ async fn service_loop(
             directory,
             &active,
             config.listen,
-            &config.display_name,
+            &local_contact,
         )
         .await
         {

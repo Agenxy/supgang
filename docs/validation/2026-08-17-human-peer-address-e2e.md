@@ -8,9 +8,9 @@ Private hive, full node, account, and network identifiers are intentionally omit
 
 - Candidate source: the tree containing this record.
 - Release-mode binary SHA-256:
-  `d2885058835b598585ab87d53eb0ef388ffb3fd1b963866ab837dd38681fe226`.
+  `80eff0823726bd6a1b45b6e9b20823223043469f5494ed37d64f6e744981b217`.
 - Hosts: `MacMarine` and `MacSolis`, two Apple silicon computers in the existing two-member hive.
-- Installation: the same 4,265,728-byte executable on both hosts, verified before replacement.
+- Installation: the same 4,282,400-byte executable on both hosts, verified after replacement.
 - Network configuration: none. Both services used automatic discovery and default UDP port 44330.
 - External runtime services: none. No account, hosted discovery, DNS publisher, STUN service,
   vendor relay, public-IP service, or overlay network participated.
@@ -21,10 +21,14 @@ Private hive, full node, account, and network identifiers are intentionally omit
 | --- | --- |
 | Automatic names | Both devices derived and retained their operating-system computer names. |
 | Signed identity cue | Every human peer row paired the name with an eight-character node fingerprint. |
-| Bare command | `supgang` printed the peer, status, addresses, preference, provenance, and one help hint. |
+| Self visibility | Each bare view put its own computer first and labeled it `this computer`. |
+| Bare command | `supgang` printed each computer's preferred address plus at most one public alternative. |
+| Progressive detail | The compact view hid six secondary candidates per computer and pointed to `peers --all`. |
+| Complete view | `supgang peers --all` retained every address, preference marker, kind, and provenance. |
+| Machine view | JSON schema `supgang.peers/v3` included `this_computer` and the complete peer candidate sets. |
 | Local preference | Each host selected the other host's same-prefix private address as preferred. |
 | Public visibility | Each host also displayed the peer's globally routed interface candidates as public. |
-| Honest provenance | Address rows said `device-signed`; none claimed independent reachability proof. |
+| Honest provenance | Detailed and JSON rows said `device-signed`; none claimed independent reachability proof. |
 | Named resolution | `resolve MacSolis` and `resolve MacMarine` returned the intended fresh signed records. |
 | Ambiguity defense | Unit coverage proved duplicate names fail closed and require a longer fingerprint. |
 | Stale defense | Unit coverage proved expired, revoked, or conflicted rows cannot mark an address preferred. |
@@ -34,7 +38,7 @@ Private hive, full node, account, and network identifiers are intentionally omit
 | Peer restart | A later `MacSolis` restart advanced its signed sequence and re-established the session. |
 | No-egress discovery | Automatic publication succeeded under a macOS sandbox denying all network operations. |
 | Installed command | From `/tmp`, `command -v supgang` selected `$HOME/.local/bin/supgang`. |
-| Installed behavior | The installed command passed help, doctor, status, name, bare peer view, and named resolution. |
+| Installed behavior | The installed command passed help, doctor, status, name, compact and complete peer views, and named resolution. |
 | Offline install | `make install` succeeded under a macOS sandbox denying every network operation. |
 
 The final services remained running in the foreground from their installed paths and each reported

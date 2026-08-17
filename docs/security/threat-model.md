@@ -245,9 +245,9 @@ URLs, or broad status output.
 kernel interface table. The service dials only locally discovered, user-supplied, authenticated-
 peer-observed, or cryptographically imported candidate sockets. Explicit addresses enter through a
 bounded owner-only file rather than process arguments. Startup has no address output and ordinary
-operation has no logger. The user-invoked bare command and `peers` intentionally display retained
-addresses locally with scope and `device-signed` provenance. Debug implementations redact secret
-bytes.
+operation has no logger. The user-invoked bare command and `peers` intentionally display a compact
+local fleet view. `peers --all`, `resolve`, and JSON expose the complete retained address set;
+detailed human rows include `device-signed` provenance. Debug implementations redact secret bytes.
 
 **Residual risk.** Authorized peers necessarily learn endpoint and timing metadata. CLI JSON can be
 captured by the caller. Strict-mode egress has not yet been proved inside a Linux network namespace.
@@ -300,7 +300,8 @@ separate trustworthy boundary.
 
 ## Verification evidence in this snapshot
 
-- 69 library tests cover canonical encoding, v1-to-v2 verification, signed names, interface-prefix
+- 72 library tests cover canonical encoding, v1-to-v2 verification, signed names, compact fleet
+  rendering, interface-prefix
   selection, signature mutation, cross-hive replay, invitation
   recipient binding, merge ordering, corruption, partial-tail recovery, safe permissions, special
   file rejection, endpoint configuration bounds, locks, transport pinning, mutual authentication,

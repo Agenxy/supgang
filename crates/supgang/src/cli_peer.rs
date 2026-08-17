@@ -58,6 +58,8 @@ pub struct PeerRow {
 pub struct PeersOutput {
     pub schema: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub this_computer: Option<PeerRow>,
     pub peers: Vec<PeerRow>,
 }
 
@@ -173,6 +175,7 @@ pub fn import(state_directory: &Path, input_path: &Path) -> Result<ImportOutput,
 pub fn peers(state_directory: &Path) -> Result<PeersOutput, String> {
     let local_state = state::open(state_directory).map_err(|error| error.to_string())?;
     let root_key = local_state.identity().root_verifying_key;
+    let this_computer = stopped_local_row(state_directory, &local_state)?;
     let directory = PeerDirectory::open(
         state_directory,
         root_key,
@@ -180,10 +183,15 @@ pub fn peers(state_directory: &Path) -> Result<PeersOutput, String> {
         local_state.revocations(),
     )
     .map_err(|error| error.to_string())?;
-    Ok(peers_from_directory(&directory, &root_key, unix_time()?))
+    Ok(peers_from_directory(&directory, &root_key, unix_time()?, this_computer))
 }
 
-pub fn peers_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, now: u64) -> PeersOutput {
+pub fn peers_from_directory(
+    directory: &PeerDirectory,
+    root_key: &VerifyingKey,
+    now: u64,
+    this_computer: PeerRow,
+) -> PeersOutput {
     let local_networks = crate::network::interface_networks().unwrap_or_default();
     let peers = directory
         .entries()
@@ -216,9 +224,30 @@ pub fn peers_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, 
         })
         .collect();
     PeersOutput {
-        schema: "supgang.peers/v2".to_owned(),
+        schema: "supgang.peers/v3".to_owned(),
         status: "ok".to_owned(),
+        this_computer: Some(this_computer),
         peers,
+    }
+}
+
+pub fn running_local_row(contact: &PeerContact) -> PeerRow {
+    let record = &contact.endpoint.record;
+    let preferred_index = self_preferred_index(&record.candidates);
+    PeerRow {
+        name: record.display_name.as_ref().map_or_else(
+            || format!("computer-{}", short_fingerprint(record.node_id)),
+            ToString::to_string,
+        ),
+        name_source: "device-signed".to_owned(),
+        fingerprint: short_fingerprint(record.node_id),
+        node_id: record.node_id.to_string(),
+        status: "running".to_owned(),
+        generation: record.generation,
+        sequence: record.sequence,
+        expires_at: record.expires_at,
+        candidate_count: record.candidates.len(),
+        addresses: resolved_with_preference(&record.candidates, preferred_index, "device-signed"),
     }
 }
 
@@ -231,7 +260,13 @@ pub fn resolve(state_directory: &Path, selector: &str) -> Result<ResolveOutput, 
         local_state.revocations(),
     )
     .map_err(|error| error.to_string())?;
-    let rows = peers_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    let this_computer = stopped_local_row(state_directory, &local_state)?;
+    let rows = peers_from_directory(
+        &directory,
+        &local_state.identity().root_verifying_key,
+        unix_time()?,
+        this_computer,
+    );
     let node_id = resolve_selector_from_rows(&rows.peers, selector)?;
     resolve_from_directory(&directory, node_id, unix_time()?)
 }
@@ -314,6 +349,14 @@ fn resolved_candidates(
                 .or_else(|| (!candidates.is_empty()).then_some(0))
         })
         .flatten();
+    resolved_with_preference(candidates, preferred_index, "device-signed")
+}
+
+fn resolved_with_preference(
+    candidates: &[EndpointCandidate],
+    preferred_index: Option<usize>,
+    provenance: &str,
+) -> Vec<ResolvedCandidate> {
     candidates
         .iter()
         .enumerate()
@@ -322,10 +365,67 @@ fn resolved_candidates(
             kind: candidate_kind_name(candidate.kind()).to_owned(),
             transport: "quic-v1".to_owned(),
             address: candidate.address().to_string(),
-            provenance: "device-signed".to_owned(),
+            provenance: provenance.to_owned(),
             preferred: Some(index) == preferred_index,
         })
         .collect()
+}
+
+fn stopped_local_row(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
+    let node_id = local_state.identity().device.node_id();
+    let name = profile::load_or_create(state_directory, node_id).map_err(|error| error.to_string())?;
+    let candidates = EndpointConfig::automatic(crate::endpoint_config::DEFAULT_PORT)
+        .map(|config| candidates_from_config(&config))
+        .unwrap_or_default();
+    let preferred_index = self_preferred_index(&candidates);
+    Ok(PeerRow {
+        name: name.to_string(),
+        name_source: "local-profile".to_owned(),
+        fingerprint: short_fingerprint(node_id),
+        node_id: node_id.to_string(),
+        status: "stopped".to_owned(),
+        generation: local_state.generation(),
+        sequence: local_state.sequence(),
+        expires_at: 0,
+        candidate_count: candidates.len(),
+        addresses: resolved_with_preference(&candidates, preferred_index, "local-interface"),
+    })
+}
+
+fn candidates_from_config(config: &EndpointConfig) -> Vec<EndpointCandidate> {
+    config
+        .local()
+        .iter()
+        .filter_map(|address| EndpointCandidate::new(CandidateKind::Local, CandidateTransport::QuicV1, *address).ok())
+        .chain(config.direct().iter().filter_map(|address| {
+            EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, *address).ok()
+        }))
+        .collect()
+}
+
+fn self_preferred_index(candidates: &[EndpointCandidate]) -> Option<usize> {
+    candidates
+        .iter()
+        .position(|candidate| {
+            candidate.kind() == CandidateKind::Local
+                && matches!(candidate.address().ip(), std::net::IpAddr::V4(address) if address.is_private())
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .position(|candidate| candidate.kind() == CandidateKind::Local && candidate.address().is_ipv4())
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .position(|candidate| candidate.kind() == CandidateKind::Local)
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .position(|candidate| candidate.kind() != CandidateKind::Local && candidate.address().is_ipv4())
+        })
+        .or_else(|| (!candidates.is_empty()).then_some(0))
 }
 
 fn display_name(name: Option<&crate::profile::PeerName>, node_id: NodeId) -> (String, &'static str) {
@@ -381,7 +481,7 @@ mod tests {
         str::FromStr,
     };
 
-    use super::{PeerRow, resolve_selector_from_rows, resolved_candidates};
+    use super::{PeerRow, resolve_selector_from_rows, resolved_candidates, self_preferred_index};
     use crate::{
         candidate::{CandidateKind, CandidateTransport, EndpointCandidate},
         ids::NodeId,
@@ -434,6 +534,29 @@ mod tests {
 
         let addresses = resolved_candidates(&candidates, &networks, false);
         assert!(addresses.iter().all(|address| !address.preferred));
+        Ok(())
+    }
+
+    #[test]
+    fn this_computer_prefers_a_private_ipv4_interface() -> Result<(), Box<dyn std::error::Error>> {
+        let candidates = [
+            EndpointCandidate::new(
+                CandidateKind::Local,
+                CandidateTransport::QuicV1,
+                SocketAddr::from(([100, 77, 1, 2], 44_330)),
+            )?,
+            EndpointCandidate::new(
+                CandidateKind::Local,
+                CandidateTransport::QuicV1,
+                SocketAddr::from(([192, 168, 1, 20], 44_330)),
+            )?,
+            EndpointCandidate::new(
+                CandidateKind::Direct,
+                CandidateTransport::QuicV1,
+                SocketAddr::from(([8, 8, 8, 8], 44_330)),
+            )?,
+        ];
+        assert_eq!(self_preferred_index(&candidates), Some(1));
         Ok(())
     }
 }
