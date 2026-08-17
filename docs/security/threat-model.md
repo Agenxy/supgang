@@ -270,6 +270,10 @@ exists, and a compromised toolchain or CI runner remains capable of replacing bu
   sequence convergence, local control while the service owns state, live root revocation, immediate
   signed notice, target persistence and exit, authority-side resolution denial, `doctor` error, and
   restart denial.
+- A separate two-physical-host macOS scenario proved recipient-bound enrollment, direct
+  authenticated QUIC, signed-record convergence, bilateral restart recovery, address-redacted
+  process surfaces, and contact-tamper rejection without accepted-state change. The redacted record
+  is in `docs/validation/2026-08-17-two-host-e2e.md`.
 
 ## Release blockers beyond M1
 

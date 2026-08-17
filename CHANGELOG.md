@@ -4,6 +4,12 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
+### Added
+
+- Recorded a redacted two-physical-host macOS run covering enrollment, direct authenticated QUIC,
+  signed-record convergence, bilateral restart recovery, contact tamper rejection, and address
+  privacy.
+
 ### Changed
 
 - Replaced address-bearing `publish` and `run` arguments with one bounded owner-only endpoint

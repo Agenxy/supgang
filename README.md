@@ -9,9 +9,11 @@ kill switch, or required server. Strict operation uses only the computers and ne
 user supplies.
 
 Status: pre-release M1 implementation for macOS and Linux. The direct peer protocol and CLI are
-working and adversarially tested. Automatic LAN rendezvous, NAT hole punching, router mapping,
-user-owned relay mode, topology health, native key stores, and service packages are later
-milestones. Do not treat this snapshot as a production remote-access guarantee.
+working and adversarially tested, including a
+[two-physical-host macOS run](docs/validation/2026-08-17-two-host-e2e.md). Automatic LAN
+rendezvous, NAT hole punching, router mapping, user-owned relay mode, topology health, native key
+stores, and service packages are later milestones. Do not treat this snapshot as a production
+remote-access guarantee.
 
 ## What works now
 
@@ -197,6 +199,7 @@ beyond a trusted network.
 - [Stack and prior-art research](docs/research/stack-and-prior-art.md)
 - [Threat model](docs/security/threat-model.md)
 - [Dependency identity exceptions](docs/security/dependency-exceptions.md)
+- [Two-host end-to-end validation](docs/validation/2026-08-17-two-host-e2e.md)
 - [Security policy](SECURITY.md)
 
 Supgang is an [Agenxy](https://github.com/Agenxy) project and is licensed under Apache-2.0.
