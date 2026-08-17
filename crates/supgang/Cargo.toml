@@ -21,6 +21,7 @@ path = "src/lib.rs"
 clap.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
+gethostname.workspace = true
 hex.workspace = true
 minicbor.workspace = true
 nix.workspace = true

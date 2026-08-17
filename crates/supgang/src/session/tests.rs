@@ -43,6 +43,7 @@ fn contact(
             protocol_version: ENDPOINT_RECORD_VERSION,
             hive_id: root.hive_id(),
             node_id: device.node_id(),
+            display_name: Some(crate::profile::PeerName::new("Test Peer")?),
             transport_key_id: transport.key_id(),
             generation: 0,
             sequence: 1,

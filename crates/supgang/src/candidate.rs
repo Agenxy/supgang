@@ -128,6 +128,9 @@ pub enum CandidateError {
     /// Non-local candidates must be globally routable unicast addresses.
     #[error("non-local candidate address must be globally routable")]
     NonGlobalScope,
+    /// Globally routed addresses must be classified as direct, observed, or mapped.
+    #[error("globally routable candidate address must not be classified as local")]
+    GlobalMarkedLocal,
 }
 
 fn validate_address(kind: CandidateKind, address: SocketAddr) -> Result<(), CandidateError> {
@@ -144,6 +147,9 @@ fn validate_address(kind: CandidateKind, address: SocketAddr) -> Result<(), Cand
     }
     if is_local_scope(ip) && kind != CandidateKind::Local {
         return Err(CandidateError::LocalScopeMismatch);
+    }
+    if kind == CandidateKind::Local && is_globally_routable(ip) {
+        return Err(CandidateError::GlobalMarkedLocal);
     }
     if kind != CandidateKind::Local && !is_globally_routable(ip) {
         return Err(CandidateError::NonGlobalScope);

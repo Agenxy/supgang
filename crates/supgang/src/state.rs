@@ -15,6 +15,7 @@ use crate::{
         MAX_MEMBERSHIP_LIFETIME_SECONDS, MEMBERSHIP_VERSION, MembershipCertificate, MembershipError, MembershipRoles,
         SignedMembership,
     },
+    profile::PeerName,
     record::{Capabilities, ENDPOINT_RECORD_VERSION, EndpointRecord, RecordError, SignedEndpointRecord},
     revocation::{REVOCATION_VERSION, RevocationError, RevocationList, SignedRevocationList},
     state_lock::{StateLock, StateLockError},
@@ -135,6 +136,7 @@ impl LocalState {
     /// missing local membership, counter exhaustion, and persistence failures.
     pub fn sign_endpoint_record(
         &mut self,
+        display_name: PeerName,
         transport_key_id: TransportKeyId,
         candidates: Vec<EndpointCandidate>,
         capabilities: Capabilities,
@@ -160,6 +162,7 @@ impl LocalState {
             protocol_version: ENDPOINT_RECORD_VERSION,
             hive_id: self.identity.hive_id,
             node_id: self.identity.device.node_id(),
+            display_name: Some(display_name),
             transport_key_id,
             generation: self.generation,
             sequence: next,

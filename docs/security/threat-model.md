@@ -1,12 +1,13 @@
 # Supgang repository-backed threat model
 
-Status: implemented M1 review
+Status: implemented M1 review with endpoint record v2 and automatic interface discovery
 
 Date: 2026-08-16
 
-Scope: the source, manifests, protocol, foreground service, and CLI in this repository snapshot.
-Future LAN discovery, NAT traversal, router mapping, owned relay, hardware key stores, update, and
-release packaging are outside this model because they are not implemented.
+Scope: the source, manifests, protocol, foreground service, CLI, signed computer names, and local
+interface discovery in this repository snapshot. Future encrypted LAN rendezvous, NAT traversal,
+router mapping, owned relay, hardware key stores, updates, and release packaging are outside this
+model because they are not implemented.
 
 ## Security objectives
 
@@ -41,6 +42,8 @@ Supgang M1 does not promise:
 | Membership | Root signature, hive and device binding, serial, role, expiry, nonce | Founder is the only M1 administrator |
 | Revocation | Root-signed complete monotonic set, immediate notice, durable replay | No rescue flow for a falsely revoked device |
 | Endpoint record | Device signature, canonical bytes, sequence, generation, expiry, bounds | Addresses visible to authorized peers |
+| Display name | Device-signed portable ASCII, bounded bytes, visible fingerprint | A compromised peer can choose a deceptive or duplicate label |
+| Local profile | Owner-only atomic replacement, hostname fallback, strict parser | Same-user software can rename the device |
 | Local state | Exclusive lock, framed checksummed append, sync, corruption refusal | Whole-state rollback has no external witness |
 | Local control | Mode-0600 Unix socket, same-UID kernel credential, bounded messages | Same-user hostile processes are trusted |
 | Network service | TLS 1.3, signed pin, app mutual auth, stateless retry, strict budgets | No per-source rate limiter or packet-flood benchmark yet |
@@ -92,6 +95,10 @@ Trust boundaries:
    and unsafe modes are rejected.
 10. Strict mode has no code path for a public resolver, telemetry endpoint, vendor relay, account,
     forced update, or remote kill switch.
+11. Peer names are labels only. Authorization, merge, session authentication, revocation, and
+    durable lookup remain keyed by the full stable node ID.
+12. Automatic endpoint discovery enumerates local kernel interfaces only and makes no network
+    request. Globally routed interface addresses are classified as public direct candidates.
 
 ## Threat analysis
 
@@ -150,7 +157,8 @@ reflexive candidate. It remains a signed self-published hint after the device ad
 connection still requires the expected device, membership, certificate pin, and TLS exporter proof.
 
 **Residual risk.** M1 does not retain separate multi-witness observation objects, so it cannot rank
-or expose independent witness confidence. A malicious member can waste bounded dial attempts.
+or expose independent witness confidence. A malicious member can waste bounded dial attempts. The
+CLI says `device-signed`, not independently verified, for every retained address claim.
 
 ### T06: transport impersonation, downgrade, or replay
 
@@ -233,11 +241,13 @@ a reachable authority or third party.
 **Attack.** Leak addresses, topology, keys, or identifiers through public services, logs, errors,
 URLs, or broad status output.
 
-**Controls.** No telemetry or public service client exists. The service dials only user-supplied or
-cryptographically imported candidate sockets. Endpoint addresses enter through a bounded owner-only
-file rather than process arguments. Ordinary startup output has no address, ordinary operation has
-no logger, and `peers` hides addresses; only exact `resolve` reveals them. Debug implementations
-redact secret bytes.
+**Controls.** No telemetry or public service client exists. Automatic discovery reads only the
+kernel interface table. The service dials only locally discovered, user-supplied, authenticated-
+peer-observed, or cryptographically imported candidate sockets. Explicit addresses enter through a
+bounded owner-only file rather than process arguments. Startup has no address output and ordinary
+operation has no logger. The user-invoked bare command and `peers` intentionally display retained
+addresses locally with scope and `device-signed` provenance. Debug implementations redact secret
+bytes.
 
 **Residual risk.** Authorized peers necessarily learn endpoint and timing metadata. CLI JSON can be
 captured by the caller. Strict-mode egress has not yet been proved inside a Linux network namespace.
@@ -255,16 +265,50 @@ actions for RustSec and cargo-deny.
 and licence checks rely on their upstream databases and classifiers. No signed reproducible release
 exists, and a compromised toolchain or CI runner remains capable of replacing build output.
 
+### T14: deceptive names and identity confusion
+
+**Attack.** An authorized or compromised device chooses another computer's name, a control
+sequence, a terminal escape, or a visually confusable label so an operator acts on the wrong node.
+
+**Controls.** Names are restricted to 1 through 63 portable ASCII letters, digits, spaces, dots,
+underscores, and hyphens. They are signed in endpoint record v2, but every human row also shows an
+immutable eight-character node fingerprint. CLI selection requires an exact case-insensitive name,
+unique fingerprint prefix of at least eight characters, or full node ID. Duplicate matches fail
+closed. Revocation still requires the full 64-character node ID.
+
+**Residual risk.** Names remain device-controlled labels. Similar allowed ASCII names can still
+mislead a hurried operator. The short fingerprint is a usability checksum, not the full collision
+security of the node ID.
+
+### T15: update forgery and false peer health
+
+**Attack.** A mirror, CI runner, release credential, compromised peer, or network intermediary
+delivers a malicious or old binary, or a peer signs a false claim that it runs trusted software.
+
+**Controls.** No updater or remote software-health claim is implemented, so neither is presented as
+a security guarantee. The accepted design requires an embedded TUF root, offline threshold root and
+targets roles, consistent snapshots, version and expiry enforcement, reproducible target hashes,
+bounded staging, and atomic installation. A future live report must bind its challenge and report
+digest to the authenticated TLS exporter and compare its executable hash with locally trusted TUF
+targets metadata. The complete design and acceptance gates are in
+`docs/security/secure-updates.md`.
+
+**Residual risk.** A legitimate device key proves which key signed a report, not that its operating
+system is uncompromised. Same-user malware remains inside the current key-file trust boundary. Full
+machine compromise can sign lies until hardware-backed keys, measured evidence, or revocation add a
+separate trustworthy boundary.
+
 ## Verification evidence in this snapshot
 
-- 60 library tests cover canonical encoding, signature mutation, cross-hive replay, invitation
+- 69 library tests cover canonical encoding, v1-to-v2 verification, signed names, interface-prefix
+  selection, signature mutation, cross-hive replay, invitation
   recipient binding, merge ordering, corruption, partial-tail recovery, safe permissions, special
   file rejection, endpoint configuration bounds, locks, transport pinning, mutual authentication,
   revocation monotonicity, control framing, and arbitrary decoder input.
 - The quality binary runs format, all-target check, all-feature Clippy with warnings denied, every
   test target, rustdoc warnings, repository policy, exact direct pins, duplicate review, text limits,
   shell exclusion, and unsafe-source exclusion.
-- RustSec scanned all 167 locked dependency identities with warnings denied, while cargo-deny
+- RustSec scanned all 168 locked dependency identities with warnings denied, while cargo-deny
   accepted every supported-target licence and rejected unknown registries and Git sources.
 - A macOS two-process scenario proved offline join, bilateral contact import, authenticated QUIC,
   sequence convergence, local control while the service owns state, live root revocation, immediate
@@ -274,6 +318,8 @@ exists, and a compromised toolchain or CI runner remains capable of replacing bu
   authenticated QUIC, signed-record convergence, bilateral restart recovery, address-redacted
   process surfaces, and contact-tamper rejection without accepted-state change. The redacted record
   is in `docs/validation/2026-08-17-two-host-e2e.md`.
+- A network-denied macOS sandbox run proved automatic endpoint publication succeeds using only the
+  local interface table, with every network operation denied by the operating system.
 
 ## Release blockers beyond M1
 
@@ -282,9 +328,10 @@ exists, and a compromised toolchain or CI runner remains capable of replacing bu
 - Linux live two-process acceptance, network namespace egress proof, packet-flood ceilings, and
   coverage-guided fuzzing.
 - Release-lockfile software bill of materials and retained third-party notices.
-- Automatic LAN discovery, difficult-NAT recovery, and owned relay threat models before those
+- Encrypted LAN rendezvous, difficult-NAT recovery, and owned relay threat models before those
   features exist.
-- Signed, reproducible, provenance-bearing packages and service lifecycle acceptance.
+- TUF root ceremony, signed reproducible provenance-bearing packages, adversarial update
+  acceptance, and service lifecycle acceptance.
 
 Repository: Supgang
 Version: source-policy snapshot sha256:2d33c8745ccc9e62492da8af801af04b9aad7275e8509f10bd8f5d6e10526985

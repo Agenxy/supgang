@@ -8,7 +8,8 @@ use thiserror::Error;
 use crate::{
     candidate::{CandidateError, CandidateKind, CandidateTransport, EndpointCandidate, MAX_CANDIDATES},
     ids::{HiveId, NodeId, TransportKeyId},
-    record::{Capabilities, EndpointRecord, SignedEndpointRecord},
+    profile::PeerName,
+    record::{Capabilities, ENDPOINT_RECORD_VERSION, ENDPOINT_RECORD_VERSION_V1, EndpointRecord, SignedEndpointRecord},
 };
 
 /// Maximum accepted size of a canonical unsigned endpoint record.
@@ -17,7 +18,8 @@ pub const MAX_ENDPOINT_RECORD_BYTES: usize = 3_584;
 pub const MAX_SIGNED_ENDPOINT_RECORD_BYTES: usize = 4_096;
 
 const SIGNED_ENVELOPE_VERSION: u16 = 1;
-const RECORD_FIELDS: u64 = 10;
+const RECORD_FIELDS_V1: u64 = 10;
+const RECORD_FIELDS_V2: u64 = 11;
 const CANDIDATE_FIELDS: u64 = 4;
 
 /// An encoding or decoding failure at the network boundary.
@@ -50,6 +52,12 @@ pub enum WireError {
     /// The signed envelope has an unsupported version.
     #[error("signed envelope version is not supported")]
     EnvelopeVersion,
+    /// The endpoint-record payload has an unsupported version.
+    #[error("endpoint record version is not supported")]
+    RecordVersion,
+    /// The signed display name is invalid.
+    #[error("endpoint record display name is invalid")]
+    DisplayName,
     /// Signature bytes did not have the required size.
     #[error("wire signature must contain exactly 64 bytes")]
     SignatureLength,
@@ -69,10 +77,18 @@ pub enum WireError {
 pub fn encode_endpoint_record(record: &EndpointRecord) -> Result<Vec<u8>, WireError> {
     let mut output = Vec::with_capacity(256);
     let mut encoder = Encoder::new(&mut output);
-    encoder.array(RECORD_FIELDS)?;
+    let fields = match record.protocol_version {
+        ENDPOINT_RECORD_VERSION_V1 if record.display_name.is_none() => RECORD_FIELDS_V1,
+        ENDPOINT_RECORD_VERSION if record.display_name.is_some() => RECORD_FIELDS_V2,
+        _ => return Err(WireError::RecordVersion),
+    };
+    encoder.array(fields)?;
     encoder.u16(record.protocol_version)?;
     encoder.bytes(record.hive_id.as_bytes())?;
     encoder.bytes(record.node_id.as_bytes())?;
+    if let Some(display_name) = &record.display_name {
+        encoder.str(display_name.as_str())?;
+    }
     encoder.bytes(record.transport_key_id.as_bytes())?;
     encoder.u64(record.generation)?;
     encoder.u64(record.sequence)?;
@@ -99,10 +115,21 @@ pub fn decode_endpoint_record(input: &[u8]) -> Result<EndpointRecord, WireError>
         return Err(WireError::Oversized);
     }
     let mut decoder = Decoder::new(input);
-    require_array(&mut decoder, RECORD_FIELDS)?;
+    let fields = decoder.array()?.ok_or(WireError::WrongFieldCount)?;
     let protocol_version = decoder.u16()?;
+    let display_name_present = match protocol_version {
+        ENDPOINT_RECORD_VERSION_V1 if fields == RECORD_FIELDS_V1 => false,
+        ENDPOINT_RECORD_VERSION if fields == RECORD_FIELDS_V2 => true,
+        ENDPOINT_RECORD_VERSION_V1 | ENDPOINT_RECORD_VERSION => return Err(WireError::WrongFieldCount),
+        _ => return Err(WireError::RecordVersion),
+    };
     let hive_id = HiveId::from_bytes(read_fixed::<32>(&mut decoder)?);
     let node_id = NodeId::from_bytes(read_fixed::<32>(&mut decoder)?);
+    let display_name = if display_name_present {
+        Some(PeerName::new(decoder.str()?.to_owned()).map_err(|_| WireError::DisplayName)?)
+    } else {
+        None
+    };
     let transport_key_id = TransportKeyId::from_bytes(read_fixed::<32>(&mut decoder)?);
     let generation = decoder.u64()?;
     let sequence = decoder.u64()?;
@@ -122,6 +149,7 @@ pub fn decode_endpoint_record(input: &[u8]) -> Result<EndpointRecord, WireError>
         protocol_version,
         hive_id,
         node_id,
+        display_name,
         transport_key_id,
         generation,
         sequence,
@@ -270,6 +298,7 @@ mod tests {
             protocol_version: ENDPOINT_RECORD_VERSION,
             hive_id: HiveId::from_bytes([7; 32]),
             node_id: identity.node_id(),
+            display_name: Some(crate::profile::PeerName::new("Test Computer")?),
             transport_key_id: TransportKeyId::from_public_material(b"transport"),
             generation: 0,
             sequence: 1,
@@ -292,6 +321,24 @@ mod tests {
         let bytes = encode_signed_endpoint_record(&signed)?;
         let decoded = decode_signed_endpoint_record(&bytes)?;
         assert_eq!(decoded, signed);
+        decoded.verify(&identity.verifying_key())?;
+        Ok(())
+    }
+
+    #[test]
+    fn version_one_record_remains_canonically_verifiable() -> Result<(), Box<dyn std::error::Error>> {
+        let (identity, current) = signed_record()?;
+        let legacy = SignedEndpointRecord::sign(
+            EndpointRecord {
+                protocol_version: crate::record::ENDPOINT_RECORD_VERSION_V1,
+                display_name: None,
+                ..current.record
+            },
+            &identity,
+        )?;
+        let bytes = encode_signed_endpoint_record(&legacy)?;
+        let decoded = decode_signed_endpoint_record(&bytes)?;
+        assert_eq!(decoded, legacy);
         decoded.verify(&identity.verifying_key())?;
         Ok(())
     }
