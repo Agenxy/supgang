@@ -39,8 +39,9 @@ guarantee.
   root-signed revocation notices over established links.
 - An owner-only local Unix socket with same-UID peer checks, allowing `status`, `doctor`, `peers`,
   `resolve`, and `revoke` while the service owns mutable state.
-- A zero-argument peer view with names, short fingerprints, signed local and public addresses, and
-  explicit provenance. There is no background logging of secrets or peer addresses.
+- A zero-argument fleet view with this computer, peer names, short fingerprints, and the most useful
+  local and public addresses. Complete candidates and provenance remain one explicit command away.
+  There is no background logging of secrets or peer addresses.
 
 ## The irreducible boundary
 
@@ -193,14 +194,19 @@ supgang --state-dir "$HOME/.local/share/supgang"
 supgang --state-dir "$HOME/.local/share/supgang" status
 supgang --json --state-dir "$HOME/.local/share/supgang" doctor
 supgang --state-dir "$HOME/.local/share/supgang" peers
+supgang --state-dir "$HOME/.local/share/supgang" peers --all
 supgang --state-dir "$HOME/.local/share/supgang" resolve Solis
 ```
 
-The bare command and `peers` show every known computer and all retained signed address claims.
+The bare command and `peers` show this computer followed by every known peer. The concise view shows
+one preferred address and, when the preferred address is local, one useful public alternative.
+Secondary interfaces are collapsed. `peers --all`, `resolve`, and JSON expose the complete retained
+candidate set; the detailed human view also shows security provenance.
+
 `local` means a private or non-global interface candidate. `public` means a direct globally routed
 interface address, an address learned from an authenticated peer, an explicit router mapping, or a
-user-owned relay. `device-signed` means the address is integrity-bound to that device's authorized
-key; it does not mean Supgang independently proved the address reachable.
+user-owned relay. In the detailed view, `device-signed` means the address is integrity-bound to that
+device's authorized key; it does not mean Supgang independently proved the address reachable.
 
 When a private candidate is on one of this computer's attached IP prefixes, Supgang marks it
 preferred. Otherwise it marks the first public candidate preferred. Both remain visible. A direct

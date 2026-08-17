@@ -206,13 +206,13 @@ pub(super) async fn poll_control(
     directory: &mut PeerDirectory,
     active: &BTreeMap<NodeId, Connection>,
     listen: SocketAddr,
-    display_name: &crate::profile::PeerName,
+    local_contact: &crate::contact::PeerContact,
 ) -> bool {
     let Ok(accepted) = tokio::time::timeout(wait, listener.accept()).await else {
         return false;
     };
     if let Ok(mut stream) = accepted {
-        handle_control(&mut stream, local_state, directory, active, listen, display_name).await;
+        handle_control(&mut stream, local_state, directory, active, listen, local_contact).await;
     }
     true
 }
@@ -223,13 +223,18 @@ async fn handle_control(
     directory: &mut PeerDirectory,
     active: &BTreeMap<NodeId, Connection>,
     listen: SocketAddr,
-    display_name: &crate::profile::PeerName,
+    local_contact: &crate::contact::PeerContact,
 ) {
     let request = tokio::time::timeout(Duration::from_secs(2), control::read_request(stream)).await;
     let (reply, _changed) = match request {
         Ok(Ok(ControlRequest::Status)) => ControlReply::Status {
             value: ControlStatus {
-                name: display_name.to_string(),
+                name: local_contact
+                    .endpoint
+                    .record
+                    .display_name
+                    .as_ref()
+                    .map_or_else(|| "computer".to_owned(), ToString::to_string),
                 hive_id: local_state.identity().hive_id.to_string(),
                 node_id: local_state.identity().device.node_id().to_string(),
                 listen: listen.to_string(),
@@ -242,7 +247,12 @@ async fn handle_control(
         .into_unchanged(),
         Ok(Ok(ControlRequest::Peers)) => match unix_time() {
             Ok(now) => ControlReply::Peers {
-                value: cli_peer::peers_from_directory(directory, &local_state.identity().root_verifying_key, now),
+                value: cli_peer::peers_from_directory(
+                    directory,
+                    &local_state.identity().root_verifying_key,
+                    now,
+                    cli_peer::running_local_row(local_contact),
+                ),
             },
             Err(error) => ControlReply::Error {
                 message: error.to_string(),

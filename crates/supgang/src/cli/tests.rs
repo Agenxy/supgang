@@ -202,7 +202,14 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
     let named = run_json(&["supgang", "--json", "--state-dir", founder_text, "resolve", "Solis"])?;
     assert_eq!(named.get("node_id"), requested.get("node_id"));
     let listed = run_json(&["supgang", "--json", "--state-dir", founder_text])?;
-    assert_eq!(listed.get("schema"), Some(&serde_json::json!("supgang.peers/v2")));
+    assert_eq!(listed.get("schema"), Some(&serde_json::json!("supgang.peers/v3")));
+    assert!(
+        listed
+            .get("this_computer")
+            .and_then(|computer| computer.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+    );
     let row = listed
         .get("peers")
         .and_then(serde_json::Value::as_array)
@@ -223,10 +230,22 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         std::process::ExitCode::SUCCESS
     );
     let human = String::from_utf8(human)?;
+    assert!(human.contains("this computer"));
     assert!(human.contains("Solis ["));
     assert!(human.contains("127.0.0.1:4433"));
-    assert!(human.contains("device-signed"));
+    assert!(!human.contains("device-signed"));
     assert!(human.contains("supgang --help"));
     assert!(human_error.is_empty());
+
+    let mut detailed = Vec::new();
+    assert_eq!(
+        run(
+            ["supgang", "--state-dir", founder_text, "peers", "--all"],
+            &mut detailed,
+            &mut human_error,
+        ),
+        std::process::ExitCode::SUCCESS
+    );
+    assert!(String::from_utf8(detailed)?.contains("device-signed"));
     Ok(())
 }
