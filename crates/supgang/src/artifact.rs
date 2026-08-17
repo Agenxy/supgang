@@ -110,12 +110,13 @@ fn validate(file: &File) -> Result<(), ArtifactError> {
 }
 
 fn no_follow_flag() -> Result<i32, ArtifactError> {
-    i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| ArtifactError::NotRegularFile)
+    let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+    i32::try_from(flags.bits()).map_err(|_| ArtifactError::NotRegularFile)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
     use super::{ArtifactError, read, write_new};
 
@@ -139,6 +140,17 @@ mod tests {
         write_new(&path, b"bounded", 32)?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
         assert!(matches!(read(&path, 32), Err(ArtifactError::InsecurePermissions)));
+        Ok(())
+    }
+
+    #[test]
+    fn fifo_is_rejected_without_waiting_for_a_writer() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("pipe");
+        let status = Command::new("mkfifo").arg(&path).status()?;
+        assert!(status.success());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        assert!(matches!(read(&path, 32), Err(ArtifactError::NotRegularFile)));
         Ok(())
     }
 }

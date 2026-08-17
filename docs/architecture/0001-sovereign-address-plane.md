@@ -134,6 +134,8 @@ State uses purpose-built append-only journals instead of the proposed redb depen
 - fail-closed behavior for corruption before the tail;
 - atomic peer-cache compaction through owner-only replacement, file sync, rename, and parent sync;
 - owner, type, permission, and symlink checks;
+- a bounded mode-0600 endpoint JSON file, keeping peer addresses out of process arguments and
+  ordinary startup output;
 - one process lock for mutable state.
 
 The local control socket uses fixed bounded requests and a 64 KiB JSON response ceiling. The kernel
