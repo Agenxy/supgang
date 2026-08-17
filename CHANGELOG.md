@@ -1,8 +1,10 @@
 # Changelog
 
-All notable project changes are recorded here. Supgang has not published a release.
+All notable project changes are recorded here.
 
 ## Unreleased
+
+## 0.1.0 - 2026-08-16
 
 ### Added
 
