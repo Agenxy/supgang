@@ -162,7 +162,7 @@ hole punching, or relay. An operator must explicitly seed at least one contact p
 - canonical signed endpoint records and deterministic merge;
 - durable state, peer cache, local control, and foreground service;
 - pinned QUIC, mutual application authentication, bounded reconciliation, and direct candidates;
-- macOS live two-process validation and repository quality gate.
+- macOS live two-physical-host validation and repository quality gate.
 
 ### M2: local and changing networks
 
