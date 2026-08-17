@@ -1,0 +1,65 @@
+[workspace]
+members = ["crates/supgang", "crates/supgang-cli", "crates/supgang-quality"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+authors = ["Agenxy contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/Agenxy/supgang"
+homepage = "https://agenxy.org/projects/supgang"
+
+[workspace.dependencies]
+clap = { version = "=4.6.6", default-features = false, features = ["cargo", "derive", "help", "std", "usage"] }
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
+getrandom = { version = "=0.4.3", default-features = false }
+hex = { version = "=0.4.3", default-features = false, features = ["alloc"] }
+minicbor = { version = "=2.3.0", default-features = false, features = ["alloc", "std"] }
+nix = { version = "=0.31.3", default-features = false, features = ["socket", "user"] }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+sha2 = { version = "=0.11.0", default-features = false }
+thiserror = { version = "=2.0.20", default-features = false }
+zeroize = { version = "=1.9.0", default-features = false }
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
+quinn = { version = "=0.11.11", default-features = false, features = ["bloom", "runtime-tokio", "rustls-aws-lc-rs"] }
+rcgen = { version = "=0.14.9", default-features = false, features = ["aws_lc_rs", "crypto", "zeroize"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["io-util", "net", "rt", "signal", "sync", "time"] }
+
+[workspace.lints.rust]
+warnings = "deny"
+unsafe_code = "forbid"
+missing_docs = "deny"
+unused_crate_dependencies = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = { level = "allow", priority = 1 }
+cognitive_complexity = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+mem_forget = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+overflow-checks = true
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+overflow-checks = true
+panic = "unwind"

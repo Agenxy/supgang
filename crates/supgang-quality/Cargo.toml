@@ -1,0 +1,21 @@
+[package]
+name = "supgang-quality"
+description = "Typed repository quality gates for Supgang"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+
+[[bin]]
+name = "supgang-quality"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

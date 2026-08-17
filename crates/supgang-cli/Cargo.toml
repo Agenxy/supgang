@@ -1,0 +1,25 @@
+[package]
+name = "supgang"
+description = "Sovereign peer address discovery for computers whose addresses change"
+publish = ["crates-io"]
+categories = ["command-line-utilities", "network-programming"]
+keywords = ["discovery", "peer-to-peer", "sovereign", "networking"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+
+[[bin]]
+name = "supgang"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+supgang-core = { path = "../supgang", version = "=0.1.0" }
+
+[lints]
+workspace = true
