@@ -132,6 +132,7 @@ fn policy(root: &Path) -> Result<(), String> {
         "crates/supgang-cli/LICENSE",
         "deny.toml",
         "LICENSE",
+        "Makefile",
         "README.md",
         "SECURITY.md",
         "docs/architecture/0001-sovereign-address-plane.md",
@@ -153,6 +154,7 @@ fn policy(root: &Path) -> Result<(), String> {
     inspect_package_identity(root)?;
     inspect_duplicate_dependencies(root)?;
     inspect_dependency_policy(root)?;
+    inspect_install_policy(root)?;
     inspect_ci(root)?;
     Ok(())
 }
@@ -314,6 +316,22 @@ fn inspect_dependency_policy(root: &Path) -> Result<(), String> {
     ] {
         if !policy.contains(required) {
             return Err(format!("dependency policy is missing required constraint: {required}"));
+        }
+    }
+    Ok(())
+}
+
+fn inspect_install_policy(root: &Path) -> Result<(), String> {
+    let makefile = fs::read_to_string(root.join("Makefile")).map_err(|read_error| read_error.to_string())?;
+    for required in [
+        "INSTALL_ROOT ?= $(HOME)/.local",
+        "--frozen --force --root \"$(INSTALL_ROOT)\" --path crates/supgang-cli",
+        "\"$(INSTALL_BIN)\" --version",
+    ] {
+        if !makefile.contains(required) {
+            return Err(format!(
+                "local install policy is missing required constraint: {required}"
+            ));
         }
     }
     Ok(())

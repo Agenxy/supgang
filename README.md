@@ -70,14 +70,19 @@ supgang --version
 supgang --help
 ```
 
+`make install` replaces the current source installation in `$HOME/.local/bin`, which should precede
+package-manager paths in `PATH`. It uses Cargo's frozen mode and therefore does not refresh the
+registry or download dependencies. Milestone acceptance uses this installed command from outside
+the repository; invoking `target/release/supgang` is build evidence, not installation evidence.
+
 After the first crates.io release, the equivalent registry install is:
 
 ```text
 cargo install --locked supgang
 ```
 
-Both install forms use Cargo's normal user-local binary directory. They do not install a daemon,
-change the firewall, alter a router, create a TUN device, or contact a Supgang service.
+The registry command uses Cargo's configured binary directory. Neither install form installs a
+daemon, changes the firewall, alters a router, creates a TUN device, or contacts a Supgang service.
 
 To run without installing:
 

@@ -22,3 +22,8 @@ reviewed module.
 
 Run the complete local gate with `cargo run --locked --package supgang-quality -- all` once that gate is available. Run
 focused tests while iterating, then the complete gate before reporting completion.
+
+A milestone is not complete merely because the build-tree binary passes. Run `make install`, then from outside this
+repository verify `command -v supgang`, the installed artifact hash, `supgang --help`, `supgang --json doctor`, and the
+milestone's user-facing behavior. When a milestone changes the fleet protocol or runtime, install the same release
+artifact on every configured physical acceptance peer and repeat the applicable cross-host checks.
