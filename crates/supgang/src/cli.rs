@@ -19,6 +19,7 @@ use crate::{
         JoinBundle, MAX_JOIN_BUNDLE_BYTES, MAX_JOIN_REQUEST_BYTES, decode_join_bundle, decode_join_request,
         encode_join_bundle, encode_join_request,
     },
+    mcp,
     membership::MembershipRoles,
     profile, state, storage,
 };
@@ -122,6 +123,8 @@ enum Command {
         #[arg(value_name = "PEER")]
         peer: String,
     },
+    /// Serve read-only fleet tools over bounded MCP standard I/O.
+    Mcp,
     /// Run the sovereign peer service in the foreground.
     Run {
         /// Owner-only endpoint configuration file.
@@ -194,8 +197,10 @@ struct JoinOutput {
 /// Parses the process arguments and writes output to the process streams.
 #[must_use]
 pub fn run_from_env() -> ExitCode {
-    let mut stdout = io::stdout().lock();
-    let mut stderr = io::stderr().lock();
+    // Do not hold global stream locks: the MCP subcommand owns stdio for its
+    // asynchronous JSON-RPC transport.
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
     run(std::env::args_os(), &mut stdout, &mut stderr)
 }
 
@@ -264,6 +269,21 @@ where
         Some(Command::Revoke { node_id }) => cli_control::revoke(&state_directory, node_id, cli.json, output, error),
         Some(Command::Peers { all }) => cli_control::peers(&state_directory, cli.json, all, output, error),
         Some(Command::Resolve { peer }) => cli_control::resolve(&state_directory, &peer, cli.json, output, error),
+        Some(Command::Mcp) => {
+            if cli.json {
+                render_error(
+                    true,
+                    "mcp reserves standard output for JSON-RPC; omit --json",
+                    output,
+                    error,
+                )
+            } else {
+                match mcp::serve_stdio(state_directory) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(mcp_error) => render_error(false, &mcp_error.to_string(), output, error),
+                }
+            }
+        }
         Some(Command::Run {
             endpoints,
             port,

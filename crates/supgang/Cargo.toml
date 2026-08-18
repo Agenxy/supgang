@@ -33,11 +33,14 @@ zeroize.workspace = true
 rustix.workspace = true
 quinn.workspace = true
 rcgen.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
 rustls.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+rmcp = { workspace = true, features = ["client"] }
 tempfile = "=3.27.0"
 
 [lints]

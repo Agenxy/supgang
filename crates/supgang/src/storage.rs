@@ -227,6 +227,16 @@ pub fn open_journal(path: impl AsRef<Path>) -> Result<(Journal, Vec<Vec<u8>>), S
     Journal::open(directory.join(JOURNAL_FILE_NAME)).map_err(Into::into)
 }
 
+/// Reads and validates the authoritative journal without creating or repairing it.
+///
+/// # Errors
+///
+/// Rejects unsafe state directories and any journal integrity failure.
+pub fn read_journal(path: impl AsRef<Path>) -> Result<Vec<Vec<u8>>, StorageError> {
+    let directory = validate_directory(path.as_ref())?;
+    Journal::read(directory.join(JOURNAL_FILE_NAME)).map_err(Into::into)
+}
+
 /// Generates and durably protects a device key for an offline join request.
 ///
 /// # Errors

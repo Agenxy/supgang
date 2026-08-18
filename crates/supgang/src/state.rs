@@ -38,8 +38,8 @@ pub struct LocalState {
     sequence: u64,
     last_membership_serial: u64,
     event_count: usize,
-    journal: Journal,
-    lock: StateLock,
+    journal: Option<Journal>,
+    lock: Option<StateLock>,
 }
 
 impl core::fmt::Debug for LocalState {
@@ -108,6 +108,10 @@ impl LocalState {
         &self.revocations
     }
 
+    fn journal_mut(&mut self) -> Result<&mut Journal, StateError> {
+        self.journal.as_mut().ok_or(StateError::ReadOnlySnapshot)
+    }
+
     /// Persists the next endpoint sequence before returning it to a publisher.
     ///
     /// # Errors
@@ -120,7 +124,8 @@ impl LocalState {
             generation: self.generation,
             sequence: next,
         };
-        self.journal.append(&encode_event(&event)?)?;
+        let encoded = encode_event(&event)?;
+        self.journal_mut()?.append(&encoded)?;
         self.sequence = next;
         self.event_count = self.event_count.saturating_add(1);
         Ok(next)
@@ -222,7 +227,8 @@ impl LocalState {
         let root = self.identity.root.as_ref().ok_or(StateError::AdmissionUnavailable)?;
         let signed = SignedMembership::sign(certificate, root)?;
         let event = StateEvent::Membership(signed.clone());
-        self.journal.append(&encode_event(&event)?)?;
+        let encoded = encode_event(&event)?;
+        self.journal_mut()?.append(&encoded)?;
         self.memberships.insert(node_id, signed.clone());
         self.last_membership_serial = serial;
         self.event_count = self.event_count.saturating_add(1);
@@ -335,8 +341,8 @@ impl LocalState {
     }
 
     fn persist_revocations(&mut self, signed: SignedRevocationList) -> Result<(), StateError> {
-        self.journal
-            .append(&encode_event(&StateEvent::Revocation(signed.clone()))?)?;
+        let encoded = encode_event(&StateEvent::Revocation(signed.clone()))?;
+        self.journal_mut()?.append(&encoded)?;
         self.revocations = signed;
         self.event_count = self.event_count.saturating_add(1);
         Ok(())
@@ -400,8 +406,8 @@ pub fn initialize(path: impl AsRef<std::path::Path>) -> Result<LocalState, State
         sequence: 0,
         last_membership_serial: 1,
         event_count: 1,
-        journal,
-        lock,
+        journal: Some(journal),
+        lock: Some(lock),
     })
 }
 
@@ -416,7 +422,20 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<LocalState, StateError>
     let lock = StateLock::acquire(path)?;
     let identity = storage::load_identity(path)?;
     let (journal, frames) = storage::open_journal(path)?;
-    replay(identity, journal, lock, &frames)
+    replay(identity, Some(journal), Some(lock), &frames)
+}
+
+/// Reads and cryptographically replays local state without locking or repairing it.
+///
+/// # Errors
+///
+/// Fails closed for the same invalid state as [`open`], while never creating,
+/// truncating, or appending a filesystem entry.
+pub fn open_read_only(path: impl AsRef<std::path::Path>) -> Result<LocalState, StateError> {
+    let path = path.as_ref();
+    let identity = storage::load_identity(path)?;
+    let frames = storage::read_journal(path)?;
+    replay(identity, None, None, &frames)
 }
 
 /// Creates or deterministically re-exports this computer's pending join request.
@@ -494,6 +513,9 @@ pub enum StateError {
     /// A journal append failed.
     #[error("authoritative state could not be persisted")]
     Journal(#[from] JournalError),
+    /// A mutating operation was attempted through a read-only replay snapshot.
+    #[error("read-only local state cannot be modified")]
+    ReadOnlySnapshot,
     /// A membership was invalid.
     #[error("root-authorized membership failed validation")]
     Membership(#[from] MembershipError),

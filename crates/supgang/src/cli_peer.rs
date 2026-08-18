@@ -39,7 +39,8 @@ pub struct ImportOutput {
 }
 
 /// A non-secret row returned by `peers`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct PeerRow {
     pub name: String,
     pub name_source: String,
@@ -54,7 +55,8 @@ pub struct PeerRow {
 }
 
 /// Machine-readable peer-directory summary.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct PeersOutput {
     pub schema: String,
     pub status: String,
@@ -64,7 +66,8 @@ pub struct PeersOutput {
 }
 
 /// One explicitly requested address candidate.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ResolvedCandidate {
     pub scope: String,
     pub kind: String,
@@ -75,7 +78,8 @@ pub struct ResolvedCandidate {
 }
 
 /// Machine-readable address resolution with signed-record provenance.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ResolveOutput {
     pub schema: String,
     pub status: String,
@@ -186,14 +190,53 @@ pub fn peers(state_directory: &Path) -> Result<PeersOutput, String> {
     Ok(peers_from_directory(&directory, &root_key, unix_time()?, this_computer))
 }
 
+/// Reads the peer summary without creating a missing local profile.
+pub fn peers_read_only(state_directory: &Path) -> Result<PeersOutput, String> {
+    let local_state = state::open_read_only(state_directory).map_err(|error| error.to_string())?;
+    let root_key = local_state.identity().root_verifying_key;
+    let this_computer = stopped_local_row_read_only(state_directory, &local_state)?;
+    let directory = PeerDirectory::open_read_only(
+        state_directory,
+        root_key,
+        local_state.identity().device.node_id(),
+        local_state.revocations(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(peers_from_directory(&directory, &root_key, unix_time()?, this_computer))
+}
+
+/// Resolves a peer from validating snapshots without repairing durable state.
+pub fn resolve_read_only(state_directory: &Path, selector: &str) -> Result<ResolveOutput, String> {
+    let local_state = state::open_read_only(state_directory).map_err(|error| error.to_string())?;
+    let directory = PeerDirectory::open_read_only(
+        state_directory,
+        local_state.identity().root_verifying_key,
+        local_state.identity().device.node_id(),
+        local_state.revocations(),
+    )
+    .map_err(|error| error.to_string())?;
+    let rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    let node_id = resolve_selector_from_rows(&rows, selector)?;
+    resolve_from_directory(&directory, node_id, unix_time()?)
+}
+
 pub fn peers_from_directory(
     directory: &PeerDirectory,
     root_key: &VerifyingKey,
     now: u64,
     this_computer: PeerRow,
 ) -> PeersOutput {
+    PeersOutput {
+        schema: "supgang.peers/v3".to_owned(),
+        status: "ok".to_owned(),
+        this_computer: Some(this_computer),
+        peers: peer_rows_from_directory(directory, root_key, now),
+    }
+}
+
+fn peer_rows_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, now: u64) -> Vec<PeerRow> {
     let local_networks = crate::network::interface_networks().unwrap_or_default();
-    let peers = directory
+    directory
         .entries()
         .iter()
         .map(|(node_id, entry)| {
@@ -222,13 +265,7 @@ pub fn peers_from_directory(
                 addresses,
             }
         })
-        .collect();
-    PeersOutput {
-        schema: "supgang.peers/v3".to_owned(),
-        status: "ok".to_owned(),
-        this_computer: Some(this_computer),
-        peers,
-    }
+        .collect()
 }
 
 pub fn running_local_row(contact: &PeerContact) -> PeerRow {
@@ -260,14 +297,8 @@ pub fn resolve(state_directory: &Path, selector: &str) -> Result<ResolveOutput, 
         local_state.revocations(),
     )
     .map_err(|error| error.to_string())?;
-    let this_computer = stopped_local_row(state_directory, &local_state)?;
-    let rows = peers_from_directory(
-        &directory,
-        &local_state.identity().root_verifying_key,
-        unix_time()?,
-        this_computer,
-    );
-    let node_id = resolve_selector_from_rows(&rows.peers, selector)?;
+    let rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    let node_id = resolve_selector_from_rows(&rows, selector)?;
     resolve_from_directory(&directory, node_id, unix_time()?)
 }
 
@@ -374,11 +405,21 @@ fn resolved_with_preference(
 fn stopped_local_row(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
     let node_id = local_state.identity().device.node_id();
     let name = profile::load_or_create(state_directory, node_id).map_err(|error| error.to_string())?;
+    Ok(stopped_local_row_with_name(local_state, &name))
+}
+
+fn stopped_local_row_read_only(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
+    let name = profile::load(state_directory).map_err(|error| error.to_string())?;
+    Ok(stopped_local_row_with_name(local_state, &name))
+}
+
+fn stopped_local_row_with_name(local_state: &state::LocalState, name: &profile::PeerName) -> PeerRow {
+    let node_id = local_state.identity().device.node_id();
     let candidates = EndpointConfig::automatic(crate::endpoint_config::DEFAULT_PORT)
         .map(|config| candidates_from_config(&config))
         .unwrap_or_default();
     let preferred_index = self_preferred_index(&candidates);
-    Ok(PeerRow {
+    PeerRow {
         name: name.to_string(),
         name_source: "local-profile".to_owned(),
         fingerprint: short_fingerprint(node_id),
@@ -389,7 +430,7 @@ fn stopped_local_row(state_directory: &Path, local_state: &state::LocalState) ->
         expires_at: 0,
         candidate_count: candidates.len(),
         addresses: resolved_with_preference(&candidates, preferred_index, "local-interface"),
-    })
+    }
 }
 
 fn candidates_from_config(config: &EndpointConfig) -> Vec<EndpointCandidate> {

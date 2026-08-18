@@ -66,7 +66,7 @@ pub struct PeerDirectory {
     local_node: NodeId,
     entries: BTreeMap<NodeId, PeerEntry>,
     revocations: SignedRevocationList,
-    journal: Journal,
+    journal: Option<Journal>,
 }
 
 impl core::fmt::Debug for PeerDirectory {
@@ -95,6 +95,9 @@ pub enum PeerDirectoryError {
     /// Peer journal integrity or persistence failed.
     #[error("peer directory journal failed validation")]
     Journal(#[from] JournalError),
+    /// A mutating operation was attempted through a read-only snapshot.
+    #[error("read-only peer directory cannot be modified")]
+    ReadOnlySnapshot,
     /// A contact failed canonical or cryptographic validation.
     #[error("peer contact failed validation")]
     Contact(#[from] ContactError),
@@ -139,7 +142,41 @@ impl PeerDirectory {
             local_node,
             entries: BTreeMap::new(),
             revocations: revocations.clone(),
-            journal,
+            journal: Some(journal),
+        };
+        for frame in frames {
+            let contact = decode_contact(&frame)?;
+            contact.verify_historical(&result.root_key)?;
+            result.apply(contact, false)?;
+        }
+        Ok(result)
+    }
+
+    /// Reads and verifies the peer cache without creating or repairing it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe storage, corrupt frames, invalid historical signatures,
+    /// generation changes, and inconsistent replay.
+    pub fn open_read_only(
+        state_directory: impl AsRef<Path>,
+        root_key: VerifyingKey,
+        local_node: NodeId,
+        revocations: &SignedRevocationList,
+    ) -> Result<Self, PeerDirectoryError> {
+        let directory = validate_directory(state_directory.as_ref())?;
+        let frames = match Journal::read(directory.join(PEER_DIRECTORY_FILE_NAME)) {
+            Ok(frames) => frames,
+            Err(JournalError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        revocations.verify(&root_key)?;
+        let mut result = Self {
+            root_key,
+            local_node,
+            entries: BTreeMap::new(),
+            revocations: revocations.clone(),
+            journal: None,
         };
         for frame in frames {
             let contact = decode_contact(&frame)?;
@@ -245,12 +282,18 @@ impl PeerDirectory {
                 frames.push(encode_contact(conflict)?);
             }
         }
-        self.journal.compact(&frames)?;
+        self.journal_mut()?.compact(&frames)?;
         Ok(())
     }
 
     fn compact_if_needed(&mut self) -> Result<(), PeerDirectoryError> {
-        if self.journal.byte_len()? >= PEER_COMPACTION_THRESHOLD_BYTES {
+        if self
+            .journal
+            .as_ref()
+            .ok_or(PeerDirectoryError::ReadOnlySnapshot)?
+            .byte_len()?
+            >= PEER_COMPACTION_THRESHOLD_BYTES
+        {
             self.compact()?;
         }
         Ok(())
@@ -268,7 +311,11 @@ impl PeerDirectory {
                     return Err(PeerDirectoryError::DirectoryFull);
                 }
                 if persist {
-                    self.journal.append(&encode_contact(&contact)?)?;
+                    let encoded = encode_contact(&contact)?;
+                    self.journal
+                        .as_mut()
+                        .ok_or(PeerDirectoryError::ReadOnlySnapshot)?
+                        .append(&encoded)?;
                 }
                 self.entries.insert(
                     node_id,
@@ -288,7 +335,11 @@ impl PeerDirectory {
                     return Err(PeerDirectoryError::Equivocation);
                 }
                 if persist {
-                    self.journal.append(&encode_contact(&contact)?)?;
+                    let encoded = encode_contact(&contact)?;
+                    self.journal
+                        .as_mut()
+                        .ok_or(PeerDirectoryError::ReadOnlySnapshot)?
+                        .append(&encoded)?;
                 }
                 entry.current = contact;
                 Ok(ImportDecision::AcceptedNewer)
@@ -304,7 +355,11 @@ impl PeerDirectory {
                     return Err(PeerDirectoryError::Equivocation);
                 }
                 if persist {
-                    self.journal.append(&encode_contact(&contact)?)?;
+                    let encoded = encode_contact(&contact)?;
+                    self.journal
+                        .as_mut()
+                        .ok_or(PeerDirectoryError::ReadOnlySnapshot)?
+                        .append(&encoded)?;
                 }
                 if entry.conflict.is_none() {
                     entry.conflict = Some(contact);
@@ -317,6 +372,10 @@ impl PeerDirectory {
             }
             MergeDecision::GenerationTransitionRequired => Err(PeerDirectoryError::GenerationTransitionRequired),
         }
+    }
+
+    fn journal_mut(&mut self) -> Result<&mut Journal, PeerDirectoryError> {
+        self.journal.as_mut().ok_or(PeerDirectoryError::ReadOnlySnapshot)
     }
 }
 

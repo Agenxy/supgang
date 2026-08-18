@@ -39,8 +39,8 @@ pub(super) enum StateEvent {
 
 pub(super) fn replay(
     identity: LocalIdentity,
-    journal: Journal,
-    lock: StateLock,
+    journal: Option<Journal>,
+    lock: Option<StateLock>,
     frames: &[Vec<u8>],
 ) -> Result<LocalState, StateError> {
     let Some(first) = frames.first() else {

@@ -16,6 +16,7 @@ pub mod identity;
 pub mod ids;
 pub mod invitation;
 pub mod journal;
+pub(crate) mod mcp;
 pub mod membership;
 pub mod merge;
 pub mod network;

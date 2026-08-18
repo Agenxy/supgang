@@ -4,8 +4,8 @@ Status: implemented M1 review with endpoint record v2 and automatic interface di
 
 Date: 2026-08-16
 
-Scope: the source, manifests, protocol, foreground service, CLI, signed computer names, and local
-interface discovery in this repository snapshot. Future encrypted LAN rendezvous, NAT traversal,
+Scope: the source, manifests, protocol, foreground service, CLI, local MCP server, signed computer
+names, and local interface discovery in this repository snapshot. Future encrypted LAN rendezvous, NAT traversal,
 router mapping, owned relay, hardware key stores, updates, and release packaging are outside this
 model because they are not implemented.
 
@@ -46,6 +46,7 @@ Supgang M1 does not promise:
 | Local profile | Owner-only atomic replacement, hostname fallback, strict parser | Same-user software can rename the device |
 | Local state | Exclusive lock, framed checksummed append, sync, corruption refusal | Whole-state rollback has no external witness |
 | Local control | Mode-0600 Unix socket, same-UID kernel credential, bounded messages | Same-user hostile processes are trusted |
+| Local MCP | Bounded stdio, exact protocol revisions, strict schemas, read-only snapshot access | The configured MCP client controls where returned addresses are sent |
 | Network service | TLS 1.3, signed pin, app mutual auth, stateless retry, strict budgets | No per-source rate limiter or packet-flood benchmark yet |
 
 Trust boundaries:
@@ -62,6 +63,9 @@ Trust boundaries:
    admit, revoke, or equivocate and cannot be repaired by endpoint signatures.
 6. **Build inputs to binary.** The Rust toolchain, registry packages, AWS-LC build, CI action, and
    release process can compromise the result.
+7. **Local process to MCP client.** A same-user client launches `supgang mcp` and receives requested
+   peer addresses and identifiers over inherited standard I/O. The client and its model boundary are
+   not controlled by Supgang.
 
 ## Adversaries
 
@@ -99,6 +103,9 @@ Trust boundaries:
     durable lookup remain keyed by the full stable node ID.
 12. Automatic endpoint discovery enumerates local kernel interfaces only and makes no network
     request. Globally routed interface addresses are classified as public direct candidates.
+13. MCP exposes exactly three read-only tools. Requests, responses, and structured values have
+    separate fixed ceilings, unknown arguments fail closed, standard output carries protocol only,
+    and offline snapshots never create or repair durable state.
 
 ## Threat analysis
 
@@ -298,9 +305,30 @@ system is uncompromised. Same-user malware remains inside the current key-file t
 machine compromise can sign lies until hardware-backed keys, measured evidence, or revocation add a
 separate trustworthy boundary.
 
+### T16: MCP disclosure, confused agency, and local denial of service
+
+**Attack.** A same-user MCP client requests private topology and transmits it to an unintended model
+or service, presents a signed address as proof of reachability, passes malformed or oversized JSON,
+or attempts to turn the server into a write or network primitive.
+
+**Controls.** The MCP process communicates only through inherited standard input and output. It has
+no HTTP listener, remote authentication surface, subprocess bridge, telemetry, or public client.
+It exposes only `fleet`, `resolve`, and `status`, with closed input schemas and read-only,
+non-destructive, idempotent, closed-world annotations. Requests stop at 16 KiB, responses at 256 KiB,
+and structured values at 96 KiB. Offline access uses validating no-repair snapshots. Server
+instructions distinguish device signatures from reachability and state that the client controls the
+result destination.
+
+**Residual risk.** The user authorizes a configured MCP client to receive peer addresses and stable
+identifiers. Supgang cannot prevent that client, its model provider, terminal capture, or same-user
+malware from retaining or forwarding them. Tool annotations guide clients but are not a sandbox.
+The MCP process can briefly contend for CPU and filesystem reads within its fixed per-message and
+fleet-size ceilings.
+
 ## Verification evidence in this snapshot
 
-- 72 library tests cover canonical encoding, v1-to-v2 verification, signed names, compact fleet
+- 78 library tests cover canonical encoding, v1-to-v2 verification, signed names, compact fleet,
+  dual-era MCP lifecycle and metadata, bounded MCP framing, read-only offline snapshots,
   rendering, interface-prefix
   selection, signature mutation, cross-hive replay, invitation
   recipient binding, merge ordering, corruption, partial-tail recovery, safe permissions, special
@@ -309,7 +337,7 @@ separate trustworthy boundary.
 - The quality binary runs format, all-target check, all-feature Clippy with warnings denied, every
   test target, rustdoc warnings, repository policy, exact direct pins, duplicate review, text limits,
   shell exclusion, and unsafe-source exclusion.
-- RustSec scanned all 168 locked dependency identities with warnings denied, while cargo-deny
+- RustSec scanned all 201 locked dependency identities with warnings denied, while cargo-deny
   accepted every supported-target licence and rejected unknown registries and Git sources.
 - A macOS two-process scenario proved offline join, bilateral contact import, authenticated QUIC,
   sequence convergence, local control while the service owns state, live root revocation, immediate
