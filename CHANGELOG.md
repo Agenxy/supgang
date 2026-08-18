@@ -6,6 +6,9 @@ All notable project changes are recorded here.
 
 ### Added
 
+- Added a bounded, local standard-I/O MCP server with read-only `fleet`, `resolve`, and `status`
+  tools, exact 2025-11-25 and 2026-07-28 protocol support, structured output schemas, and explicit
+  safety annotations.
 - Recorded a redacted two-physical-host macOS run covering enrollment, direct authenticated QUIC,
   signed-record convergence, bilateral restart recovery, contact tamper rejection, and address
   privacy.
@@ -17,6 +20,9 @@ All notable project changes are recorded here.
 
 ### Security
 
+- MCP request, response, and structured-result sizes are independently capped. Offline MCP reads
+  use validating snapshots that never create or repair durable state, and the server exposes no
+  HTTP listener, authentication token, subprocess bridge, or network client.
 - Protected artifact reads now open nonblocking and no-follow before validating metadata, so FIFOs
   and other special files fail closed instead of stalling a command before validation.
 - Endpoint configuration rejects unsafe permissions, symlinks, unknown fields, duplicates, invalid

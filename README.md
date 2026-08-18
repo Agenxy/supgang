@@ -42,6 +42,9 @@ guarantee.
 - A zero-argument fleet view with this computer, peer names, short fingerprints, and the most useful
   local and public addresses. Complete candidates and provenance remain one explicit command away.
   There is no background logging of secrets or peer addresses.
+- A local read-only MCP server for Codex and other compatible agents. It supports the 2025-11-25
+  lifecycle and the stateless 2026-07-28 protocol without an account, listener, hosted service, or
+  subprocess bridge.
 
 ## The irreducible boundary
 
@@ -218,6 +221,38 @@ public IP service.
 or the full node ID. It returns addresses only while the signed record is fresh, non-conflicting,
 and non-revoked.
 
+## Use Supgang from an MCP client
+
+Supgang exposes three bounded, read-only tools over newline-delimited standard I/O:
+
+- `fleet` returns this computer and every known peer with complete signed address candidates;
+- `resolve` selects one peer by exact name, shown fingerprint, or stable node ID;
+- `status` returns the local identity and service state without returning secret keys.
+
+Register the installed binary with Codex:
+
+```text
+codex mcp add supgang -- supgang mcp
+codex mcp get supgang
+```
+
+The server implements exactly MCP 2025-11-25 and 2026-07-28. Legacy clients use
+`initialize` followed by `notifications/initialized`. Modern clients use `server/discover` and
+self-contained request metadata. Tool lists use JSON Schema 2020-12 and advertise explicit
+read-only, non-destructive, idempotent, closed-world annotations.
+
+`supgang mcp` opens no network listener and makes no public request. Each process serves one client
+over its inherited standard input and output. Requests are capped at 16 KiB, responses at 256 KiB,
+and structured tool values at 96 KiB. Offline reads validate immutable snapshots and do not create,
+append, truncate, or repair state. When `supgang run` is active, the MCP process uses the protected
+same-user local control socket.
+
+MCP clients may send tool results to a model or another system according to their own configuration.
+Supgang does not control that destination. Peer addresses and stable identifiers are intentionally
+returned only after a tool call, so configure the client according to the privacy boundary you want.
+As elsewhere in Supgang, `device-signed` proves which authorized device made a claim; it does not
+prove that the address is reachable or that the device is uncompromised.
+
 ## Revoke a computer
 
 Run this on the root-authority computer:
@@ -264,6 +299,7 @@ beyond a trusted network.
 - [Dependency identity exceptions](docs/security/dependency-exceptions.md)
 - [Two-host end-to-end validation](docs/validation/2026-08-17-two-host-e2e.md)
 - [Human peer and automatic address validation](docs/validation/2026-08-17-human-peer-address-e2e.md)
+- [Dual-protocol MCP acceptance](docs/validation/2026-08-17-mcp-dual-protocol-e2e.md)
 - [Security policy](SECURITY.md)
 
 Supgang is an [Agenxy](https://github.com/Agenxy) project and is licensed under Apache-2.0.

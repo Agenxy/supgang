@@ -2,15 +2,30 @@
 
 Status: reviewed for 0.1.0 development
 
-Supgang denies new duplicate package identities through its typed repository policy. Two temporary
-exceptions are explicit because Rust's general `multiple_crate_versions` lint cannot distinguish
-host-only build tooling from code linked into the released executable.
+Supgang denies new duplicate package identities through its typed repository policy. The reviewed
+exceptions below are explicit because Rust's general `multiple_crate_versions` lint cannot
+distinguish host-only build tooling and unsupported targets from code linked into the released
+executable.
+
+## Reviewed MCP implementation dependencies
+
+The MCP server uses `rmcp` 3.1.3, the Apache-2.0 official Rust SDK from the Model Context Protocol
+project, with default features disabled and only its `server` feature enabled. HTTP, OAuth, SSE,
+client, child-process, and subprocess transport features are absent from the release graph. The
+server supplies its own fixed-ceiling standard-I/O transport because the generic SDK reader does not
+provide Supgang's required 16 KiB request allocation bound.
+
+`schemars` 1.2.2 is an exact direct pin because Rust derive expansion requires the schema crate to
+be directly addressable. It generates JSON Schema 2020-12 for typed results. Both additions use
+permissive licences already accepted by `deny.toml`, introduce no new duplicate package identity,
+and keep all protocol handling in the existing `supgang` process.
 
 ## `syn` 2 and 3
 
-`curve25519-dalek-derive` currently uses `syn` 2. The current releases of Clap, Serde, and thiserror
-use `syn` 3. Both versions execute only while compiling procedural macros. Neither is linked into
-the Supgang executable or processes Supgang protocol input at runtime.
+`curve25519-dalek-derive` and `tracing-attributes` currently use `syn` 2. The current releases of
+Clap, Serde, futures, schemars, thiserror, and Tokio macros use `syn` 3. Both versions execute only
+while compiling procedural macros. Neither is linked into the Supgang executable or processes
+Supgang protocol input at runtime.
 
 Removing Ed25519 Dalek to collapse this build-time duplicate would replace the selected,
 well-reviewed signature implementation for a non-security reason. The exception must be removed

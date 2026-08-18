@@ -94,18 +94,7 @@ impl Journal {
             file.sync_all()?;
         }
 
-        file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        if bytes.len() < JOURNAL_MAGIC.len() || bytes.get(..JOURNAL_MAGIC.len()) != Some(JOURNAL_MAGIC) {
-            return Err(JournalError::InvalidHeader);
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_JOURNAL_BYTES {
-            return Err(JournalError::JournalFull);
-        }
-
-        let (frames, valid_length) = parse_frames(&bytes)?;
-        let actual_length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let (frames, valid_length, actual_length) = read_frames(&mut file)?;
         if valid_length < actual_length {
             file.set_len(valid_length)?;
             file.sync_all()?;
@@ -113,6 +102,22 @@ impl Journal {
         file.seek(SeekFrom::End(0))?;
 
         Ok((Self { file, path }, frames))
+    }
+
+    /// Reads and validates an existing journal without creating or repairing it.
+    ///
+    /// An incomplete final frame is ignored in the returned snapshot but is
+    /// deliberately left untouched for the exclusive writer to recover.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, unsafe, oversized, corrupt, or malformed journals.
+    pub fn read(path: impl AsRef<Path>) -> Result<Vec<Vec<u8>>, JournalError> {
+        let no_follow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| JournalError::InvalidHeader)?;
+        let mut file = OpenOptions::new().read(true).custom_flags(no_follow).open(path)?;
+        validate_metadata(&file)?;
+        let (frames, _valid_length, _actual_length) = read_frames(&mut file)?;
+        Ok(frames)
     }
 
     /// Appends and synchronizes one complete frame before returning.
@@ -215,6 +220,26 @@ impl Journal {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn read_frames(file: &mut File) -> Result<(Vec<Vec<u8>>, u64, u64), JournalError> {
+    let declared_length = file.metadata()?.len();
+    if declared_length > MAX_JOURNAL_BYTES {
+        return Err(JournalError::JournalFull);
+    }
+    let capacity = usize::try_from(declared_length).map_err(|_| JournalError::JournalFull)?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(MAX_JOURNAL_BYTES.saturating_add(1)).read_to_end(&mut bytes)?;
+    let actual_length = u64::try_from(bytes.len()).map_err(|_| JournalError::JournalFull)?;
+    if actual_length > MAX_JOURNAL_BYTES {
+        return Err(JournalError::JournalFull);
+    }
+    if bytes.len() < JOURNAL_MAGIC.len() || bytes.get(..JOURNAL_MAGIC.len()) != Some(JOURNAL_MAGIC) {
+        return Err(JournalError::InvalidHeader);
+    }
+    let (frames, valid_length) = parse_frames(&bytes)?;
+    Ok((frames, valid_length, actual_length))
 }
 
 fn write_frame(file: &mut File, payload: &[u8]) -> Result<(), JournalError> {

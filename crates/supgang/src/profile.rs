@@ -109,6 +109,16 @@ pub fn load_or_create(state_directory: &Path, node_id: NodeId) -> Result<PeerNam
     }
 }
 
+/// Loads the existing protected display name without creating one.
+///
+/// # Errors
+///
+/// Rejects missing, unsafe, malformed, oversized, or unsupported profiles.
+pub fn load(state_directory: &Path) -> Result<PeerName, ProfileError> {
+    let directory = validate_directory(state_directory)?;
+    load_path(&directory.join(PROFILE_FILE_NAME))
+}
+
 /// Replaces the local display name atomically.
 ///
 /// # Errors
