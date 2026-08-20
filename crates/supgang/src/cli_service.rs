@@ -48,7 +48,7 @@ pub fn run(state_directory: &Path, options: RunOptions<'_>, output: &mut dyn Wri
         } else {
             writeln!(
                 output,
-                "Supgang is running in strict sovereign mode with {} advertised candidate(s).",
+                "Supgang is running in strict mode with {} advertised candidate(s).",
                 ready.candidate_count
             )?;
         }
