@@ -12,7 +12,7 @@ fixed anchor, no VPN data plane, and recovery through only the user's devices.
 
 The implemented M1 stack is Rust 1.97.1 with Quinn 0.11.11, rustls 0.23.43, AWS-LC, Tokio 1.53.1,
 Ed25519 Dalek 3.0.0, and canonical Minicbor 2.3.0. Every direct version is exact and the lockfile is
-committed. `noq` remains research input, not a shipping dependency.
+committed. `noq` remains research input. It does not ship as a dependency.
 
 Rust is the best choice for this project at the current boundary because:
 
@@ -152,7 +152,7 @@ cache compacts atomically at 8 MiB.
 Go is the runner-up. It offers simple static distribution, excellent concurrency tooling, and mature
 libp2p. Selecting libp2p would bring a substantially wider stack; reimplementing the narrow secure
 transport and platform boundaries would give up the strongest current Rust ecosystem advantage.
-Garbage collection is not disqualifying, but it is unnecessary for this small persistent daemon.
+Garbage collection would be acceptable here, and is unnecessary for a persistent daemon this small.
 
 ### Swift
 
