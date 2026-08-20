@@ -206,8 +206,9 @@ applications owned by the user.
 writers, or a stale socket.
 
 **Controls.** Directory ownership and `0700` validation, file ownership and `0600` validation,
-safe create semantics, exclusive state lock, checksummed frames, final-tail recovery only, sync
-before return, atomic peer compaction, and stale-socket removal only after ownership and type checks.
+nonblocking no-follow opens before file-type validation, safe create semantics, exclusive state
+lock, checksummed frames, final-tail recovery only, sync before return, atomic peer compaction, and
+stale-socket removal only after ownership and type checks.
 
 **Residual risk.** Filesystem or kernel implementations that lie about durability are outside the
 model. Crash injection has covered unit-level tails and initialization windows, not every system
@@ -233,8 +234,10 @@ a reachable authority or third party.
 URLs, or broad status output.
 
 **Controls.** No telemetry or public service client exists. The service dials only user-supplied or
-cryptographically imported candidate sockets. Ordinary operation has no logger. `peers` hides
-addresses; only exact `resolve` reveals them. Debug implementations redact secret bytes.
+cryptographically imported candidate sockets. Endpoint addresses enter through a bounded owner-only
+file rather than process arguments. Ordinary startup output has no address, ordinary operation has
+no logger, and `peers` hides addresses; only exact `resolve` reveals them. Debug implementations
+redact secret bytes.
 
 **Residual risk.** Authorized peers necessarily learn endpoint and timing metadata. CLI JSON can be
 captured by the caller. Strict-mode egress has not yet been proved inside a Linux network namespace.
@@ -254,10 +257,10 @@ exists, and a compromised toolchain or CI runner remains capable of replacing bu
 
 ## Verification evidence in this snapshot
 
-- 55 library tests cover canonical encoding, signature mutation, cross-hive replay, invitation
-  recipient binding, merge ordering, corruption, partial-tail recovery, safe permissions, locks,
-  transport pinning, mutual authentication, revocation monotonicity, control framing, and arbitrary
-  decoder input.
+- 60 library tests cover canonical encoding, signature mutation, cross-hive replay, invitation
+  recipient binding, merge ordering, corruption, partial-tail recovery, safe permissions, special
+  file rejection, endpoint configuration bounds, locks, transport pinning, mutual authentication,
+  revocation monotonicity, control framing, and arbitrary decoder input.
 - The quality binary runs format, all-target check, all-feature Clippy with warnings denied, every
   test target, rustdoc warnings, repository policy, exact direct pins, duplicate review, text limits,
   shell exclusion, and unsafe-source exclusion.
@@ -267,6 +270,10 @@ exists, and a compromised toolchain or CI runner remains capable of replacing bu
   sequence convergence, local control while the service owns state, live root revocation, immediate
   signed notice, target persistence and exit, authority-side resolution denial, `doctor` error, and
   restart denial.
+- A separate two-physical-host macOS scenario proved recipient-bound enrollment, direct
+  authenticated QUIC, signed-record convergence, bilateral restart recovery, address-redacted
+  process surfaces, and contact-tamper rejection without accepted-state change. The redacted record
+  is in `docs/validation/2026-08-17-two-host-e2e.md`.
 
 ## Release blockers beyond M1
 
