@@ -1,6 +1,6 @@
 # Supgang
 
-Supgang is a sovereign address plane for a person's own computers. It gives each computer a stable
+Supgang keeps track of where a person's own computers currently are. It gives each computer a stable
 cryptographic identity and lets authorized members exchange fresh, signed network addresses even
 when the addresses themselves change.
 

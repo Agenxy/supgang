@@ -1,9 +1,9 @@
 [package]
 name = "supgang"
-description = "Sovereign peer address discovery for computers whose addresses change"
+description = "Finds the current address of a computer whose address keeps changing"
 publish = ["crates-io"]
 categories = ["command-line-utilities", "network-programming"]
-keywords = ["discovery", "peer-to-peer", "sovereign", "networking"]
+keywords = ["discovery", "peer-to-peer", "dynamic-ip", "networking"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

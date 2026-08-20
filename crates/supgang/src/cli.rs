@@ -31,7 +31,7 @@ const EXIT_FAILURE: u8 = 3;
 #[command(
     name = "supgang",
     version,
-    about = "Sovereign peer address discovery for your own computers",
+    about = "Finds the current address of your own computers",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -45,7 +45,7 @@ struct Cli {
     command: Command,
 }
 
-/// Stable local and sovereign peer command surface.
+/// Stable local and peer command surface.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Create a new private hive and this computer's identity.
@@ -113,7 +113,7 @@ enum Command {
         #[arg(value_name = "NODE_ID")]
         node_id: NodeId,
     },
-    /// Run the sovereign peer service in the foreground.
+    /// Run the peer service in the foreground.
     Run {
         /// Local UDP socket on which to accept QUIC connections.
         #[arg(long, value_name = "IP:PORT")]
