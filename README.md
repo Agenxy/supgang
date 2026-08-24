@@ -1,3 +1,5 @@
+<img src="docs/icon.svg" width="72" height="72" alt="">
+
 # Supgang
 
 Supgang keeps track of where a person's own computers currently are. It gives each computer a stable

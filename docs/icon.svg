@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Supgang">
+  <title>Supgang</title>
+  <!-- Three peers that know each other directly, and one of them has moved.
+       The moved peer is the only coloured element, because a changed address is
+       an event and belonging to the group is a state. Nothing sits in the
+       middle: there is no server in this picture, and the mark must not imply
+       one.
+
+       The three are placed asymmetrically on purpose. An even triangle was
+       drawn first and it read as a downward arrow, which at small sizes is the
+       download glyph: the wrong verb entirely for a thing that finds an address
+       rather than fetches a file. Uneven placement reads as machines, not as a
+       symbol.
+
+       All three edges carry equal stroke. An earlier version thinned the edges
+       touching the moved peer to suggest a stale link, which read as a broken
+       network, the opposite of the claim: the peer is FOUND again, under the
+       same identity.
+
+       Tile, stroke weight and accent rule follow docs/icon.svg in Agenxy/dibs.
+       Accent is Agenxy's pigment-1 token (madder) converted from
+       oklch(70% 0.145 32), the dark-surface variant, since the tile is dark. -->
+  <rect width="32" height="32" rx="7.5" fill="#131518"/>
+  <g fill="none" stroke="#dcdee2" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.4 12.9 L22.6 8.9"/>
+    <path d="M9.4 12.9 L17.4 22.9"/>
+    <path d="M22.6 8.9 L17.4 22.9"/>
+  </g>
+  <circle cx="9.4" cy="12.9" r="2.9" fill="#dcdee2"/>
+  <circle cx="22.6" cy="8.9" r="2.9" fill="#dcdee2"/>
+  <circle cx="17.4" cy="22.9" r="2.9" fill="#ea7963"/>
+</svg>
