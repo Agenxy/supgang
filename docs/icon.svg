@@ -17,8 +17,8 @@
        network, the opposite of the claim: the peer is FOUND again, under the
        same identity.
 
-       Tile, stroke weight and accent rule follow docs/icon.svg in Agenxy/dibs.
-       Accent is Agenxy's pigment-1 token (madder) converted from
+       Tile, stroke weight and accent rule are the shared mark conventions.
+       Accent is the madder pigment, converted from
        oklch(70% 0.145 32), the dark-surface variant, since the tile is dark. -->
   <rect width="32" height="32" rx="7.5" fill="#131518"/>
   <g fill="none" stroke="#dcdee2" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
