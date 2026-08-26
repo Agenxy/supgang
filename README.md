@@ -11,9 +11,11 @@ kill switch, or required server. Strict operation uses only the computers and ne
 user supplies.
 
 Status: pre-release M1 implementation for macOS and Linux. The direct peer protocol and CLI are
-working and adversarially tested. Automatic LAN rendezvous, NAT hole punching, router mapping,
-user-owned relay mode, topology health, native key stores, and service packages are later
-milestones. Do not treat this snapshot as a production remote-access guarantee.
+working and adversarially tested, including a
+[two-physical-host macOS run](docs/validation/2026-08-17-two-host-e2e.md). Automatic LAN
+rendezvous, NAT hole punching, router mapping, user-owned relay mode, topology health, native key
+stores, and service packages are later milestones. Do not treat this snapshot as a production
+remote-access guarantee.
 
 ## What works now
 
@@ -112,16 +114,26 @@ private key. Move or destroy them according to your own backup policy after the 
 ## Bootstrap direct contact
 
 The current milestone intentionally requires one explicit initial contact exchange. On each
-computer, publish the address on which its foreground service will listen:
+computer, create an owner-only endpoint file without putting addresses in process arguments:
+
+```text
+{
+  "listen": "0.0.0.0:44330",
+  "candidates": [
+    {"kind": "local", "address": "192.168.1.20:44330"}
+  ]
+}
+```
+
+Set the file to mode `0600`. Use `kind: "direct"` with `[PUBLIC_IPV6]:44330` or
+`PUBLIC_IPV4:44330` only for a genuinely globally routed address. Then publish a signed contact:
 
 ```text
 supgang --state-dir "$HOME/.local/share/supgang" publish ./this-computer.contact \
-  --local 192.168.1.20:44330
+  --endpoints ./endpoints.json
 ```
 
-Use `--direct [PUBLIC_IPV6]:44330` or `--direct PUBLIC_IPV4:44330` only after replacing the
-placeholder with a genuinely globally routed address. Carry each signed contact to the other
-computer and import it:
+Carry each signed contact to the other computer and import it:
 
 ```text
 supgang --state-dir "$HOME/.local/share/supgang" import ./other-computer.contact
@@ -131,8 +143,7 @@ Then run the service in the foreground on each computer:
 
 ```text
 supgang --state-dir "$HOME/.local/share/supgang" run \
-  --listen 0.0.0.0:44330 \
-  --local 192.168.1.20:44330
+  --endpoints ./endpoints.json
 ```
 
 The lower stable node identifier is the canonical connection initiator for a pair. This avoids
@@ -168,6 +179,9 @@ it, exits, and refuses future startup. Repeating the command is idempotent.
 
 - State directories must be owned by the current user and mode `0700`; sensitive files and the
   control socket must be mode `0600`. Symlinks and permissive state are rejected.
+- Endpoint configuration must be an owner-only mode-`0600` regular file. It is bounded to 4 KiB,
+  rejects unknown fields and duplicate or invalid candidates, and keeps private topology out of
+  process arguments and ordinary startup output.
 - Root, device, and transport signing roles use separate Rust types and signature domains.
 - The TLS provider prefers the standardized hybrid key exchange supported by rustls/AWS-LC, but
   device signatures are Ed25519. Supgang is not fully post-quantum.
@@ -187,6 +201,7 @@ beyond a trusted network.
 - [Stack and prior-art research](docs/research/stack-and-prior-art.md)
 - [Threat model](docs/security/threat-model.md)
 - [Dependency identity exceptions](docs/security/dependency-exceptions.md)
+- [Two-host end-to-end validation](docs/validation/2026-08-17-two-host-e2e.md)
 - [Security policy](SECURITY.md)
 
 Supgang is an [Agenxy](https://github.com/Agenxy) project and is licensed under Apache-2.0.

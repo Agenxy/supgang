@@ -1,6 +1,6 @@
 //! Peer-contact CLI operations kept separate from argument and rendering policy.
 
-use std::{net::SocketAddr, path::Path, time::SystemTime};
+use std::{path::Path, time::SystemTime};
 
 use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use crate::{
     artifact,
     candidate::{CandidateKind, CandidateTransport, EndpointCandidate},
     contact::{MAX_CONTACT_BYTES, PeerContact, decode_contact, encode_contact},
+    endpoint_config::EndpointConfig,
     ids::NodeId,
     peer_directory::{ImportDecision, PeerDirectory},
     record::Capabilities,
@@ -78,24 +79,21 @@ pub struct ResolveOutput {
 pub fn publish(
     state_directory: &Path,
     output_path: &Path,
-    local_addresses: &[SocketAddr],
-    direct_addresses: &[SocketAddr],
+    endpoint_path: &Path,
     lifetime_hours: u16,
 ) -> Result<PublishOutput, String> {
     if !(1..=168).contains(&lifetime_hours) {
         return Err("contact lifetime must be from 1 through 168 hours".to_owned());
     }
-    if local_addresses.is_empty() && direct_addresses.is_empty() {
-        return Err("publish requires at least one --local or --direct address".to_owned());
-    }
-    let mut candidates = Vec::with_capacity(local_addresses.len().saturating_add(direct_addresses.len()));
-    for address in local_addresses {
+    let endpoints = EndpointConfig::read(endpoint_path)?;
+    let mut candidates = Vec::with_capacity(endpoints.local().len().saturating_add(endpoints.direct().len()));
+    for address in endpoints.local() {
         candidates.push(
             EndpointCandidate::new(CandidateKind::Local, CandidateTransport::QuicV1, *address)
                 .map_err(|error| error.to_string())?,
         );
     }
-    for address in direct_addresses {
+    for address in endpoints.direct() {
         candidates.push(
             EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, *address)
                 .map_err(|error| error.to_string())?,

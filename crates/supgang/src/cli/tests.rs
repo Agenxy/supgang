@@ -1,5 +1,14 @@
 use super::run;
 
+fn write_endpoints(path: &std::path::Path, listen: &str, kind: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let document = serde_json::json!({
+        "listen": listen,
+        "candidates": [{"kind": kind, "address": listen}],
+    });
+    crate::artifact::write_new(path, serde_json::to_string(&document)?.as_bytes(), 4 * 1024)?;
+    Ok(())
+}
+
 fn run_json(arguments: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut output = Vec::new();
     let mut error = Vec::new();
@@ -20,6 +29,22 @@ fn help_and_version_are_successful_stdout_commands() {
         assert!(!output.is_empty());
         assert!(error.is_empty());
     }
+}
+
+#[test]
+fn endpoint_addresses_are_not_accepted_as_command_arguments() -> Result<(), Box<dyn std::error::Error>> {
+    for command in ["publish", "run"] {
+        let mut output = Vec::new();
+        let mut error = Vec::new();
+        let code = run(["supgang", command, "--help"], &mut output, &mut error);
+        assert_eq!(code, std::process::ExitCode::SUCCESS);
+        let help = String::from_utf8(output)?;
+        for forbidden in ["--local", "--direct", "--listen", "IP:PORT"] {
+            assert!(!help.contains(forbidden), "{command} help exposed {forbidden}");
+        }
+        assert!(help.contains("--endpoints <PATH>"));
+    }
+    Ok(())
 }
 
 #[test]
@@ -113,11 +138,13 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
     let request = directory.path().join("join.request");
     let bundle = directory.path().join("join.bundle");
     let contact = directory.path().join("joiner.contact");
+    let endpoints = directory.path().join("joiner.endpoints.json");
     let founder_text = founder.to_str().ok_or("founder path was not UTF-8")?;
     let joiner_text = joiner.to_str().ok_or("joiner path was not UTF-8")?;
     let request_text = request.to_str().ok_or("request path was not UTF-8")?;
     let bundle_text = bundle.to_str().ok_or("bundle path was not UTF-8")?;
     let contact_text = contact.to_str().ok_or("contact path was not UTF-8")?;
+    let endpoints_text = endpoints.to_str().ok_or("endpoint path was not UTF-8")?;
 
     run_json(&["supgang", "--json", "--state-dir", founder_text, "init"])?;
     let requested = run_json(&[
@@ -138,6 +165,7 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         bundle_text,
     ])?;
     run_json(&["supgang", "--json", "--state-dir", joiner_text, "join", bundle_text])?;
+    write_endpoints(&endpoints, "127.0.0.1:4433", "local")?;
     run_json(&[
         "supgang",
         "--json",
@@ -145,8 +173,8 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         joiner_text,
         "publish",
         contact_text,
-        "--local",
-        "127.0.0.1:4433",
+        "--endpoints",
+        endpoints_text,
     ])?;
     run_json(&["supgang", "--json", "--state-dir", founder_text, "import", contact_text])?;
     let node_id = requested

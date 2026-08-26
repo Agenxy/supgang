@@ -4,6 +4,24 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
+### Added
+
+- Recorded a redacted two-physical-host macOS run covering enrollment, direct authenticated QUIC,
+  signed-record convergence, bilateral restart recovery, contact tamper rejection, and address
+  privacy.
+
+### Changed
+
+- Replaced address-bearing `publish` and `run` arguments with one bounded owner-only endpoint
+  configuration file, and removed the listen address from ordinary startup JSON.
+
+### Security
+
+- Protected artifact reads now open nonblocking and no-follow before validating metadata, so FIFOs
+  and other special files fail closed instead of stalling a command before validation.
+- Endpoint configuration rejects unsafe permissions, symlinks, unknown fields, duplicates, invalid
+  address classifications, and candidate sets beyond the eight-entry protocol ceiling.
+
 ## 0.1.0 - 2026-08-16
 
 ### Added

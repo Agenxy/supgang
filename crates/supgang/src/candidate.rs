@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// The maximum number of candidates accepted in one endpoint record.
-pub const MAX_CANDIDATES: usize = 16;
+pub const MAX_CANDIDATES: usize = 8;
 
 /// The provenance and expected reachability scope of a candidate.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
