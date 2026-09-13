@@ -1,6 +1,6 @@
 # ADR 0001: Sovereign address plane
 
-Status: accepted for M1, later milestones remain provisional
+Status: corrective wide-area work in progress; physical WAN acceptance has not passed
 
 Date: 2026-08-16
 
@@ -12,8 +12,11 @@ describing where it might currently be reached. Authorized devices reconcile tho
 mutually authenticated QUIC.
 
 Strict mode has no public DHT, DNS publisher, STUN server, hosted control plane, account, telemetry,
-or vendor relay. A future introducer or relay must be another instance owned and operated by the
-user. Losing every communication edge remains an unrecoverable partition until some edge returns.
+or vendor relay. Automatic mode may ask the attached local gateway for a UDP mapping through PCP or
+NAT-PMP. Any authenticated member can coordinate a direct-path attempt between two other
+connected members, and an explicit anchor mode lets one user-owned instance retain more such
+connections. A future control relay must also be owned and operated by the user. Losing every
+communication edge remains an unrecoverable partition until some edge returns.
 
 The portable implementation is Rust 2024 with Quinn 0.11.11, rustls 0.23.43, and AWS-LC. The earlier
 `noq` spike proposal was rejected for M1: its young and experimental NAT extensions did not justify
@@ -23,9 +26,13 @@ not require changing durable state.
 
 ## Implemented system shape
 
-One unprivileged `supgang` binary has two roles:
+One unprivileged `supgang` binary has three runtime roles:
 
-- `supgang run` owns mutable state and the QUIC endpoint in the foreground.
+- `supgang run` owns mutable state and the QUIC endpoint. It can run directly in the foreground or
+  under the native per-user service installed by `supgang service install`.
+- `supgang anchor` runs the same authenticated protocol as a user-owned meeting point with a fixed
+  64-neighbor ceiling. It accepts inbound sessions and participates in bounded synchronized
+  outbound recovery. `supgang service install --anchor` installs that role.
 - CLI commands use a mode-0600 Unix socket and same-UID peer credentials while the service runs.
 
 Without a running service, a command acquires the same exclusive state lock before mutation. There
@@ -35,7 +42,9 @@ is no TUN device, privileged daemon, helper process, or shell-owned business log
 flowchart LR
     U["Local user or tool"] -->|"owner-only Unix socket"| S["Supgang service"]
     S --> J["checksum journals and protected keys"]
+    S -->|"PCP or NAT-PMP"| G["Attached gateway"]
     S <-->|"TLS 1.3 QUIC and app mutual auth"| P1["Authorized peer"]
+    S -.->|"bounded observed-socket introduction"| P2["Authorized peer"]
     P1 <-->|"bounded signed anti-entropy"| P2["Authorized peer"]
     P2 --> A["fresh signed endpoint candidates"]
 ```
@@ -74,12 +83,16 @@ An endpoint record contains:
 | `capabilities` | Versioned authorization-compatible bitset. |
 | `signature` | Domain-separated Ed25519 signature over canonical bytes. |
 
-M1 supports local, direct public, and authenticated-peer-observed reflexive candidates. Active
-non-loopback interface addresses are discovered from the local kernel without network egress.
-Private and non-global addresses are local; globally routed interface addresses are direct public
-candidates. An owner-only explicit configuration can replace automatic discovery. Candidate types
-have strict address-scope checks. A peer-observed socket is an address hint only; the target still
-has to prove its membership, device signature, transport pin, and TLS exporter binding.
+The current tree supports local, direct public, local-gateway-mapped, and
+authenticated-peer-observed reflexive candidates. Active non-loopback interface addresses are
+discovered from the local kernel without network egress. Explicitly owner-enabled router mapping sends bounded PCP
+or NAT-PMP requests only to the attached gateway; UPnP is disabled. Private and non-global addresses
+are local. Globally routed interface addresses and scope-checked gateway mapping results are public
+candidates. Gateway-driven signed updates are limited to four per five minutes and remain visibly
+unverified until an authenticated peer independently reports the socket. An owner-only explicit
+configuration can replace automatic discovery. Candidate types have strict address-scope checks.
+Every mapped or peer-observed socket remains only a dial hint; the target still has to prove its
+membership, device signature, transport pin, and TLS exporter binding.
 
 Endpoint record v2 adds a bounded portable ASCII display name under a new signature domain. The
 decoder continues to verify v1 records under the v1 domain, using a fingerprint-derived fallback
@@ -98,8 +111,10 @@ Merge is deterministic:
 5. Reject generation changes until a separate root-authorized transition exists.
 
 The local sequence is appended and synchronized before the corresponding signed record is returned.
-A whole-disk rollback can still restore the journal and keys together; M1 has no external rollback
-witness or generation-recovery command.
+A fixed-size checksummed head witness binds each committed journal length, frame count, and prefix
+digest. Reopening detects committed-tail truncation and permits recovery only for bytes beyond the
+last witnessed prefix. A whole-disk rollback can still restore the journal, witness, and keys
+together; M1 has no external monotonic witness or generation-recovery command.
 
 ## Transport and session
 
@@ -112,9 +127,25 @@ witness or generation-recovery command.
 - Every frame and nested object has an independent size and count limit.
 - The transport permits four bidirectional streams and two unidirectional control streams per
   connection, with 64 KiB stream and 256 KiB connection receive windows.
-- At most eight authenticated neighbors and 32 pending peer events are retained.
-- For each node pair, the lower `NodeId` is the canonical dialer. The other side accepts. This
-  removes simultaneous application-handshake livelock and duplicate sessions without a coordinator.
+- At most eight authenticated neighbors in device mode or 64 in explicit anchor mode, eight pending
+  inbound and eight separately reserved outbound session tasks, 16 short-lived peer-recovery
+  intents, and 32 pending peer events are retained. Native IPv6 sources share a `/64` admission
+  budget; IPv4 sources, including mapped aliases, share a single-address budget.
+- For each node pair, the lower `NodeId` is the canonical dialer and retries every round. The other
+  side makes one recovery probe per four rounds. Retry boundaries are derived from the hive and wall
+  clock so two members can transmit in the same NAT binding window. Up to four ranked addresses are
+  raced with 125 ms spacing. Both endpoints retain a reverse-direction connection as a temporary
+  fallback; a preferred connection replaces it deterministically. The same rule lets devices hold
+  outbound-created anchor sessions without duplicate-session livelock.
+- On an authenticated session, a member may request an introduction to another member currently
+  connected to the same process. The introducer sends each side only the remote socket observed on
+  the other's authenticated QUIC connection. Both sides try the socket from their existing bound
+  endpoint. The attempt still requires the expected transport pin and mutual device proof.
+- An observed-socket offer is a canonical datagram capped at 256 bytes. It is ignored unless the
+  receiver independently attempted that named peer in the last 30 seconds, and the first accepted
+  offer consumes that intent. Only globally routed sockets can enter the attempt scheduler; private,
+  loopback, link-local, invalid, future-version, repeated, unsolicited, and excess offers do not
+  change durable state.
 
 Rustls with AWS-LC is configured to prefer its post-quantum hybrid group. Ed25519 membership and
 device signatures remain classical, so Supgang is not fully post-quantum.
@@ -125,9 +156,9 @@ M1 uses rotating pages rather than a general gossip framework. Each authenticate
 at most eight contacts plus the latest root-signed revocation snapshot. Pages repeat safely and all
 contacts are independently verified before a durable import.
 
-When a newer revocation snapshot is committed, the service pushes it immediately on a one-way QUIC
-control stream to established peers and waits for transport acknowledgement within two seconds.
-The revoked connection is then closed. A target that learns its own valid revocation persists it,
+Newer revocation snapshots are prioritized in every bounded authenticated anti-entropy page and on
+the paced revocation intake stream. No detached fanout task is created per peer. The revoked local
+connection is invalidated immediately. A target that learns its own valid revocation persists it,
 exits with a distinct error, and refuses readiness on restart.
 
 Invalid peer content is connection-local. Invalid canonical data or signatures close that peer.
@@ -144,7 +175,7 @@ State uses purpose-built append-only journals instead of the proposed redb depen
 - recovery only for a partial final frame;
 - fail-closed behavior for corruption before the tail;
 - atomic peer-cache compaction through owner-only replacement, file sync, rename, and parent sync;
-- owner, type, permission, and symlink checks;
+- descriptor-based owner, type, mode, extended-ACL, and symlink checks;
 - a bounded mode-0600 endpoint JSON file, keeping peer addresses out of process arguments and
   ordinary startup output;
 - one process lock for mutable state.
@@ -155,49 +186,67 @@ running as the owner.
 
 ## Failure model
 
-Supgang can converge only while some usable edge crosses every relevant partition. M1 tries:
+Supgang can converge only while some usable edge crosses every relevant partition. The current tree
+tries:
 
 1. the established authenticated connection;
 2. fresh signed local or direct candidates;
-3. historically authenticated remembered candidates;
-4. new candidates learned through another reachable member.
+3. a globally routed UDP mapping returned by the attached gateway;
+4. historically authenticated remembered candidates;
+5. a synchronized bilateral attempt to the same remembered candidates;
+6. observed sockets exchanged through a mutually authenticated connected member;
+7. signed records and introductions through an explicit user-owned anchor.
 
-There is no M1 multicast rendezvous, automatic router mapping, public address oracle, coordinated
-hole punching, or relay. Local interfaces are enumerated automatically, but an operator must still
-seed at least one contact path.
+There is no public address oracle, public rendezvous service, general traffic relay, or guaranteed
+hard-NAT traversal. Router mapping cannot cross CGNAT, cannot open every host firewall, and depends
+on local gateway support. Peer-assisted traversal needs both targets to remain connected to at
+least one common member and still fails on some endpoint-dependent NATs or UDP-blocking networks.
+An anchor avoids changes to each edge router only when the anchor itself already has a reachable
+path. An operator must still seed the initial signed contacts.
 
 ## Milestones
 
-### M1: implemented direct kernel
+### M1: implemented direct kernel, failed primary WAN acceptance
 
 - identity, membership, recipient-bound offline join, and revocation;
 - canonical signed endpoint records and deterministic merge;
 - signed display names and no-egress local interface address discovery;
 - durable state, peer cache, local control, and foreground service;
 - pinned QUIC, mutual application authentication, bounded reconciliation, and direct candidates;
-- macOS live two-physical-host validation and repository quality gate.
+- macOS live two-physical-host validation on one local network and repository quality gate;
+- failed Laptop A-to-Home B rerun after Laptop A moved outside that network.
+
+### Corrective WAN gate: implemented in source, physical acceptance pending
+
+- automatic renewable PCP and NAT-PMP UDP mapping with network-change replacement, rate-limited
+  signed hints, explicit unverified provenance, and orderly release;
+- separate signed-address validity from current authenticated connection state in human, JSON, and
+  MCP output;
+- ranked candidate racing, hive-synchronized bilateral retries, authenticated observed-socket
+  introduction, and an explicit bounded user-owned anchor role;
+- pass an installed-build Laptop A-to-Home B rerun from separate networks before release.
 
 ### M2: local and changing networks
 
 - privacy-preserving encrypted LAN rendezvous;
 - platform network-change notification and prompt record refresh;
-- multi-candidate racing, measured backoff, and stronger observation provenance;
+- measured path quality and stronger observation provenance;
 - generation recovery with rollback handling.
 
 ### M3: difficult wide-area paths
 
-- measured QUIC address discovery and NAT traversal experiment;
-- explicit PCP or NAT-PMP policy with safe teardown;
-- user-owned introduction and constrained relay;
+- measured hard-NAT port prediction and NAT64 experiment;
+- user-owned constrained control relay for networks that block direct UDP;
 - topology cut analysis and honest resilience reporting.
 
 ### M4: release engineering
 
 - Keychain and Linux protected-key providers;
-- LaunchAgent and systemd user packages, manpage, and completions;
+- distributable service packages, manpage, and completions;
 - Linux and macOS architecture matrix, fuzzing, and load tests;
-- embedded-root TUF verification, signed reproducible artifacts, provenance, and atomic upgrades as
-  specified in `docs/security/secure-updates.md`.
+- production TUF threshold-key ceremony, signed reproducible artifacts, provenance, and
+  cross-platform physical acceptance for the implemented locally pinned verifier, peer carriage,
+  and atomic A/B supervisor specified in `docs/security/secure-updates.md`.
 
 ## Consequences
 
@@ -210,8 +259,9 @@ Positive:
 
 Costs:
 
-- M1 requires explicit bootstrap and at least one surviving path.
-- Deterministic dial direction can lose a path in an unusually asymmetric firewall policy; future
-  coordinated traversal must retain duplicate suppression without assuming symmetric reachability.
+- The system requires explicit bootstrap and at least one surviving or newly reachable path.
+- A one-way firewall can still block the only currently reachable direction. Secondary recovery
+  probes and router mapping reduce dependence on symmetry but cannot create a path through a host
+  firewall or CGNAT.
 - The founder's file-protected online root is not the desired final key posture.
 - Direct peers learn network addresses and relationship metadata by design.

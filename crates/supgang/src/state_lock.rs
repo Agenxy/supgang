@@ -57,6 +57,9 @@ impl StateLock {
             .mode(0o600)
             .custom_flags(no_follow_flag()?)
             .open(path)?;
+        if !existed {
+            supgang_acl::clear_inherited_acl(&file)?;
+        }
         validate_owner_file_metadata(&file)?;
         match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {}

@@ -6,6 +6,9 @@ use thiserror::Error;
 
 use crate::{
     contact::{MAX_CONTACT_BYTES, PeerContact, decode_contact, encode_contact},
+    reachability::{
+        MAX_REACHABILITY_CLAIM_BYTES, MAX_REACHABILITY_CLAIMS, ReachabilityClaim, decode_claim, encode_claim,
+    },
     revocation::{
         MAX_SIGNED_REVOCATION_BYTES, SignedRevocationList, decode_signed_revocations, encode_signed_revocations,
     },
@@ -18,7 +21,7 @@ pub const MAX_SYNC_FRAME_BYTES: usize = 64 * 1024;
 /// Maximum root-signed revocation notice frame accepted on a one-way stream.
 pub const MAX_REVOCATION_NOTICE_FRAME_BYTES: usize = 10 * 1024;
 
-const SYNC_VERSION: u16 = 2;
+const SYNC_VERSION: u16 = 3;
 const SYNC_OFFER: u8 = 1;
 const SYNC_REPLY: u8 = 2;
 const REVOCATION_NOTICE_VERSION: u16 = 1;
@@ -44,6 +47,9 @@ pub enum SyncError {
     /// A nested root-signed revocation snapshot was malformed.
     #[error("peer contact synchronization contained invalid revocation state")]
     InvalidRevocation,
+    /// A nested reachability claim was malformed or oversized.
+    #[error("peer contact synchronization contained an invalid reachability claim")]
+    InvalidReachability,
 }
 
 /// One bounded anti-entropy page.
@@ -51,6 +57,8 @@ pub enum SyncError {
 pub struct SyncPage {
     /// Rotating contact subset.
     pub contacts: Vec<PeerContact>,
+    /// Short-lived reporter-bound addresses, never authoritative endpoint state.
+    pub reachability: Vec<ReachabilityClaim>,
     /// Latest root-signed revocation snapshot.
     pub revocations: SignedRevocationList,
 }
@@ -67,8 +75,25 @@ pub struct SyncPage {
 pub async fn exchange_outbound(connection: &Connection, page: &SyncPage) -> Result<SyncPage, SyncError> {
     let offer = encode_bundle(SYNC_OFFER, page)?;
     let (mut send, mut receive) = connection.open_bi().await.map_err(|_| SyncError::Transport)?;
-    write_frame(&mut send, &offer, MAX_SYNC_FRAME_BYTES).await?;
-    let reply = decode_bundle(&read_frame(&mut receive, MAX_SYNC_FRAME_BYTES).await?, SYNC_REPLY)?;
+    exchange_outbound_encoded(&mut send, &mut receive, &offer).await
+}
+
+pub(crate) async fn exchange_outbound_stream(
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+    page: &SyncPage,
+) -> Result<SyncPage, SyncError> {
+    let offer = encode_bundle(SYNC_OFFER, page)?;
+    exchange_outbound_encoded(send, receive, &offer).await
+}
+
+async fn exchange_outbound_encoded(
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+    offer: &[u8],
+) -> Result<SyncPage, SyncError> {
+    write_frame(send, offer, MAX_SYNC_FRAME_BYTES).await?;
+    let reply = decode_bundle(&read_frame(receive, MAX_SYNC_FRAME_BYTES).await?, SYNC_REPLY)?;
     send.finish().map_err(|_| SyncError::Transport)?;
     Ok(reply)
 }
@@ -83,8 +108,16 @@ pub async fn exchange_outbound(connection: &Connection, page: &SyncPage) -> Resu
 /// Rejects oversized, malformed, non-canonical, or failed stream exchange.
 pub async fn exchange_inbound(connection: &Connection, page: &SyncPage) -> Result<SyncPage, SyncError> {
     let (mut send, mut receive) = connection.accept_bi().await.map_err(|_| SyncError::Transport)?;
-    let offered = decode_bundle(&read_frame(&mut receive, MAX_SYNC_FRAME_BYTES).await?, SYNC_OFFER)?;
-    write_frame(&mut send, &encode_bundle(SYNC_REPLY, page)?, MAX_SYNC_FRAME_BYTES).await?;
+    exchange_inbound_stream(&mut send, &mut receive, page).await
+}
+
+pub(crate) async fn exchange_inbound_stream(
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+    page: &SyncPage,
+) -> Result<SyncPage, SyncError> {
+    let offered = decode_bundle(&read_frame(receive, MAX_SYNC_FRAME_BYTES).await?, SYNC_OFFER)?;
+    write_frame(send, &encode_bundle(SYNC_REPLY, page)?, MAX_SYNC_FRAME_BYTES).await?;
     send.finish().map_err(|_| SyncError::Transport)?;
     Ok(offered)
 }
@@ -124,7 +157,7 @@ pub async fn receive_revocation_notice(connection: &Connection) -> Result<Signed
 }
 
 fn encode_bundle(message_type: u8, page: &SyncPage) -> Result<Vec<u8>, SyncError> {
-    if page.contacts.len() > MAX_SYNC_CONTACTS {
+    if page.contacts.len() > MAX_SYNC_CONTACTS || page.reachability.len() > MAX_REACHABILITY_CLAIMS {
         return Err(SyncError::Oversized);
     }
     let encoded_contacts = page
@@ -134,9 +167,15 @@ fn encode_bundle(message_type: u8, page: &SyncPage) -> Result<Vec<u8>, SyncError
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| SyncError::InvalidContact)?;
     let revocations = encode_signed_revocations(&page.revocations).map_err(|_| SyncError::InvalidRevocation)?;
+    let claims = page
+        .reachability
+        .iter()
+        .map(encode_claim)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| SyncError::InvalidReachability)?;
     let mut output = Vec::with_capacity(1_024);
     let mut encoder = Encoder::new(&mut output);
-    encoder.array(4).map_err(|_| SyncError::Encoding)?;
+    encoder.array(5).map_err(|_| SyncError::Encoding)?;
     encoder.u16(SYNC_VERSION).map_err(|_| SyncError::Encoding)?;
     encoder.u8(message_type).map_err(|_| SyncError::Encoding)?;
     encoder
@@ -144,6 +183,12 @@ fn encode_bundle(message_type: u8, page: &SyncPage) -> Result<Vec<u8>, SyncError
         .map_err(|_| SyncError::Encoding)?;
     for contact in encoded_contacts {
         encoder.bytes(&contact).map_err(|_| SyncError::Encoding)?;
+    }
+    encoder
+        .array(u64::try_from(claims.len()).map_err(|_| SyncError::Oversized)?)
+        .map_err(|_| SyncError::Encoding)?;
+    for claim in claims {
+        encoder.bytes(&claim).map_err(|_| SyncError::Encoding)?;
     }
     encoder.bytes(&revocations).map_err(|_| SyncError::Encoding)?;
     if output.is_empty() || output.len() > MAX_SYNC_FRAME_BYTES {
@@ -157,7 +202,7 @@ fn decode_bundle(input: &[u8], expected_type: u8) -> Result<SyncPage, SyncError>
         return Err(SyncError::Oversized);
     }
     let mut decoder = Decoder::new(input);
-    if decoder.array().map_err(map_decode)? != Some(4)
+    if decoder.array().map_err(map_decode)? != Some(5)
         || decoder.u16().map_err(map_decode)? != SYNC_VERSION
         || decoder.u8().map_err(map_decode)? != expected_type
     {
@@ -176,12 +221,26 @@ fn decode_bundle(input: &[u8], expected_type: u8) -> Result<SyncPage, SyncError>
         }
         contacts.push(decode_contact(bytes).map_err(|_| SyncError::InvalidContact)?);
     }
+    let claim_count = decoder.array().map_err(map_decode)?.ok_or(SyncError::InvalidShape)?;
+    let claim_count = usize::try_from(claim_count).map_err(|_| SyncError::Oversized)?;
+    if claim_count > MAX_REACHABILITY_CLAIMS {
+        return Err(SyncError::Oversized);
+    }
+    let mut reachability = Vec::with_capacity(claim_count);
+    for _ in 0..claim_count {
+        let bytes = decoder.bytes().map_err(map_decode)?;
+        if bytes.len() > MAX_REACHABILITY_CLAIM_BYTES {
+            return Err(SyncError::Oversized);
+        }
+        reachability.push(decode_claim(bytes).map_err(|_| SyncError::InvalidReachability)?);
+    }
     let revocation_bytes = decoder.bytes().map_err(map_decode)?;
     if revocation_bytes.len() > MAX_SIGNED_REVOCATION_BYTES || decoder.position() != input.len() {
         return Err(SyncError::InvalidShape);
     }
     let page = SyncPage {
         contacts,
+        reachability,
         revocations: decode_signed_revocations(revocation_bytes).map_err(|_| SyncError::InvalidRevocation)?,
     };
     if encode_bundle(expected_type, &page)
@@ -276,6 +335,7 @@ mod tests {
         let root = RootIdentity::generate()?;
         let page = SyncPage {
             contacts: Vec::new(),
+            reachability: Vec::new(),
             revocations: SignedRevocationList::empty(&root, 10)?,
         };
         let encoded = encode_bundle(SYNC_OFFER, &page)?;

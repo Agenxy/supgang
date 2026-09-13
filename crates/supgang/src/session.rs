@@ -1,6 +1,7 @@
 //! Mutual device authentication bound to a confirmed QUIC TLS session.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use ed25519_dalek::VerifyingKey;
 use minicbor::{Decoder, Encoder, encode};
@@ -11,13 +12,14 @@ use zeroize::Zeroize;
 use crate::{
     contact::{ContactError, MAX_CONTACT_BYTES, PeerContact, decode_contact, encode_contact},
     identity::{DeviceIdentity, verify_domain},
+    reachability::{ReachabilityClaim, ReachabilitySource, decode_claim, encode_claim},
     revocation::SignedRevocationList,
 };
 
 /// Maximum application authentication frame accepted on a peer connection.
 pub const MAX_SESSION_FRAME_BYTES: usize = 16 * 1024;
 
-const PROTOCOL_VERSION: u16 = 1;
+const PROTOCOL_VERSION: u16 = 2;
 const CLIENT_HELLO: u8 = 1;
 const SERVER_HELLO: u8 = 2;
 const CLIENT_PROOF: u8 = 3;
@@ -29,6 +31,8 @@ const EXPORTER_LABEL: &[u8] = b"EXPORTER-Supgang-Session-v1";
 const EXPORTER_CONTEXT: &[u8] = b"supgang/1";
 const SERVER_PROOF_DOMAIN: &[u8] = b"supgang/session/server-proof/v1\0";
 const CLIENT_PROOF_DOMAIN: &[u8] = b"supgang/session/client-proof/v1\0";
+const CLIENT_HELLO_PROOF_DOMAIN: &[u8] = b"supgang/session/client-hello-proof/v2\0";
+const FIRST_PROOF_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 /// A peer-session framing, authorization, or proof failure.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -75,6 +79,10 @@ pub struct AuthenticatedPeer {
     pub contact: PeerContact,
     /// This computer's source socket as reported inside the bound proof.
     pub observed_local_address: SocketAddr,
+    /// Earliest root or endpoint authorization deadline for this session.
+    pub authorization_expires_at: u64,
+    /// Reporter-signed, short-lived evidence about this computer's socket.
+    pub local_reachability: ReachabilityClaim,
 }
 
 /// Authenticates an outbound peer and proves the local device in return.
@@ -107,8 +115,14 @@ pub async fn authenticate_outbound(
     }
     let channel_binding = channel_binding(connection)?;
     let mut client_nonce = random_nonce()?;
+    let hello_transcript = client_hello_transcript(local_contact, &client_nonce, &channel_binding)?;
+    let hello_proof = local_identity.sign_domain(CLIENT_HELLO_PROOF_DOMAIN, &hello_transcript);
     let (mut send, mut receive) = connection.open_bi().await.map_err(|_| SessionError::Transport)?;
-    write_frame(&mut send, &encode_client_hello(local_contact, &client_nonce)?).await?;
+    write_frame(
+        &mut send,
+        &encode_client_hello(local_contact, &client_nonce, &hello_proof)?,
+    )
+    .await?;
 
     let server_hello = decode_server_hello(&read_frame(&mut receive).await?)?;
     server_hello.contact.verify(root_key, now)?;
@@ -134,12 +148,36 @@ pub async fn authenticate_outbound(
         client_nonce.zeroize();
         return Err(SessionError::InvalidProof);
     }
+    server_hello
+        .local_reachability
+        .verify(root_key, now)
+        .map_err(|_| SessionError::Contact)?;
+    if server_hello.local_reachability.subject != local_identity.node_id()
+        || server_hello.local_reachability.reporter != server_hello.contact.endpoint.record.node_id
+        || server_hello.local_reachability.address != server_hello.observed_client_address
+    {
+        return Err(SessionError::Contact);
+    }
     let observed_server_address = connection.remote_address();
     let client_transcript = extend_client_transcript(&transcript, observed_server_address)?;
     let proof = local_identity.sign_domain(CLIENT_PROOF_DOMAIN, &client_transcript);
+    let peer_reachability = ReachabilityClaim::sign(
+        local_contact.membership.clone(),
+        local_identity,
+        server_hello.contact.endpoint.record.node_id,
+        observed_server_address,
+        ReachabilitySource::PeerObserved,
+        now,
+    )
+    .map_err(|_| SessionError::Contact)?;
     write_frame(
         &mut send,
-        &encode_client_proof(&server_hello.server_nonce, observed_server_address, &proof)?,
+        &encode_client_proof(
+            &server_hello.server_nonce,
+            observed_server_address,
+            &peer_reachability,
+            &proof,
+        )?,
     )
     .await?;
     let acknowledged_nonce = decode_server_ack(&read_frame(&mut receive).await?)?;
@@ -150,6 +188,8 @@ pub async fn authenticate_outbound(
     send.finish().map_err(|_| SessionError::Transport)?;
     client_nonce.zeroize();
     Ok(AuthenticatedPeer {
+        authorization_expires_at: server_hello.contact.endpoint.record.expires_at,
+        local_reachability: server_hello.local_reachability,
         contact: server_hello.contact,
         observed_local_address: server_hello.observed_client_address,
     })
@@ -180,14 +220,37 @@ pub async fn authenticate_inbound(
         return Err(SessionError::Contact);
     }
     let channel_binding = channel_binding(connection)?;
-    let (mut send, mut receive) = connection.accept_bi().await.map_err(|_| SessionError::Transport)?;
-    let client_hello = decode_client_hello(&read_frame(&mut receive).await?)?;
+    let first_proof = tokio::time::timeout(FIRST_PROOF_TIMEOUT, receive_client_hello(connection))
+        .await
+        .map_err(|_| SessionError::Transport)??;
+    let (mut send, mut receive, client_hello) = first_proof;
     client_hello.contact.verify(root_key, now)?;
     if revocations.contains(&client_hello.contact.endpoint.record.node_id) {
         return Err(SessionError::Revoked);
     }
+    let client_key = VerifyingKey::from_bytes(&client_hello.contact.membership.certificate.device_verifying_key)
+        .map_err(|_| SessionError::Contact)?;
+    let hello_transcript =
+        client_hello_transcript(&client_hello.contact, &client_hello.client_nonce, &channel_binding)?;
+    if !verify_domain(
+        &client_key,
+        CLIENT_HELLO_PROOF_DOMAIN,
+        &hello_transcript,
+        &client_hello.signature,
+    ) {
+        return Err(SessionError::InvalidProof);
+    }
     let mut server_nonce = random_nonce()?;
     let observed_client_address = connection.remote_address();
+    let local_reachability = ReachabilityClaim::sign(
+        local_contact.membership.clone(),
+        local_identity,
+        client_hello.contact.endpoint.record.node_id,
+        observed_client_address,
+        ReachabilitySource::PeerObserved,
+        now,
+    )
+    .map_err(|_| SessionError::Contact)?;
     let transcript = transcript(
         &client_hello.contact,
         local_contact,
@@ -204,6 +267,7 @@ pub async fn authenticate_inbound(
             &client_hello.client_nonce,
             &server_nonce,
             observed_client_address,
+            &local_reachability,
             &server_proof,
         )?,
     )
@@ -214,8 +278,6 @@ pub async fn authenticate_inbound(
         server_nonce.zeroize();
         return Err(SessionError::InvalidProof);
     }
-    let client_key = VerifyingKey::from_bytes(&client_hello.contact.membership.certificate.device_verifying_key)
-        .map_err(|_| SessionError::Contact)?;
     let client_transcript = extend_client_transcript(&transcript, client_proof.observed_server_address)?;
     if !verify_domain(
         &client_key,
@@ -226,18 +288,39 @@ pub async fn authenticate_inbound(
         server_nonce.zeroize();
         return Err(SessionError::InvalidProof);
     }
+    client_proof
+        .local_reachability
+        .verify(root_key, now)
+        .map_err(|_| SessionError::Contact)?;
+    if client_proof.local_reachability.subject != local_identity.node_id()
+        || client_proof.local_reachability.reporter != client_hello.contact.endpoint.record.node_id
+        || client_proof.local_reachability.address != client_proof.observed_server_address
+    {
+        return Err(SessionError::Contact);
+    }
     write_frame(&mut send, &encode_server_ack(&client_hello.client_nonce)?).await?;
     send.finish().map_err(|_| SessionError::Transport)?;
     server_nonce.zeroize();
     Ok(AuthenticatedPeer {
+        authorization_expires_at: client_hello.contact.endpoint.record.expires_at,
+        local_reachability: client_proof.local_reachability,
         contact: client_hello.contact,
         observed_local_address: client_proof.observed_server_address,
     })
 }
 
+async fn receive_client_hello(
+    connection: &Connection,
+) -> Result<(SendStream, RecvStream, ClientHelloMessage), SessionError> {
+    let (send, mut receive) = connection.accept_bi().await.map_err(|_| SessionError::Transport)?;
+    let hello = decode_client_hello(&read_frame(&mut receive).await?)?;
+    Ok((send, receive, hello))
+}
+
 struct ClientHelloMessage {
     contact: PeerContact,
     client_nonce: [u8; NONCE_BYTES],
+    signature: [u8; SIGNATURE_BYTES],
 }
 
 struct ServerHelloMessage {
@@ -245,37 +328,65 @@ struct ServerHelloMessage {
     client_nonce: [u8; NONCE_BYTES],
     server_nonce: [u8; NONCE_BYTES],
     observed_client_address: SocketAddr,
+    local_reachability: ReachabilityClaim,
     signature: [u8; SIGNATURE_BYTES],
 }
 
 struct ClientProofMessage {
     server_nonce: [u8; NONCE_BYTES],
     observed_server_address: SocketAddr,
+    local_reachability: ReachabilityClaim,
     signature: [u8; SIGNATURE_BYTES],
 }
 
-fn encode_client_hello(contact: &PeerContact, client_nonce: &[u8; NONCE_BYTES]) -> Result<Vec<u8>, SessionError> {
+fn encode_client_hello(
+    contact: &PeerContact,
+    client_nonce: &[u8; NONCE_BYTES],
+    signature: &[u8; SIGNATURE_BYTES],
+) -> Result<Vec<u8>, SessionError> {
     let contact = encode_contact(contact)?;
-    encode_message(4, |encoder| {
+    encode_message(5, |encoder| {
         encoder.u16(PROTOCOL_VERSION)?;
         encoder.u8(CLIENT_HELLO)?;
         encoder.bytes(&contact)?;
         encoder.bytes(client_nonce)?;
+        encoder.bytes(signature)?;
         Ok(())
     })
 }
 
 fn decode_client_hello(input: &[u8]) -> Result<ClientHelloMessage, SessionError> {
     let mut decoder = Decoder::new(input);
-    require_header(&mut decoder, 4, CLIENT_HELLO)?;
+    require_header(&mut decoder, 5, CLIENT_HELLO)?;
     let contact = decode_bounded_contact(&mut decoder)?;
     let client_nonce = read_fixed(&mut decoder)?;
+    let signature = read_fixed(&mut decoder)?;
     finish_decode(&decoder, input)?;
-    let message = ClientHelloMessage { contact, client_nonce };
-    if encode_client_hello(&message.contact, &message.client_nonce)?.as_slice() != input {
+    let message = ClientHelloMessage {
+        contact,
+        client_nonce,
+        signature,
+    };
+    if encode_client_hello(&message.contact, &message.client_nonce, &message.signature)?.as_slice() != input {
         return Err(SessionError::InvalidMessage);
     }
     Ok(message)
+}
+
+fn client_hello_transcript(
+    contact: &PeerContact,
+    client_nonce: &[u8; NONCE_BYTES],
+    channel_binding: &[u8; EXPORTER_BYTES],
+) -> Result<Vec<u8>, SessionError> {
+    let contact = encode_contact(contact)?;
+    let contact_length = u32::try_from(contact.len()).map_err(|_| SessionError::FrameSize)?;
+    let mut transcript = Vec::with_capacity(contact.len().saturating_add(70));
+    transcript.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    transcript.extend_from_slice(&contact_length.to_be_bytes());
+    transcript.extend_from_slice(&contact);
+    transcript.extend_from_slice(client_nonce);
+    transcript.extend_from_slice(channel_binding);
+    Ok(transcript)
 }
 
 fn encode_server_hello(
@@ -283,16 +394,19 @@ fn encode_server_hello(
     client_nonce: &[u8; NONCE_BYTES],
     server_nonce: &[u8; NONCE_BYTES],
     observed_client_address: SocketAddr,
+    local_reachability: &ReachabilityClaim,
     signature: &[u8; SIGNATURE_BYTES],
 ) -> Result<Vec<u8>, SessionError> {
     let contact = encode_contact(contact)?;
-    encode_message(7, |encoder| {
+    let local_reachability = encode_claim(local_reachability).map_err(|_| SessionError::Encoding)?;
+    encode_message(8, |encoder| {
         encoder.u16(PROTOCOL_VERSION)?;
         encoder.u8(SERVER_HELLO)?;
         encoder.bytes(&contact)?;
         encoder.bytes(client_nonce)?;
         encoder.bytes(server_nonce)?;
         encode_socket_address(encoder, observed_client_address)?;
+        encoder.bytes(&local_reachability)?;
         encoder.bytes(signature)?;
         Ok(())
     })
@@ -300,11 +414,13 @@ fn encode_server_hello(
 
 fn decode_server_hello(input: &[u8]) -> Result<ServerHelloMessage, SessionError> {
     let mut decoder = Decoder::new(input);
-    require_header(&mut decoder, 7, SERVER_HELLO)?;
+    require_header(&mut decoder, 8, SERVER_HELLO)?;
     let contact = decode_bounded_contact(&mut decoder)?;
     let client_nonce = read_fixed(&mut decoder)?;
     let server_nonce = read_fixed(&mut decoder)?;
     let observed_client_address = decode_socket_address(&mut decoder)?;
+    let local_reachability =
+        decode_claim(decoder.bytes().map_err(|_| SessionError::Encoding)?).map_err(|_| SessionError::InvalidMessage)?;
     let signature = read_fixed(&mut decoder)?;
     finish_decode(&decoder, input)?;
     let message = ServerHelloMessage {
@@ -312,6 +428,7 @@ fn decode_server_hello(input: &[u8]) -> Result<ServerHelloMessage, SessionError>
         client_nonce,
         server_nonce,
         observed_client_address,
+        local_reachability,
         signature,
     };
     if encode_server_hello(
@@ -319,6 +436,7 @@ fn decode_server_hello(input: &[u8]) -> Result<ServerHelloMessage, SessionError>
         &message.client_nonce,
         &message.server_nonce,
         message.observed_client_address,
+        &message.local_reachability,
         &message.signature,
     )?
     .as_slice()
@@ -332,13 +450,16 @@ fn decode_server_hello(input: &[u8]) -> Result<ServerHelloMessage, SessionError>
 fn encode_client_proof(
     server_nonce: &[u8; NONCE_BYTES],
     observed_server_address: SocketAddr,
+    local_reachability: &ReachabilityClaim,
     signature: &[u8; SIGNATURE_BYTES],
 ) -> Result<Vec<u8>, SessionError> {
-    encode_message(5, |encoder| {
+    let local_reachability = encode_claim(local_reachability).map_err(|_| SessionError::Encoding)?;
+    encode_message(6, |encoder| {
         encoder.u16(PROTOCOL_VERSION)?;
         encoder.u8(CLIENT_PROOF)?;
         encoder.bytes(server_nonce)?;
         encode_socket_address(encoder, observed_server_address)?;
+        encoder.bytes(&local_reachability)?;
         encoder.bytes(signature)?;
         Ok(())
     })
@@ -346,19 +467,23 @@ fn encode_client_proof(
 
 fn decode_client_proof(input: &[u8]) -> Result<ClientProofMessage, SessionError> {
     let mut decoder = Decoder::new(input);
-    require_header(&mut decoder, 5, CLIENT_PROOF)?;
+    require_header(&mut decoder, 6, CLIENT_PROOF)?;
     let server_nonce = read_fixed(&mut decoder)?;
     let observed_server_address = decode_socket_address(&mut decoder)?;
+    let local_reachability =
+        decode_claim(decoder.bytes().map_err(|_| SessionError::Encoding)?).map_err(|_| SessionError::InvalidMessage)?;
     let signature = read_fixed(&mut decoder)?;
     finish_decode(&decoder, input)?;
     let message = ClientProofMessage {
         server_nonce,
         observed_server_address,
+        local_reachability,
         signature,
     };
     if encode_client_proof(
         &message.server_nonce,
         message.observed_server_address,
+        &message.local_reachability,
         &message.signature,
     )?
     .as_slice()

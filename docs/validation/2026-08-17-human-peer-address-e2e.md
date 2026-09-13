@@ -9,7 +9,7 @@ Private hive, full node, account, and network identifiers are intentionally omit
 - Candidate source: the tree containing this record.
 - Release-mode binary SHA-256:
   `80eff0823726bd6a1b45b6e9b20823223043469f5494ed37d64f6e744981b217`.
-- Hosts: `MacMarine` and `MacSolis`, two Apple silicon computers in the existing two-member hive.
+- Hosts: `Laptop A` and `Home B`, two Apple silicon computers in the existing two-member hive.
 - Installation: the same 4,282,400-byte executable on both hosts, verified after replacement.
 - Network configuration: none. Both services used automatic discovery and default UDP port 44330.
 - External runtime services: none. No account, hosted discovery, DNS publisher, STUN service,
@@ -29,13 +29,13 @@ Private hive, full node, account, and network identifiers are intentionally omit
 | Local preference | Each host selected the other host's same-prefix private address as preferred. |
 | Public visibility | Each host also displayed the peer's globally routed interface candidates as public. |
 | Honest provenance | Detailed and JSON rows said `device-signed`; none claimed independent reachability proof. |
-| Named resolution | `resolve MacSolis` and `resolve MacMarine` returned the intended fresh signed records. |
+| Named resolution | `resolve Home B` and `resolve Laptop A` returned the intended fresh signed records. |
 | Ambiguity defense | Unit coverage proved duplicate names fail closed and require a longer fingerprint. |
 | Stale defense | Unit coverage proved expired, revoked, or conflicted rows cannot mark an address preferred. |
 | Dial ordering | Unit coverage kept one on-link private and a public candidate inside the bounded dial set. |
 | Live rename safety | Each running service returned a stop-first error and retained its existing signed name. |
 | Replacement recovery | After replacing and restarting both binaries, each host reported one active peer. |
-| Peer restart | A later `MacSolis` restart advanced its signed sequence and re-established the session. |
+| Peer restart | A later `Home B` restart advanced its signed sequence and re-established the session. |
 | No-egress discovery | Automatic publication succeeded under a macOS sandbox denying all network operations. |
 | Installed command | From `/tmp`, `command -v supgang` selected `$HOME/.local/bin/supgang`. |
 | Installed behavior | The installed command passed help, doctor, status, name, compact and complete peer views, and named resolution. |

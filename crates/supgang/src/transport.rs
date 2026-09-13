@@ -25,10 +25,18 @@ pub const MAX_IDLE_SECONDS: u64 = 45;
 pub const STREAM_RECEIVE_BYTES: u32 = 64 * 1024;
 /// Per-connection receive budget.
 pub const CONNECTION_RECEIVE_BYTES: u32 = 256 * 1024;
+/// Total inbound or outbound unreliable control bytes buffered per connection.
+pub const DATAGRAM_BUFFER_BYTES: usize = 16 * 1024;
 /// Maximum serialized transport certificate size accepted from protected storage.
 pub const MAX_TRANSPORT_CERTIFICATE_BYTES: usize = 8 * 1024;
 /// Maximum serialized transport private-key size accepted from protected storage.
 pub const MAX_TRANSPORT_PRIVATE_KEY_BYTES: usize = 4 * 1024;
+/// Maximum QUIC connection attempts retained before application admission.
+pub const MAX_SERVER_INCOMING: usize = 64;
+/// Maximum buffered handshake bytes retained for one pending connection.
+pub const INCOMING_BUFFER_BYTES: u64 = 64 * 1024;
+/// Maximum buffered handshake bytes retained across all pending connections.
+pub const TOTAL_INCOMING_BUFFER_BYTES: u64 = 1024 * 1024;
 
 /// A generated self-signed transport certificate and its protected private key.
 pub struct TransportIdentity {
@@ -128,6 +136,9 @@ impl TransportIdentity {
             quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(|_| TransportError::Configuration)?;
         let mut server = ServerConfig::with_crypto(Arc::new(crypto));
         server.transport_config(Arc::new(bounded_transport()?));
+        server.max_incoming(MAX_SERVER_INCOMING);
+        server.incoming_buffer_size(INCOMING_BUFFER_BYTES);
+        server.incoming_buffer_size_total(TOTAL_INCOMING_BUFFER_BYTES);
         Ok(server)
     }
 }
@@ -266,6 +277,8 @@ fn bounded_transport() -> Result<TransportConfig, TransportError> {
     transport.max_concurrent_uni_streams(MAX_UNIDIRECTIONAL_STREAMS.into());
     transport.stream_receive_window(STREAM_RECEIVE_BYTES.into());
     transport.receive_window(CONNECTION_RECEIVE_BYTES.into());
+    transport.datagram_receive_buffer_size(Some(DATAGRAM_BUFFER_BYTES));
+    transport.datagram_send_buffer_size(DATAGRAM_BUFFER_BYTES);
     let idle = quinn::IdleTimeout::try_from(Duration::from_secs(MAX_IDLE_SECONDS))
         .map_err(|_| TransportError::Configuration)?;
     transport.max_idle_timeout(Some(idle));
@@ -280,8 +293,26 @@ mod tests {
         time::Duration,
     };
 
-    use super::{TransportIdentity, build_runtime, pinned_client_config};
+    use super::{
+        INCOMING_BUFFER_BYTES, MAX_SERVER_INCOMING, TOTAL_INCOMING_BUFFER_BYTES, TransportIdentity, build_runtime,
+        pinned_client_config,
+    };
     use crate::ids::TransportKeyId;
+
+    const _: () = {
+        assert!(MAX_SERVER_INCOMING == 64);
+        assert!(INCOMING_BUFFER_BYTES == 64 * 1024);
+        assert!(TOTAL_INCOMING_BUFFER_BYTES == 1024 * 1024);
+    };
+
+    #[test]
+    fn pending_handshake_memory_has_a_fleet_sized_ceiling() -> Result<(), Box<dyn std::error::Error>> {
+        let debug = format!("{:?}", TransportIdentity::generate()?.server_config()?);
+        assert!(debug.contains("max_incoming: 64"));
+        assert!(debug.contains("incoming_buffer_size: 65536"));
+        assert!(debug.contains("incoming_buffer_size_total: 1048576"));
+        Ok(())
+    }
 
     #[test]
     fn correct_pin_connects_and_wrong_pin_fails() -> Result<(), Box<dyn std::error::Error>> {

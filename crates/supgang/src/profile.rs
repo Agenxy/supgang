@@ -157,7 +157,16 @@ fn load_path(path: &Path) -> Result<PeerName, ProfileError> {
         return Err(ProfileError::InvalidProfile);
     }
     let mut bytes = Vec::with_capacity(length);
-    std::io::Read::read_to_end(&mut file, &mut bytes)?;
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(
+            std::io::Read::by_ref(&mut file),
+            u64::try_from(MAX_PROFILE_BYTES.saturating_add(1)).map_err(|_| ProfileError::InvalidProfile)?,
+        ),
+        &mut bytes,
+    )?;
+    if bytes.len() != length {
+        return Err(ProfileError::InvalidProfile);
+    }
     let document: ProfileDocument = serde_json::from_slice(&bytes).map_err(|_| ProfileError::InvalidProfile)?;
     if document.version != PROFILE_VERSION {
         return Err(ProfileError::InvalidProfile);
@@ -182,6 +191,7 @@ fn replace_path(directory: &Path, path: &Path, name: &PeerName) -> Result<(), Pr
             .mode(0o600)
             .custom_flags(no_follow_flag()?)
             .open(&temporary)?;
+        supgang_acl::clear_inherited_acl(&file)?;
         validate_owner_file_metadata(&file)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
@@ -220,8 +230,8 @@ mod tests {
 
     #[test]
     fn validates_portable_human_names() {
-        assert!(PeerName::new("Solis").is_ok());
-        assert!(PeerName::new("Lael MacBook Pro").is_ok());
+        assert!(PeerName::new("HomeServer").is_ok());
+        assert!(PeerName::new("Alice MacBook Pro").is_ok());
         for invalid in ["", " padded", "line\nbreak", "lookalаike", "name/slash"] {
             assert!(matches!(PeerName::new(invalid), Err(ProfileError::InvalidName)));
         }
@@ -235,8 +245,8 @@ mod tests {
         let node = local.identity().device.node_id();
         let automatic = load_or_create(&state_path, node)?;
         assert!(!automatic.as_str().is_empty());
-        set(&state_path, &PeerName::new("Solis")?)?;
-        assert_eq!(load_or_create(&state_path, node)?.as_str(), "Solis");
+        set(&state_path, &PeerName::new("HomeServer")?)?;
+        assert_eq!(load_or_create(&state_path, node)?.as_str(), "HomeServer");
         assert_eq!(
             fs::metadata(state_path.join(super::PROFILE_FILE_NAME))?
                 .permissions()

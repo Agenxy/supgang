@@ -5,3 +5,4 @@
 *.swp
 *.tmp
 *.profraw
+__pycache__/

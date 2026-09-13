@@ -24,6 +24,9 @@ pub enum ArtifactError {
     /// Another user can read or modify the file.
     #[error("offline artifact permissions must be 0600")]
     InsecurePermissions,
+    /// An extended ACL grants access beyond the owner-only mode policy.
+    #[error("offline artifact has a non-owner ACL grant")]
+    InsecureAcl,
     /// The artifact exceeds the caller's protocol budget.
     #[error("offline artifact exceeds its protocol size limit")]
     Oversized,
@@ -60,6 +63,7 @@ pub fn write_new(path: impl AsRef<Path>, bytes: &[u8], maximum: usize) -> Result
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(ArtifactError::AlreadyExists),
         Err(error) => return Err(error.into()),
     };
+    supgang_acl::clear_inherited_acl(&file)?;
     validate(&file)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -88,9 +92,14 @@ pub fn read(path: impl AsRef<Path>, maximum: usize) -> Result<Vec<u8>, ArtifactE
     }
     let capacity = usize::try_from(length).map_err(|_| ArtifactError::Oversized)?;
     let mut bytes = Vec::with_capacity(capacity);
-    file.read_to_end(&mut bytes)?;
+    Read::by_ref(&mut file)
+        .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
         return Err(ArtifactError::Oversized);
+    }
+    if bytes.len() != capacity {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "artifact changed while being read").into());
     }
     Ok(bytes)
 }
@@ -106,6 +115,13 @@ fn validate(file: &File) -> Result<(), ArtifactError> {
     if metadata.mode() & 0o777 != 0o600 {
         return Err(ArtifactError::InsecurePermissions);
     }
+    supgang_acl::reject_non_owner_grants(file).map_err(|error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            ArtifactError::InsecureAcl
+        } else {
+            ArtifactError::Io(error)
+        }
+    })?;
     Ok(())
 }
 

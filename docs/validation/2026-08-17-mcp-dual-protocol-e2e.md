@@ -2,7 +2,7 @@
 
 Date: 2026-08-17 America/Los_Angeles
 
-Scope: the installed Supgang MCP standard-I/O server on MacMarine and MacSolis, both supported MCP
+Scope: the installed Supgang MCP standard-I/O server on Laptop A and Home B, both supported MCP
 protocol eras, adversarial bounds, and an actual Codex tool invocation. This record contains names
 and counts but omits addresses and stable identifiers.
 
@@ -10,8 +10,8 @@ and counts but omits addresses and stable identifiers.
 
 - Version: `supgang 0.1.0`
 - SHA-256: `0aa17db234881ef0b40df44a85464a405e1047851379123f62686459e5b9fe13`
-- MacMarine path: `/Users/lael/.local/bin/supgang`
-- MacSolis path: `/Users/dr.marbles/.local/bin/supgang`
+- Laptop A path: `$HOME/.local/bin/supgang`
+- Home B path: `$HOME/.local/bin/supgang`
 - Both installed files produced the same hash.
 - Both installed commands exposed `supgang mcp` and returned a successful 2026-07-28
   `server/discover` response.
@@ -43,12 +43,12 @@ build-time exception.
 The installed command was registered as a global local server:
 
 ```text
-codex mcp add supgang -- /Users/lael/.local/bin/supgang mcp
+codex mcp add supgang -- $HOME/.local/bin/supgang mcp
 ```
 
 A fresh Codex process with 2026-07-28 MCP enabled was restricted to the Supgang server and instructed
 to call `status` followed by `fleet`. Both tool calls completed. Its address-redacted final result
-identified this computer as MacMarine, the running service, one peer named MacSolis, and eight
+identified this computer as Laptop A, the running service, one peer named Home B, and eight
 retained candidates for each computer.
 
 The already-running Codex task did not hot-load the newly registered server; a fresh process was

@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     candidate::EndpointCandidate,
-    ids::{NodeId, TransportKeyId},
+    ids::{HiveId, NodeId, TransportKeyId},
     invitation::{InvitationError, JoinBundle, JoinRequest},
     journal::{Journal, JournalError},
     membership::{
@@ -22,12 +22,14 @@ use crate::{
     storage::{self, LocalIdentity, StorageError},
 };
 
+mod compaction;
 mod event;
 
 use event::{StateEvent, encode_event, replay};
 
 /// Maximum number of authorized devices in one personal hive.
 pub const MAX_HIVE_MEMBERS: usize = 256;
+const AUTHORITATIVE_COMPACTION_THRESHOLD_BYTES: u64 = 1024 * 1024;
 
 /// Replayed authoritative state and its append handle.
 pub struct LocalState {
@@ -112,6 +114,32 @@ impl LocalState {
         self.journal.as_mut().ok_or(StateError::ReadOnlySnapshot)
     }
 
+    fn append_authoritative(&mut self, encoded: &[u8]) -> Result<(), StateError> {
+        if let Err(error) = self.compact_if_needed() {
+            if matches!(error, StateError::Journal(_)) {
+                self.journal.take();
+            }
+            return Err(error);
+        }
+        match self.journal_mut()?.append(encoded) {
+            Ok(()) => Ok(()),
+            Err(JournalError::JournalFull) => {
+                self.compact()?;
+                match self.journal_mut()?.append(encoded) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        self.journal.take();
+                        Err(error.into())
+                    }
+                }
+            }
+            Err(error) => {
+                self.journal.take();
+                Err(error.into())
+            }
+        }
+    }
+
     /// Persists the next endpoint sequence before returning it to a publisher.
     ///
     /// # Errors
@@ -125,7 +153,7 @@ impl LocalState {
             sequence: next,
         };
         let encoded = encode_event(&event)?;
-        self.journal_mut()?.append(&encoded)?;
+        self.append_authoritative(&encoded)?;
         self.sequence = next;
         self.event_count = self.event_count.saturating_add(1);
         Ok(next)
@@ -228,7 +256,7 @@ impl LocalState {
         let signed = SignedMembership::sign(certificate, root)?;
         let event = StateEvent::Membership(signed.clone());
         let encoded = encode_event(&event)?;
-        self.journal_mut()?.append(&encoded)?;
+        self.append_authoritative(&encoded)?;
         self.memberships.insert(node_id, signed.clone());
         self.last_membership_serial = serial;
         self.event_count = self.event_count.saturating_add(1);
@@ -239,17 +267,22 @@ impl LocalState {
     ///
     /// # Errors
     ///
-    /// Rejects an invalid proof of possession, conflicting request for an
-    /// existing node, unavailable root authority, or persistence failure.
+    /// Rejects an invalid proof of possession, a node other than the
+    /// operator-confirmed target, conflicting existing state, unavailable root
+    /// authority, or persistence failure.
     pub fn authorize_join_request(
         &mut self,
         request: &JoinRequest,
+        expected_node: NodeId,
         roles: MembershipRoles,
         issued_at: u64,
         expires_at: u64,
     ) -> Result<SignedMembership, StateError> {
         let key = request.verify()?;
         let node_id = NodeId::from_verifying_key(&key.to_bytes());
+        if node_id != expected_node {
+            return Err(StateError::UnexpectedJoinNode);
+        }
         if let Some(existing) = self.memberships.get(&node_id) {
             if existing.certificate.device_verifying_key == request.device_verifying_key
                 && existing.certificate.admission_nonce == request.nonce
@@ -336,13 +369,16 @@ impl LocalState {
         {
             return Err(StateError::RevocationRollback);
         }
+        if incoming.list.revoked_nodes == self.revocations.list.revoked_nodes {
+            return Ok(false);
+        }
         self.persist_revocations(incoming)?;
         Ok(true)
     }
 
     fn persist_revocations(&mut self, signed: SignedRevocationList) -> Result<(), StateError> {
         let encoded = encode_event(&StateEvent::Revocation(signed.clone()))?;
-        self.journal_mut()?.append(&encoded)?;
+        self.append_authoritative(&encoded)?;
         self.revocations = signed;
         self.event_count = self.event_count.saturating_add(1);
         Ok(())
@@ -381,7 +417,7 @@ pub fn initialize(path: impl AsRef<std::path::Path>) -> Result<LocalState, State
         serial: 1,
         issued_at: now,
         expires_at: now.saturating_add(MAX_MEMBERSHIP_LIFETIME_SECONDS),
-        roles: MembershipRoles::DEVICE,
+        roles: MembershipRoles::DEVICE | MembershipRoles::INTRODUCER,
         admission_nonce: [0; 32],
     };
     let root = initialized
@@ -459,10 +495,18 @@ pub fn create_join_request(path: impl AsRef<std::path::Path>) -> Result<JoinRequ
 ///
 /// # Errors
 ///
-/// Rejects mismatched requests, expired memberships, conflicting local state,
-/// malformed journals, and storage or persistence failures.
-pub fn install_join_bundle(path: impl AsRef<std::path::Path>, bundle: &JoinBundle) -> Result<LocalState, StateError> {
+/// Rejects a root other than the operator-confirmed hive, mismatched requests,
+/// expired memberships, conflicting local state, malformed journals, and
+/// storage or persistence failures.
+pub fn install_join_bundle(
+    path: impl AsRef<std::path::Path>,
+    bundle: &JoinBundle,
+    expected_hive: HiveId,
+) -> Result<LocalState, StateError> {
     let path = path.as_ref();
+    if HiveId::from_root_verifying_key(&bundle.root_verifying_key) != expected_hive {
+        return Err(StateError::UnexpectedJoinHive);
+    }
     match storage::load_identity(path) {
         Ok(_) => {
             let existing = open(path)?;
@@ -482,8 +526,9 @@ pub fn install_join_bundle(path: impl AsRef<std::path::Path>, bundle: &JoinBundl
 
     let lock = StateLock::acquire(path)?;
     let pending = storage::load_pending_identity(path)?;
-    let root_key = bundle.verify_for_pending(&pending)?;
-    bundle.membership.certificate.validate_time(unix_time()?)?;
+    let now = unix_time()?;
+    let root_key = bundle.verify_for_pending(&pending, now)?;
+    bundle.membership.certificate.validate_time(now)?;
     let expected_event = StateEvent::Genesis {
         membership: bundle.membership.clone(),
         revocations: bundle.revocations.clone(),
@@ -552,6 +597,10 @@ pub enum StateError {
     /// A sequence event skipped, repeated, rolled back, or changed generation.
     #[error("authoritative endpoint sequence is not strictly consecutive")]
     InvalidSequence,
+    /// A signed authoritative checkpoint was malformed, misplaced, or did not
+    /// bind the exact compacted authority snapshot.
+    #[error("authoritative state checkpoint failed validation")]
+    InvalidCheckpoint,
     /// Membership serial order skipped, repeated, or rolled back.
     #[error("membership serial is not strictly consecutive")]
     InvalidMembershipSerial,
@@ -585,6 +634,12 @@ pub enum StateError {
     /// Join authorization conflicts with existing local or member state.
     #[error("join authorization conflicts with existing state")]
     JoinMismatch,
+    /// The proved join request did not match the operator-confirmed device.
+    #[error("join request does not match the expected computer identity")]
+    UnexpectedJoinNode,
+    /// The join bundle was not issued by the operator-confirmed hive root.
+    #[error("join bundle does not match the expected hive identity")]
+    UnexpectedJoinHive,
     /// The record advertises a capability not granted to this member.
     #[error("local membership does not grant the requested endpoint capability")]
     UnauthorizedCapability,

@@ -28,13 +28,17 @@ const REQUEST_STATUS: u8 = 1;
 const REQUEST_PEERS: u8 = 2;
 const REQUEST_RESOLVE: u8 = 3;
 const REQUEST_REVOKE: u8 = 4;
-const MAX_REQUEST_BYTES: usize = 64;
+const REQUEST_UPDATE: u8 = 5;
+const REQUEST_RESTART: u8 = 6;
+const MAX_REQUEST_BYTES: usize = 128;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One bounded local request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlRequest {
+    /// Restart an installed supervisor payload, available only to the local owner.
+    Restart,
     /// Return non-secret service and identity status.
     Status,
     /// Return known peers with their signed addresses.
@@ -43,11 +47,24 @@ pub enum ControlRequest {
     Resolve(NodeId),
     /// Root-revoke exactly one stable peer identity.
     Revoke(NodeId),
+    /// Root-authorize delivery of one exact prepared update bundle to one peer.
+    Update {
+        /// Exact authenticated receiver.
+        target: NodeId,
+        /// SHA-256 identity of the protected local bundle.
+        digest: [u8; 32],
+    },
 }
 
 /// Non-secret status returned by a running service.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ControlStatus {
+    /// Random identifier for this running process, used to observe a completed restart.
+    #[serde(default)]
+    pub instance_id: String,
+    /// Whether a supervisor will restore this payload after a local restart request.
+    #[serde(default)]
+    pub restart_supported: bool,
     /// Device-signed human label.
     pub name: String,
     /// Hive identifier.
@@ -60,16 +77,39 @@ pub struct ControlStatus {
     pub active_peers: usize,
     /// Number of cryptographically known peer records.
     pub known_peers: usize,
+    /// Current local-gateway mapping state.
+    pub router_mapping: String,
+    /// Honest summary of this computer's advertised Internet path.
+    pub internet_reachability: String,
+    /// Automatic connection recovery methods available in this runtime.
+    #[serde(default = "legacy_connection_recovery")]
+    pub connection_recovery: String,
+    /// Runtime role selected by the local owner.
+    #[serde(default = "device_mode")]
+    pub mode: String,
     /// Number of root-authorized hive members.
     pub member_count: usize,
     /// Number of verified authoritative state events.
     pub event_count: usize,
 }
 
+fn legacy_connection_recovery() -> String {
+    "remembered-addresses-only".to_owned()
+}
+
+fn device_mode() -> String {
+    "device".to_owned()
+}
+
 /// Versioned response from the local service.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "response", rename_all = "kebab-case")]
 pub enum ControlReply {
+    /// The local supervisor payload has accepted a restart request.
+    Restarting {
+        /// Instance that is shutting down; readiness requires a different instance.
+        instance_id: String,
+    },
     /// Service status response.
     Status {
         /// Non-secret service status.
@@ -93,6 +133,13 @@ pub enum ControlReply {
         serial: u64,
         /// Whether this request advanced the root snapshot.
         changed: bool,
+    },
+    /// A root-authorized update delivery was durably queued for its peer.
+    UpdateQueued {
+        /// Exact receiver node identity.
+        node_id: String,
+        /// Exact carried bundle digest.
+        digest: String,
     },
     /// Safe request failure.
     Error {
@@ -241,7 +288,13 @@ pub fn request(state_directory: &Path, request: ControlRequest) -> Result<Option
         Err(error) => return Err(error.into()),
     };
     validate_existing_socket_metadata(&metadata)?;
-    let mut stream = BlockingUnixStream::connect(path)?;
+    let mut stream = match BlockingUnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) if matches!(error.kind(), io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
     stream.set_read_timeout(Some(CLIENT_TIMEOUT))?;
     stream.set_write_timeout(Some(CLIENT_TIMEOUT))?;
     validate_peer_blocking(&stream)?;
@@ -256,6 +309,7 @@ fn encode_request(request: ControlRequest) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(REQUEST_MAGIC.len() + 1 + 32);
     bytes.extend_from_slice(REQUEST_MAGIC);
     match request {
+        ControlRequest::Restart => bytes.push(REQUEST_RESTART),
         ControlRequest::Status => bytes.push(REQUEST_STATUS),
         ControlRequest::Peers => bytes.push(REQUEST_PEERS),
         ControlRequest::Resolve(node_id) => {
@@ -265,6 +319,11 @@ fn encode_request(request: ControlRequest) -> Vec<u8> {
         ControlRequest::Revoke(node_id) => {
             bytes.push(REQUEST_REVOKE);
             bytes.extend_from_slice(node_id.as_bytes());
+        }
+        ControlRequest::Update { target, digest } => {
+            bytes.push(REQUEST_UPDATE);
+            bytes.extend_from_slice(target.as_bytes());
+            bytes.extend_from_slice(&digest);
         }
     }
     bytes
@@ -279,6 +338,7 @@ fn decode_request(bytes: &[u8]) -> Result<ControlRequest, ControlError> {
         .copied()
         .ok_or(ControlError::InvalidRequest)?;
     match command {
+        REQUEST_RESTART if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Restart),
         REQUEST_STATUS if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Status),
         REQUEST_PEERS if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Peers),
         REQUEST_RESOLVE if bytes.len() == REQUEST_MAGIC.len() + 1 + 32 => {
@@ -296,6 +356,22 @@ fn decode_request(bytes: &[u8]) -> Result<ControlRequest, ControlError> {
                 .try_into()
                 .map_err(|_| ControlError::InvalidRequest)?;
             Ok(ControlRequest::Revoke(NodeId::from_bytes(raw)))
+        }
+        REQUEST_UPDATE if bytes.len() == REQUEST_MAGIC.len() + 1 + 64 => {
+            let target = bytes
+                .get(REQUEST_MAGIC.len() + 1..REQUEST_MAGIC.len() + 1 + 32)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            let digest = bytes
+                .get(REQUEST_MAGIC.len() + 1 + 32..)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            Ok(ControlRequest::Update {
+                target: NodeId::from_bytes(target),
+                digest,
+            })
         }
         _ => Err(ControlError::InvalidRequest),
     }
@@ -418,19 +494,27 @@ fn validate_peer_blocking(stream: &BlockingUnixStream) -> Result<(), ControlErro
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::symlink};
+    use std::{
+        fs,
+        os::unix::{fs::symlink, net::UnixListener as BlockingUnixListener},
+    };
 
-    use super::{ControlError, ControlListener, ControlRequest, decode_request, encode_request};
+    use super::{ControlError, ControlListener, ControlRequest, decode_request, encode_request, request};
     use crate::ids::NodeId;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn request_encoding_is_canonical_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
         for request in [
+            ControlRequest::Restart,
             ControlRequest::Status,
             ControlRequest::Peers,
             ControlRequest::Resolve(NodeId::from_bytes([7_u8; 32])),
             ControlRequest::Revoke(NodeId::from_bytes([8_u8; 32])),
+            ControlRequest::Update {
+                target: NodeId::from_bytes([9_u8; 32]),
+                digest: [10_u8; 32],
+            },
         ] {
             let encoded = encode_request(request);
             assert_eq!(decode_request(&encoded)?, request);
@@ -464,6 +548,22 @@ mod tests {
         drop(listener);
         assert!(!socket.exists());
         assert_eq!(fs::read(target)?, b"protected");
+        Ok(())
+    }
+
+    #[test]
+    fn client_treats_a_safe_stale_socket_as_service_stopped() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let state_directory = temporary.path().join("state");
+        fs::create_dir(&state_directory)?;
+        fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
+        let socket = state_directory.join(super::CONTROL_SOCKET_FILE_NAME);
+        let listener = BlockingUnixListener::bind(&socket)?;
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        drop(listener);
+
+        assert!(request(&state_directory, ControlRequest::Status)?.is_none());
+        assert!(socket.exists());
         Ok(())
     }
 }

@@ -156,7 +156,7 @@ async fn tool_calls_are_strict_and_return_structured_local_state() -> Result<(),
     assert_eq!(status.pointer("/result/isError"), Some(&json!(false)));
     assert_eq!(
         status.pointer("/result/structuredContent/schema"),
-        Some(&json!("supgang.mcp.status/v1"))
+        Some(&json!("supgang.mcp.status/v2"))
     );
     assert_eq!(
         status.pointer("/result/structuredContent/service"),

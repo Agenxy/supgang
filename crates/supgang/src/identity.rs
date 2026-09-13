@@ -115,6 +115,15 @@ impl DeviceIdentity {
         self.seed
     }
 
+    /// Creates one process-local copy for the bounded network-session actor.
+    ///
+    /// The copy is zeroized independently and is never serialized or exposed
+    /// outside the process. Keeping signing out of the state-owning event loop
+    /// lets local control remain responsive during hostile network timeouts.
+    pub(crate) const fn duplicate_for_network_actor(&self) -> Self {
+        Self { seed: self.seed }
+    }
+
     fn signing_key(&self) -> SigningKey {
         SigningKey::from_bytes(&self.seed)
     }
