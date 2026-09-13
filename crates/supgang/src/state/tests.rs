@@ -1,11 +1,14 @@
+use super::event::signed_checkpoint;
 use super::{
-    StateError, StateEvent, create_join_request, encode_event, initialize, install_join_bundle, open, unix_time,
+    AUTHORITATIVE_COMPACTION_THRESHOLD_BYTES, StateError, StateEvent, create_join_request, encode_event, initialize,
+    install_join_bundle, open, unix_time,
 };
 use crate::{
     candidate::{CandidateKind, CandidateTransport, EndpointCandidate},
     identity::DeviceIdentity,
-    ids::TransportKeyId,
+    ids::{HiveId, NodeId, TransportKeyId},
     invitation::JoinBundle,
+    journal::MAX_JOURNAL_BYTES,
     membership::{MAX_MEMBERSHIP_LIFETIME_SECONDS, MembershipRoles},
     record::Capabilities,
     revocation::{REVOCATION_VERSION, RevocationList, SignedRevocationList},
@@ -80,19 +83,23 @@ fn offline_join_never_exports_the_recipient_private_key() -> Result<(), Box<dyn 
     let joiner_path = directory.path().join("joiner");
     let mut founder = initialize(&founder_path)?;
     let request = create_join_request(&joiner_path)?;
+    let expected_node = NodeId::from_verifying_key(&request.device_verifying_key);
     let now = unix_time()?;
     let membership = founder.authorize_join_request(
         &request,
+        expected_node,
         MembershipRoles::DEVICE,
         now,
         now.saturating_add(MAX_MEMBERSHIP_LIFETIME_SECONDS),
     )?;
     let bundle = JoinBundle::new(
-        &founder.identity().root_verifying_key,
+        founder.identity().root.as_ref().ok_or("founder root missing")?,
         membership,
         founder.revocations().clone(),
-    );
-    let joined = install_join_bundle(&joiner_path, &bundle)?;
+        now,
+    )?;
+    let expected_hive = HiveId::from_root_verifying_key(&bundle.root_verifying_key);
+    let joined = install_join_bundle(&joiner_path, &bundle, expected_hive)?;
     assert_eq!(
         joined.identity().device.verifying_key().to_bytes(),
         request.device_verifying_key
@@ -100,6 +107,84 @@ fn offline_join_never_exports_the_recipient_private_key() -> Result<(), Box<dyn 
     assert!(joined.identity().root.is_none());
     assert_eq!(joined.member_count(), 1);
     assert_eq!(founder.member_count(), 2);
+    Ok(())
+}
+
+#[test]
+fn join_authorization_rejects_an_unexpected_proved_node_before_mutation() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let founder_path = directory.path().join("founder");
+    let joiner_path = directory.path().join("joiner");
+    let mut founder = initialize(&founder_path)?;
+    let request = create_join_request(&joiner_path)?;
+    let actual_node = NodeId::from_verifying_key(&request.device_verifying_key);
+    let expected_node = if actual_node == NodeId::from_bytes([42; 32]) {
+        NodeId::from_bytes([43; 32])
+    } else {
+        NodeId::from_bytes([42; 32])
+    };
+    let before_events = founder.event_count();
+    let before_members = founder.member_count();
+    let now = unix_time()?;
+
+    assert!(matches!(
+        founder.authorize_join_request(
+            &request,
+            expected_node,
+            MembershipRoles::DEVICE,
+            now,
+            now.saturating_add(MAX_MEMBERSHIP_LIFETIME_SECONDS),
+        ),
+        Err(StateError::UnexpectedJoinNode)
+    ));
+    assert_eq!(founder.event_count(), before_events);
+    assert_eq!(founder.member_count(), before_members);
+    drop(founder);
+    let reopened = open(&founder_path)?;
+    assert_eq!(reopened.event_count(), before_events);
+    assert_eq!(reopened.member_count(), before_members);
+    Ok(())
+}
+
+#[test]
+fn join_install_rejects_an_unexpected_hive_before_filesystem_mutation() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let founder_path = directory.path().join("founder");
+    let joiner_path = directory.path().join("joiner");
+    let mut founder = initialize(&founder_path)?;
+    let request = create_join_request(&joiner_path)?;
+    let expected_node = NodeId::from_verifying_key(&request.device_verifying_key);
+    let now = unix_time()?;
+    let membership = founder.authorize_join_request(
+        &request,
+        expected_node,
+        MembershipRoles::DEVICE,
+        now,
+        now.saturating_add(MAX_MEMBERSHIP_LIFETIME_SECONDS),
+    )?;
+    let bundle = JoinBundle::new(
+        founder.identity().root.as_ref().ok_or("founder root missing")?,
+        membership,
+        founder.revocations().clone(),
+        now,
+    )?;
+    let actual_hive = HiveId::from_root_verifying_key(&bundle.root_verifying_key);
+    let unexpected_hive = if actual_hive == HiveId::from_bytes([42; 32]) {
+        HiveId::from_bytes([43; 32])
+    } else {
+        HiveId::from_bytes([42; 32])
+    };
+
+    assert!(matches!(
+        install_join_bundle(&joiner_path, &bundle, unexpected_hive),
+        Err(StateError::UnexpectedJoinHive)
+    ));
+    assert!(!joiner_path.join(storage::JOURNAL_FILE_NAME).exists());
+    assert!(!joiner_path.join(storage::IDENTITY_FILE_NAME).exists());
+    assert!(joiner_path.join(storage::PENDING_FILE_NAME).exists());
+
+    let joined = install_join_bundle(&joiner_path, &bundle, actual_hive)?;
+    assert_eq!(joined.identity().hive_id, actual_hive);
     Ok(())
 }
 
@@ -230,5 +315,125 @@ fn revocation_merge_rejects_equivocation_and_set_rollback() -> Result<(), Box<dy
         Err(StateError::RevocationRollback)
     ));
     assert_eq!(state.revocations(), &first);
+    Ok(())
+}
+
+#[test]
+fn signed_checkpoint_preserves_authority_and_sequence_across_restart() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("state");
+    let mut state = initialize(&path)?;
+    let peer = DeviceIdentity::generate()?;
+    let now = unix_time()?;
+    state.issue_membership(
+        &peer.verifying_key(),
+        MembershipRoles::DEVICE,
+        [31; 32],
+        now,
+        now.saturating_add(MAX_MEMBERSHIP_LIFETIME_SECONDS),
+    )?;
+    let revocations = state.revoke(peer.node_id(), now)?;
+    assert_eq!(state.reserve_next_sequence()?, 1);
+    assert_eq!(state.reserve_next_sequence()?, 2);
+    state.compact()?;
+    assert_eq!(state.event_count(), 3);
+    drop(state);
+
+    let mut reopened = open(&path)?;
+    assert_eq!(reopened.member_count(), 2);
+    assert_eq!(reopened.revocations(), &revocations);
+    assert_eq!(reopened.sequence(), 2);
+    assert_eq!(reopened.event_count(), 3);
+    assert_eq!(reopened.reserve_next_sequence()?, 3);
+    drop(reopened);
+    assert_eq!(open(&path)?.sequence(), 3);
+    Ok(())
+}
+
+#[test]
+fn near_full_authoritative_history_compacts_before_append_and_restarts() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("state");
+    let mut state = initialize(&path)?;
+    let final_sequence = 370_000_u64;
+    let mut frames = Vec::with_capacity(usize::try_from(final_sequence)?);
+    for sequence in 1..=final_sequence {
+        frames.push(encode_event(&StateEvent::Sequence {
+            generation: 0,
+            sequence,
+        })?);
+    }
+    state.journal_mut()?.append_batch(&frames)?;
+    drop(state);
+
+    let mut reopened = open(&path)?;
+    assert_eq!(reopened.sequence(), final_sequence);
+    assert!(reopened.journal_mut()?.byte_len()? >= MAX_JOURNAL_BYTES.saturating_sub(512_u64.saturating_mul(1024)));
+    assert_eq!(reopened.reserve_next_sequence()?, final_sequence + 1);
+    assert!(reopened.journal_mut()?.byte_len()? < AUTHORITATIVE_COMPACTION_THRESHOLD_BYTES);
+    drop(reopened);
+
+    let reopened = open(&path)?;
+    assert_eq!(reopened.sequence(), final_sequence + 1);
+    assert_eq!(reopened.member_count(), 1);
+    Ok(())
+}
+
+#[test]
+fn checkpoint_signature_tampering_and_post_checkpoint_rollback_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let tampered_path = directory.path().join("tampered");
+    let mut tampered = initialize(&tampered_path)?;
+    assert_eq!(tampered.reserve_next_sequence()?, 1);
+    let mut snapshot = tampered.compaction_frames()?;
+    snapshot.pop().ok_or("checkpoint frame missing")?;
+    let mut checkpoint = signed_checkpoint(
+        tampered.identity(),
+        tampered.generation(),
+        tampered.sequence(),
+        &snapshot,
+    )?;
+    let StateEvent::Checkpoint { signature, .. } = &mut checkpoint else {
+        return Err("signed checkpoint had the wrong event type".into());
+    };
+    signature[0] ^= 1;
+    snapshot.push(encode_event(&checkpoint)?);
+    tampered.journal_mut()?.compact(&snapshot)?;
+    drop(tampered);
+    assert!(matches!(open(&tampered_path), Err(StateError::InvalidCheckpoint)));
+
+    let rollback_path = directory.path().join("rollback");
+    let mut rollback = initialize(&rollback_path)?;
+    assert_eq!(rollback.reserve_next_sequence()?, 1);
+    rollback.compact()?;
+    let rollback_generation = rollback.generation();
+    let rollback_sequence = rollback.sequence();
+    rollback.journal_mut()?.append(&encode_event(&StateEvent::Sequence {
+        generation: rollback_generation,
+        sequence: rollback_sequence,
+    })?)?;
+    drop(rollback);
+    assert!(matches!(open(&rollback_path), Err(StateError::InvalidSequence)));
+    Ok(())
+}
+
+#[test]
+fn ambiguous_compaction_failure_poisoned_state_until_reopen() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("state");
+    let mut state = initialize(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500))?;
+    let compact = state.compact();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    assert!(matches!(compact, Err(StateError::Journal(_))));
+    assert!(matches!(
+        state.reserve_next_sequence(),
+        Err(StateError::ReadOnlySnapshot)
+    ));
+    drop(state);
+    let reopened = open(&path)?;
+    assert_eq!(reopened.sequence(), 0);
     Ok(())
 }

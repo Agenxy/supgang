@@ -1,0 +1,15 @@
+[package]
+name = "supgang-acl"
+description = "Descriptor-based ACL boundary for Supgang protected storage"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+libc.workspace = true
+

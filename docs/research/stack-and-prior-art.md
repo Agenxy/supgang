@@ -1,8 +1,8 @@
 # Stack and prior-art research
 
-Date: 2026-08-16
+Date: 2026-08-20
 
-Status: M1 decision record
+Status: M1 decision record with corrective WAN traversal review
 
 ## Result
 
@@ -92,6 +92,36 @@ The lesson is not that DHTs, DNS, STUN, and relays are poor designs. They supply
 the network cut. Supgang's strict mode obtains any such path only from user-owned members and reports
 when none exists.
 
+## Corrective WAN traversal decision
+
+The 2026 review kept the narrow Quinn transport and implemented a layered policy instead of adding
+the full ICE, libp2p, or Iroh graphs:
+
+1. Prefer a directly attached private address when both computers share its prefix.
+2. Race up to four independently signed current or historical candidates with short spacing.
+3. Ask the attached gateway for a renewable mapping through PCP or NAT-PMP. UPnP is disabled because
+   its unauthenticated discovery can redirect the client to an attacker-selected LAN HTTP service.
+4. Align bilateral retry windows by hive so both firewalls see outbound UDP at nearly the same time.
+5. When a third authenticated member sees both computers, exchange its directly observed source
+   sockets and attempt a direct QUIC path from the already bound service port.
+6. Let an owner designate one reachable Supgang member as an inbound-oriented anchor, retaining up
+   to 64 authenticated device connections for signed-record gossip and direct-path coordination.
+7. Keep a future user-owned control relay as the fallback for networks that block direct UDP. It is
+   not necessary to learn current signed addresses when both devices can already reach the anchor.
+
+This matches the proven structure in ICE and current peer-to-peer systems: gather several candidate
+types, use a side channel to coordinate connectivity checks, prefer direct paths, and retain a relay
+for paths that cannot be punched. Supgang deliberately substitutes authenticated user-owned members
+for public STUN, coordination, and relay fleets. The libp2p DCUtR design directly informed the
+observed-address exchange and synchronized QUIC attempt. RFC 8489 also makes the relevant boundary
+explicit: discovering a NAT mapping is a tool, not a complete traversal solution.
+
+The implementation does not claim full ICE interoperability or guaranteed traversal. It has no
+public STUN oracle, hard-NAT birthday search, NAT64 synthesis, or general packet relay. Those methods
+increase reachability but either require reachable infrastructure, add substantial attack and
+dependency surface, or create traffic-amplification responsibilities. They remain measured,
+user-owned options rather than hidden defaults.
+
 ## Transport decision
 
 ### Quinn selected for M1
@@ -175,7 +205,7 @@ Before a production release, the selected stack still needs:
 - long-running packet, stream, unreachable-address, and peer-fanout load tests;
 - network-namespace proof that strict mode has no unexpected egress;
 - measured binary size, resident memory, idle CPU, wakeups, and keepalive traffic;
-- current transport comparison before NAT traversal is added;
+- current transport comparison before hard-NAT prediction or a control relay is added;
 - signed reproducible release artifacts, checksums, provenance, and SBOM.
 
 ## Primary sources
@@ -188,6 +218,13 @@ Before a production release, the selected stack still needs:
 - [Tokio signal handling](https://docs.rs/tokio/1.53.1/tokio/signal/)
 - [nix peer credentials](https://docs.rs/nix/0.31.3/nix/sys/socket/fn.getpeereid.html)
 - [RFC 9000: QUIC](https://www.rfc-editor.org/rfc/rfc9000)
+- [RFC 8445: Interactive Connectivity Establishment](https://www.rfc-editor.org/rfc/rfc8445)
+- [RFC 8489: Session Traversal Utilities for NAT](https://www.rfc-editor.org/rfc/rfc8489)
+- [RFC 8656: Traversal Using Relays around NAT](https://www.rfc-editor.org/rfc/rfc8656)
+- [RFC 6887: Port Control Protocol](https://www.rfc-editor.org/rfc/rfc6887)
+- [libp2p Direct Connection Upgrade through Relay](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md)
+- [Tailscale NAT traversal design](https://tailscale.com/blog/how-nat-traversal-works)
+- [Tailscale 2025 NAT traversal improvements](https://tailscale.com/blog/nat-traversal-improvements-pt-1/)
 - [RFC 10024: hybrid TLS 1.3 key agreement](https://www.rfc-editor.org/info/rfc10024)
 - [Iroh endpoint concepts](https://docs.iroh.computer/concepts/endpoints)
 - [Iroh address lookup](https://docs.iroh.computer/concepts/address-lookup)

@@ -10,6 +10,10 @@ use std::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+mod witness;
+
+use witness::JournalWitness;
+
 /// Maximum payload accepted in one journal frame.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// Maximum journal size before compaction is required.
@@ -25,6 +29,9 @@ const CHECKSUM_DOMAIN: &[u8] = b"supgang/journal-frame/v1\0";
 pub struct Journal {
     file: File,
     path: PathBuf,
+    witness_path: PathBuf,
+    hasher: Sha256,
+    frame_count: u64,
 }
 
 /// A journal open, validation, or persistence failure.
@@ -42,6 +49,9 @@ pub enum JournalError {
     /// The journal is readable or writable by another user.
     #[error("journal permissions must be 0600")]
     InsecurePermissions,
+    /// An extended ACL grants access beyond the owner-only mode policy.
+    #[error("journal has a non-owner ACL grant")]
+    InsecureAcl,
     /// The journal does not start with the expected format marker.
     #[error("journal header is invalid")]
     InvalidHeader,
@@ -60,6 +70,9 @@ pub enum JournalError {
     /// The journal reached its fixed storage ceiling.
     #[error("journal reached its size limit and must be compacted")]
     JournalFull,
+    /// The journal is older than, or inconsistent with, its last committed head.
+    #[error("journal rollback or ambiguous compaction requires explicit recovery")]
+    Rollback,
     /// The caller attempted to append an empty or oversized payload.
     #[error("journal payload must contain between 1 and 65536 bytes")]
     InvalidPayload,
@@ -78,14 +91,28 @@ impl Journal {
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, Vec<Vec<u8>>), JournalError> {
         let path = path.as_ref().to_path_buf();
         let no_follow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| JournalError::InvalidHeader)?;
-        let mut options = OpenOptions::new();
-        options
+        let mut create_options = OpenOptions::new();
+        create_options
             .read(true)
             .write(true)
-            .create(true)
+            .create_new(true)
             .mode(0o600)
             .custom_flags(no_follow);
-        let mut file = options.open(&path)?;
+        let (mut file, created) = match create_options.open(&path) {
+            Ok(file) => (file, true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(no_follow)
+                    .open(&path)?,
+                false,
+            ),
+            Err(error) => return Err(error.into()),
+        };
+        if created {
+            supgang_acl::clear_inherited_acl(&file)?;
+        }
         validate_metadata(&file)?;
 
         let length = file.metadata()?.len();
@@ -94,14 +121,61 @@ impl Journal {
             file.sync_all()?;
         }
 
-        let (frames, valid_length, actual_length) = read_frames(&mut file)?;
+        let ReadFrames {
+            mut frames,
+            mut valid_length,
+            actual_length,
+            bytes,
+        } = read_frames(&mut file)?;
+        let witness_path = witness::path_for(&path)?;
+        let current = journal_witness(
+            bytes
+                .get(..usize::try_from(valid_length).map_err(|_| JournalError::JournalFull)?)
+                .ok_or(JournalError::Rollback)?,
+            frames.len(),
+        )?;
+        match witness::read(&witness_path)? {
+            None => {
+                if valid_length != actual_length {
+                    return Err(JournalError::Rollback);
+                }
+                witness::write(&witness_path, &current)?;
+            }
+            Some(expected) if expected == current => {}
+            Some(expected) if expected.length <= valid_length => {
+                let prefix = bytes
+                    .get(..usize::try_from(expected.length).map_err(|_| JournalError::Rollback)?)
+                    .ok_or(JournalError::Rollback)?;
+                let (prefix_frames, prefix_length) = parse_frames(prefix)?;
+                if prefix_length != expected.length || journal_witness(prefix, prefix_frames.len())? != expected {
+                    return Err(JournalError::Rollback);
+                }
+                frames = prefix_frames;
+                valid_length = expected.length;
+            }
+            Some(_) => return Err(JournalError::Rollback),
+        }
         if valid_length < actual_length {
             file.set_len(valid_length)?;
             file.sync_all()?;
         }
         file.seek(SeekFrom::End(0))?;
+        let committed = bytes
+            .get(..usize::try_from(valid_length).map_err(|_| JournalError::JournalFull)?)
+            .ok_or(JournalError::Rollback)?;
+        let mut hasher = Sha256::new();
+        hasher.update(committed);
 
-        Ok((Self { file, path }, frames))
+        Ok((
+            Self {
+                file,
+                path,
+                witness_path,
+                hasher,
+                frame_count: u64::try_from(frames.len()).map_err(|_| JournalError::JournalFull)?,
+            },
+            frames,
+        ))
     }
 
     /// Reads and validates an existing journal without creating or repairing it.
@@ -113,11 +187,36 @@ impl Journal {
     ///
     /// Rejects missing, unsafe, oversized, corrupt, or malformed journals.
     pub fn read(path: impl AsRef<Path>) -> Result<Vec<Vec<u8>>, JournalError> {
+        let path = path.as_ref();
         let no_follow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| JournalError::InvalidHeader)?;
         let mut file = OpenOptions::new().read(true).custom_flags(no_follow).open(path)?;
         validate_metadata(&file)?;
-        let (frames, _valid_length, _actual_length) = read_frames(&mut file)?;
-        Ok(frames)
+        let ReadFrames {
+            frames,
+            valid_length,
+            bytes,
+            ..
+        } = read_frames(&mut file)?;
+        let witness_path = witness::path_for(path)?;
+        let expected = witness::read(&witness_path)?.ok_or(JournalError::Rollback)?;
+        let current = journal_witness(
+            bytes
+                .get(..usize::try_from(valid_length).map_err(|_| JournalError::JournalFull)?)
+                .ok_or(JournalError::Rollback)?,
+            frames.len(),
+        )?;
+        if expected == current {
+            return Ok(frames);
+        }
+        let prefix = bytes
+            .get(..usize::try_from(expected.length).map_err(|_| JournalError::Rollback)?)
+            .ok_or(JournalError::Rollback)?;
+        let (prefix_frames, prefix_length) = parse_frames(prefix)?;
+        if prefix_length == expected.length && journal_witness(prefix, prefix_frames.len())? == expected {
+            Ok(prefix_frames)
+        } else {
+            Err(JournalError::Rollback)
+        }
     }
 
     /// Appends and synchronizes one complete frame before returning.
@@ -145,7 +244,100 @@ impl Journal {
         self.file.write_all(payload)?;
         self.file.write_all(&checksum)?;
         self.file.sync_data()?;
+        let mut next_hasher = self.hasher.clone();
+        next_hasher.update(length_bytes);
+        next_hasher.update(payload);
+        next_hasher.update(checksum);
+        let next_count = self.frame_count.checked_add(1).ok_or(JournalError::JournalFull)?;
+        witness::write(
+            &self.witness_path,
+            &JournalWitness::new(
+                current_length.saturating_add(frame_length),
+                next_count,
+                next_hasher.clone().finalize().into(),
+            ),
+        )?;
+        self.hasher = next_hasher;
+        self.frame_count = next_count;
         Ok(())
+    }
+
+    /// Appends a bounded group of frames with one durability synchronization.
+    pub(crate) fn append_batch(&mut self, payloads: &[Vec<u8>]) -> Result<(), JournalError> {
+        let additional_length = payloads.iter().try_fold(0_u64, |total, payload| {
+            if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
+                return Err(JournalError::InvalidPayload);
+            }
+            let frame_length =
+                u64::try_from(LENGTH_BYTES + payload.len() + CHECKSUM_BYTES).map_err(|_| JournalError::JournalFull)?;
+            total.checked_add(frame_length).ok_or(JournalError::JournalFull)
+        })?;
+        let current_length = self.file.seek(SeekFrom::End(0))?;
+        if current_length.saturating_add(additional_length) > MAX_JOURNAL_BYTES {
+            return Err(JournalError::JournalFull);
+        }
+        for payload in payloads {
+            write_frame(&mut self.file, payload)?;
+        }
+        self.file.sync_data()?;
+        let next_count = self
+            .frame_count
+            .checked_add(u64::try_from(payloads.len()).map_err(|_| JournalError::JournalFull)?)
+            .ok_or(JournalError::JournalFull)?;
+        let mut next_hasher = self.hasher.clone();
+        for payload in payloads {
+            update_frame_hash(&mut next_hasher, payload)?;
+        }
+        witness::write(
+            &self.witness_path,
+            &JournalWitness::new(
+                current_length.saturating_add(additional_length),
+                next_count,
+                next_hasher.clone().finalize().into(),
+            ),
+        )?;
+        self.hasher = next_hasher;
+        self.frame_count = next_count;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_repeated_until_len_for_test(
+        &mut self,
+        payload: &[u8],
+        minimum_length: u64,
+    ) -> Result<usize, JournalError> {
+        if payload.is_empty() || payload.len() > MAX_FRAME_BYTES || minimum_length > MAX_JOURNAL_BYTES {
+            return Err(JournalError::InvalidPayload);
+        }
+        let frame_length =
+            u64::try_from(LENGTH_BYTES + payload.len() + CHECKSUM_BYTES).map_err(|_| JournalError::JournalFull)?;
+        let current_length = self.file.seek(SeekFrom::End(0))?;
+        let missing = minimum_length.saturating_sub(current_length);
+        let repeats = missing.saturating_add(frame_length.saturating_sub(1)) / frame_length;
+        if current_length.saturating_add(repeats.saturating_mul(frame_length)) > MAX_JOURNAL_BYTES {
+            return Err(JournalError::JournalFull);
+        }
+        for _ in 0..repeats {
+            write_frame(&mut self.file, payload)?;
+        }
+        self.file.sync_data()?;
+        let next_count = self.frame_count.checked_add(repeats).ok_or(JournalError::JournalFull)?;
+        let mut next_hasher = self.hasher.clone();
+        for _ in 0..repeats {
+            update_frame_hash(&mut next_hasher, payload)?;
+        }
+        witness::write(
+            &self.witness_path,
+            &JournalWitness::new(
+                current_length.saturating_add(repeats.saturating_mul(frame_length)),
+                next_count,
+                next_hasher.clone().finalize().into(),
+            ),
+        )?;
+        self.hasher = next_hasher;
+        self.frame_count = next_count;
+        usize::try_from(repeats).map_err(|_| JournalError::JournalFull)
     }
 
     /// Atomically replaces the journal with a compact canonical frame set.
@@ -188,22 +380,38 @@ impl Journal {
                 .mode(0o600)
                 .custom_flags(no_follow);
             let mut replacement = options.open(&temporary)?;
+            supgang_acl::clear_inherited_acl(&replacement)?;
             validate_metadata(&replacement)?;
+            let mut hasher = Sha256::new();
             replacement.write_all(JOURNAL_MAGIC)?;
+            hasher.update(JOURNAL_MAGIC);
             for payload in payloads {
                 write_frame(&mut replacement, payload)?;
+                update_frame_hash(&mut hasher, payload)?;
             }
             replacement.sync_all()?;
             fs::rename(&temporary, &self.path)?;
             sync_parent(&self.path)?;
+            let frame_count = u64::try_from(payloads.len()).map_err(|_| JournalError::JournalFull)?;
+            witness::write(
+                &self.witness_path,
+                &JournalWitness::new(replacement_size, frame_count, hasher.clone().finalize().into()),
+            )?;
             replacement.seek(SeekFrom::End(0))?;
-            self.file = replacement;
-            Ok(())
+            Ok((replacement, hasher, frame_count))
         })();
-        if result.is_err() {
-            let _cleanup = fs::remove_file(&temporary);
+        match result {
+            Ok((replacement, hasher, frame_count)) => {
+                self.file = replacement;
+                self.hasher = hasher;
+                self.frame_count = frame_count;
+                Ok(())
+            }
+            Err(error) => {
+                let _cleanup = fs::remove_file(&temporary);
+                Err(error)
+            }
         }
-        result
     }
 
     /// Returns the current validated journal length.
@@ -222,7 +430,14 @@ impl Journal {
     }
 }
 
-fn read_frames(file: &mut File) -> Result<(Vec<Vec<u8>>, u64, u64), JournalError> {
+struct ReadFrames {
+    frames: Vec<Vec<u8>>,
+    valid_length: u64,
+    actual_length: u64,
+    bytes: Vec<u8>,
+}
+
+fn read_frames(file: &mut File) -> Result<ReadFrames, JournalError> {
     let declared_length = file.metadata()?.len();
     if declared_length > MAX_JOURNAL_BYTES {
         return Err(JournalError::JournalFull);
@@ -239,7 +454,12 @@ fn read_frames(file: &mut File) -> Result<(Vec<Vec<u8>>, u64, u64), JournalError
         return Err(JournalError::InvalidHeader);
     }
     let (frames, valid_length) = parse_frames(&bytes)?;
-    Ok((frames, valid_length, actual_length))
+    Ok(ReadFrames {
+        frames,
+        valid_length,
+        actual_length,
+        bytes,
+    })
 }
 
 fn write_frame(file: &mut File, payload: &[u8]) -> Result<(), JournalError> {
@@ -252,6 +472,27 @@ fn write_frame(file: &mut File, payload: &[u8]) -> Result<(), JournalError> {
     file.write_all(payload)?;
     file.write_all(&checksum(length_bytes, payload))?;
     Ok(())
+}
+
+fn update_frame_hash(hasher: &mut Sha256, payload: &[u8]) -> Result<(), JournalError> {
+    if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
+        return Err(JournalError::InvalidPayload);
+    }
+    let length = u32::try_from(payload.len())
+        .map_err(|_| JournalError::InvalidPayload)?
+        .to_be_bytes();
+    hasher.update(length);
+    hasher.update(payload);
+    hasher.update(checksum(length, payload));
+    Ok(())
+}
+
+fn journal_witness(bytes: &[u8], frame_count: usize) -> Result<JournalWitness, JournalError> {
+    Ok(JournalWitness::new(
+        u64::try_from(bytes.len()).map_err(|_| JournalError::JournalFull)?,
+        u64::try_from(frame_count).map_err(|_| JournalError::JournalFull)?,
+        Sha256::digest(bytes).into(),
+    ))
 }
 
 fn temporary_sibling(path: &Path) -> Result<PathBuf, JournalError> {
@@ -284,6 +525,13 @@ fn validate_metadata(file: &File) -> Result<(), JournalError> {
     if metadata.mode() & 0o777 != 0o600 {
         return Err(JournalError::InsecurePermissions);
     }
+    supgang_acl::reject_non_owner_grants(file).map_err(|error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            JournalError::InsecureAcl
+        } else {
+            JournalError::Io(error)
+        }
+    })?;
     Ok(())
 }
 
@@ -396,6 +644,21 @@ mod tests {
         *payload_byte ^= 1;
         fs::write(&path, bytes)?;
         assert!(matches!(Journal::open(&path), Err(JournalError::Checksum { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn committed_tail_truncation_is_detected_instead_of_repaired() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("state.journal");
+        let (mut journal, _) = Journal::open(&path)?;
+        journal.append(b"first")?;
+        let first_length = journal.byte_len()?;
+        journal.append(b"security revocation")?;
+        drop(journal);
+
+        OpenOptions::new().write(true).open(&path)?.set_len(first_length)?;
+        assert!(matches!(Journal::open(&path), Err(JournalError::Rollback)));
         Ok(())
     }
 

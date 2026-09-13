@@ -21,6 +21,10 @@ use crate::{
     journal::{Journal, JournalError},
 };
 
+mod path_safety;
+
+use path_safety::{nearest_existing_ancestor, normalized_absolute, validate_ancestor_chain};
+
 /// Name of the protected local identity file.
 pub const IDENTITY_FILE_NAME: &str = "identity.key";
 /// Name of the authoritative append-only state journal.
@@ -111,6 +115,9 @@ pub enum StorageError {
     /// The state directory grants access to another user.
     #[error("state directory permissions must be 0700")]
     InsecureDirectoryPermissions,
+    /// An ancestor lets another operating-system user replace the state path.
+    #[error("state directory must not be below a replaceable symlink or a directory writable by another user")]
+    UnsafeAncestor,
     /// The protected identity has already been initialized.
     #[error("Supgang is already initialized in this state directory")]
     AlreadyInitialized,
@@ -129,6 +136,9 @@ pub enum StorageError {
     /// The identity file grants access to another user.
     #[error("protected identity file permissions must be 0600")]
     InsecureIdentityPermissions,
+    /// An extended ACL grants access beyond the owner-only mode policy.
+    #[error("protected local state has a non-owner ACL grant")]
+    InsecureAcl,
     /// No supported home or state-directory environment is available.
     #[error("cannot determine a default state directory; pass --state-dir")]
     NoDefaultStateDirectory,
@@ -207,14 +217,17 @@ pub fn load_identity(path: impl AsRef<Path>) -> Result<LocalIdentity, StorageErr
     let directory = validate_directory(path.as_ref())?;
     let identity_path = directory.join(IDENTITY_FILE_NAME);
     let no_follow = no_follow_flag()?;
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(no_follow)
         .open(identity_path)?;
     validate_owner_file_metadata(&file)?;
-    let mut bytes = Vec::with_capacity(IDENTITY_FILE_BYTES);
-    file.read_to_end(&mut bytes)?;
-    decode_identity(&bytes)
+    let mut bytes = Vec::with_capacity(IDENTITY_FILE_BYTES.saturating_add(1));
+    file.take(u64::try_from(IDENTITY_FILE_BYTES.saturating_add(1)).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
+    let decoded = decode_identity(&bytes);
+    bytes.zeroize();
+    decoded
 }
 
 /// Opens and validates the authoritative journal in an existing state directory.
@@ -272,15 +285,18 @@ pub fn load_pending_identity(path: impl AsRef<Path>) -> Result<PendingIdentity, 
     let directory = validate_directory(path.as_ref())?;
     let pending_path = directory.join(PENDING_FILE_NAME);
     let no_follow = no_follow_flag()?;
-    let mut file = match OpenOptions::new().read(true).custom_flags(no_follow).open(pending_path) {
+    let file = match OpenOptions::new().read(true).custom_flags(no_follow).open(pending_path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(StorageError::MissingPendingIdentity),
         Err(error) => return Err(error.into()),
     };
     validate_owner_file_metadata(&file)?;
-    let mut bytes = Vec::with_capacity(PENDING_FILE_BYTES);
-    file.read_to_end(&mut bytes)?;
-    decode_pending(&bytes)
+    let mut bytes = Vec::with_capacity(PENDING_FILE_BYTES.saturating_add(1));
+    file.take(u64::try_from(PENDING_FILE_BYTES.saturating_add(1)).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
+    let decoded = decode_pending(&bytes);
+    bytes.zeroize();
+    decoded
 }
 
 /// Converts a pending key into a root-bound member identity and removes the
@@ -317,26 +333,48 @@ pub(crate) fn prepare_directory(path: &Path) -> Result<PathBuf, StorageError> {
     match fs::symlink_metadata(path) {
         Ok(_) => validate_directory(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(path)?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-            validate_directory(path)
+            let absolute = normalized_absolute(path)?;
+            let existing = nearest_existing_ancestor(&absolute)?;
+            validate_ancestor_chain(&existing, false)?;
+            fs::create_dir_all(&absolute)?;
+            fs::set_permissions(&absolute, fs::Permissions::from_mode(0o700))?;
+            let directory = File::open(&absolute)?;
+            supgang_acl::clear_inherited_acl(&directory)?;
+            validate_directory(&absolute)
         }
         Err(error) => Err(error.into()),
     }
 }
 
 pub(crate) fn validate_directory(path: &Path) -> Result<PathBuf, StorageError> {
-    let metadata = fs::symlink_metadata(path)?;
+    let absolute = validate_trusted_owner_directory(path)?;
+    let metadata = fs::symlink_metadata(&absolute)?;
+    if metadata.mode() & 0o777 != 0o700 {
+        return Err(StorageError::InsecureDirectoryPermissions);
+    }
+    Ok(absolute)
+}
+
+/// Validates a real owner-controlled directory and its complete ancestor chain.
+///
+/// Unlike [`validate_directory`], this permits owner read and execute access for
+/// group or other users, but never write access. It is used for trusted platform
+/// roots such as the user's home directory before protected children are made.
+pub(crate) fn validate_trusted_owner_directory(path: &Path) -> Result<PathBuf, StorageError> {
+    let absolute = normalized_absolute(path)?;
+    validate_ancestor_chain(&absolute, true)?;
+    let metadata = fs::symlink_metadata(&absolute)?;
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
         return Err(StorageError::NotDirectory);
     }
     if metadata.uid() != rustix::process::getuid().as_raw() {
         return Err(StorageError::WrongOwner);
     }
-    if metadata.mode() & 0o777 != 0o700 {
-        return Err(StorageError::InsecureDirectoryPermissions);
+    if metadata.mode() & 0o022 != 0 {
+        return Err(StorageError::UnsafeAncestor);
     }
-    Ok(path.to_path_buf())
+    validate_descriptor_acl(&File::open(&absolute)?)?;
+    Ok(absolute)
 }
 
 fn write_identity(path: &Path, identity: &LocalIdentity) -> Result<(), StorageError> {
@@ -348,6 +386,7 @@ fn write_identity(path: &Path, identity: &LocalIdentity) -> Result<(), StorageEr
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(StorageError::AlreadyInitialized),
         Err(error) => return Err(error.into()),
     };
+    supgang_acl::clear_inherited_acl(&file)?;
     validate_owner_file_metadata(&file)?;
 
     let mut root_secret = identity
@@ -384,6 +423,7 @@ fn write_pending(path: &Path, pending: &PendingIdentity) -> Result<(), StorageEr
                 error.into()
             }
         })?;
+    supgang_acl::clear_inherited_acl(&file)?;
     validate_owner_file_metadata(&file)?;
     let mut device_secret = pending.device.secret_bytes();
     let mut payload = Vec::with_capacity(PENDING_FILE_BYTES);
@@ -498,7 +538,18 @@ pub(crate) fn validate_owner_file_metadata(file: &File) -> Result<(), StorageErr
     if metadata.mode() & 0o777 != 0o600 {
         return Err(StorageError::InsecureIdentityPermissions);
     }
+    validate_descriptor_acl(file)?;
     Ok(())
+}
+
+pub(crate) fn validate_descriptor_acl(file: &File) -> Result<(), StorageError> {
+    supgang_acl::reject_non_owner_grants(file).map_err(|error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            StorageError::InsecureAcl
+        } else {
+            StorageError::Io(error)
+        }
+    })
 }
 
 pub(crate) fn no_follow_flag() -> Result<i32, StorageError> {
@@ -511,7 +562,10 @@ pub(crate) fn sync_directory(path: &Path) -> Result<(), StorageError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+    };
 
     use super::{
         StorageError, create_pending_identity, initialize, load_identity, load_pending_identity, open_journal,
@@ -574,6 +628,56 @@ mod tests {
         assert!(matches!(
             create_pending_identity(&path),
             Err(StorageError::PendingAlreadyExists)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn secret_key_files_reject_trailing_growth() -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let initialized_path = parent.path().join("initialized");
+        drop(initialize(&initialized_path)?);
+        let identity_path = initialized_path.join(super::IDENTITY_FILE_NAME);
+        let mut identity = fs::read(&identity_path)?;
+        identity.extend_from_slice(&[0; 8]);
+        fs::write(identity_path, identity)?;
+        assert!(matches!(
+            load_identity(&initialized_path),
+            Err(StorageError::InvalidIdentityFile)
+        ));
+
+        let pending_path = parent.path().join("pending");
+        drop(create_pending_identity(&pending_path)?);
+        let pending_file = pending_path.join(super::PENDING_FILE_NAME);
+        let mut pending = fs::read(&pending_file)?;
+        pending.extend_from_slice(&[0; 8]);
+        fs::write(pending_file, pending)?;
+        assert!(matches!(
+            load_pending_identity(&pending_path),
+            Err(StorageError::InvalidPendingIdentity)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn state_creation_rejects_cross_user_writable_or_symlinked_ancestors() -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let shared = parent.path().join("shared");
+        fs::create_dir(&shared)?;
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777))?;
+        assert!(matches!(
+            initialize(shared.join("state")),
+            Err(StorageError::UnsafeAncestor)
+        ));
+
+        let target = parent.path().join("target");
+        fs::create_dir(&target)?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700))?;
+        let alias = parent.path().join("alias");
+        symlink(&target, &alias)?;
+        assert!(matches!(
+            initialize(alias.join("state")),
+            Err(StorageError::UnsafeAncestor)
         ));
         Ok(())
     }

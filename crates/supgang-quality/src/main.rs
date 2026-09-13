@@ -219,11 +219,22 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
         let unsafe_block = ["unsafe", " {"].concat();
         let unsafe_function = ["unsafe", " fn"].concat();
         let unsafe_implementation = ["unsafe", " impl"].concat();
-        if text.contains(&unsafe_block) || text.contains(&unsafe_function) || text.contains(&unsafe_implementation) {
-            return Err(format!(
-                "portable Supgang source contains unsafe Rust: {}",
-                display(root, path)
-            ));
+        let contains_unsafe =
+            text.contains(&unsafe_block) || text.contains(&unsafe_function) || text.contains(&unsafe_implementation);
+        let relative = display(root, path);
+        let is_acl_boundary = relative == "crates/supgang-acl/src/lib.rs";
+        if contains_unsafe && !is_acl_boundary {
+            return Err(format!("portable Supgang source contains unsafe Rust: {relative}"));
+        }
+        if is_acl_boundary {
+            for required in [
+                "#![deny(missing_docs, unsafe_op_in_unsafe_fn, warnings)]",
+                "//! Small safe boundary around platform descriptor-based ACL APIs.",
+            ] {
+                if !text.contains(required) {
+                    return Err(format!("ACL boundary is missing required safety policy {required:?}"));
+                }
+            }
         }
     }
     Ok(())
@@ -275,7 +286,7 @@ fn inspect_package_identity(root: &Path) -> Result<(), String> {
         "name = \"supgang\"",
         "publish = [\"crates-io\"]",
         "name = \"supgang\"\npath = \"src/main.rs\"",
-        "supgang-core = { path = \"../supgang\", version = \"=0.1.0\" }",
+        "supgang-core = { path = \"../supgang\", version = \"=0.2.0-alpha.10\" }",
     ] {
         if !command.contains(required) {
             return Err(format!("command package identity is missing: {required}"));
@@ -286,23 +297,88 @@ fn inspect_package_identity(root: &Path) -> Result<(), String> {
 
 fn inspect_duplicate_dependencies(root: &Path) -> Result<(), String> {
     let lockfile = fs::read_to_string(root.join("Cargo.lock")).map_err(|read_error| read_error.to_string())?;
-    let mut names = Vec::new();
-    for line in lockfile.lines() {
-        let Some(name) = line.strip_prefix("name = \"").and_then(|value| value.strip_suffix('"')) else {
+    let identities = lock_identities(&lockfile)?;
+    for (name, _, _) in &identities {
+        let matching = identities
+            .iter()
+            .filter(|(candidate, _, _)| candidate == name)
+            .collect::<Vec<_>>();
+        if matching.len() < 2 {
             continue;
-        };
-        if names.contains(&name) {
-            if !matches!(
-                name,
-                "getrandom" | "r-efi" | "rand" | "rand_core" | "syn" | "untrusted" | "windows-sys"
-            ) {
-                return Err(format!("duplicate dependency lacks a reviewed exception: {name}"));
+        }
+        for (duplicate, version, source) in matching {
+            let identity = format!("{duplicate}@{version}");
+            if source != "registry+https://github.com/rust-lang/crates.io-index"
+                || !REVIEWED_DUPLICATE_IDENTITIES.contains(&identity.as_str())
+            {
+                return Err(format!(
+                    "duplicate dependency identity lacks a reviewed exception: {identity} from {source}"
+                ));
             }
-        } else {
-            names.push(name);
         }
     }
     Ok(())
+}
+
+const REVIEWED_DUPLICATE_IDENTITIES: &[&str] = &[
+    "bitflags@1.3.2",
+    "bitflags@2.13.1",
+    "getrandom@0.2.17",
+    "getrandom@0.3.4",
+    "getrandom@0.4.3",
+    "jni-sys@0.3.1",
+    "jni-sys@0.4.1",
+    "r-efi@5.3.0",
+    "r-efi@6.0.0",
+    "rand@0.9.5",
+    "rand@0.10.2",
+    "rand_core@0.9.5",
+    "rand_core@0.10.1",
+    "syn@2.0.119",
+    "syn@3.0.3",
+    "thiserror@1.0.69",
+    "thiserror@2.0.20",
+    "thiserror-impl@1.0.69",
+    "thiserror-impl@2.0.20",
+    "untrusted@0.7.1",
+    "untrusted@0.9.0",
+    "windows-sys@0.45.0",
+    "windows-sys@0.52.0",
+    "windows-sys@0.61.2",
+    "windows-targets@0.42.2",
+    "windows-targets@0.52.6",
+    "windows_aarch64_gnullvm@0.42.2",
+    "windows_aarch64_gnullvm@0.52.6",
+    "windows_aarch64_msvc@0.42.2",
+    "windows_aarch64_msvc@0.52.6",
+    "windows_i686_gnu@0.42.2",
+    "windows_i686_gnu@0.52.6",
+    "windows_i686_msvc@0.42.2",
+    "windows_i686_msvc@0.52.6",
+    "windows_x86_64_gnu@0.42.2",
+    "windows_x86_64_gnu@0.52.6",
+    "windows_x86_64_gnullvm@0.42.2",
+    "windows_x86_64_gnullvm@0.52.6",
+    "windows_x86_64_msvc@0.42.2",
+    "windows_x86_64_msvc@0.52.6",
+];
+
+fn lock_identities(lockfile: &str) -> Result<Vec<(String, String, String)>, String> {
+    let mut identities = Vec::new();
+    for package in lockfile.split("[[package]]").skip(1) {
+        let value = |key: &str| {
+            package.lines().find_map(|line| {
+                line.strip_prefix(key)
+                    .and_then(|value| value.strip_suffix('"'))
+                    .map(str::to_owned)
+            })
+        };
+        let name = value("name = \"").ok_or_else(|| "Cargo.lock package is missing a name".to_owned())?;
+        let version = value("version = \"").ok_or_else(|| format!("Cargo.lock package {name} is missing a version"))?;
+        let source = value("source = \"").unwrap_or_else(|| "workspace".to_owned());
+        identities.push((name, version, source));
+    }
+    Ok(identities)
 }
 
 fn inspect_dependency_policy(root: &Path) -> Result<(), String> {
@@ -338,21 +414,29 @@ fn inspect_install_policy(root: &Path) -> Result<(), String> {
 }
 
 fn inspect_ci(root: &Path) -> Result<(), String> {
-    let workflow =
-        fs::read_to_string(root.join(".github/workflows/ci.yml")).map_err(|read_error| read_error.to_string())?;
-    if workflow.contains("pull_request_target:") || workflow.contains("permissions: write-all") {
-        return Err("CI contains a privileged trigger or broad write permission".to_owned());
-    }
-    for line in workflow.lines().map(str::trim) {
-        let Some(reference) = line.strip_prefix("uses:").map(str::trim) else {
+    for entry in fs::read_dir(root.join(".github/workflows")).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if !matches!(path.extension().and_then(OsStr::to_str), Some("yml" | "yaml")) {
             continue;
-        };
-        let Some((action, revision)) = reference.split_once('@') else {
-            return Err(format!("CI action is missing an immutable revision: {reference}"));
-        };
-        let revision = revision.split_ascii_whitespace().next().unwrap_or_default();
-        if action.is_empty() || revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(format!("CI action is not pinned to a full commit: {reference}"));
+        }
+        let workflow = fs::read_to_string(&path).map_err(|read_error| read_error.to_string())?;
+        if workflow.contains("pull_request_target:") || workflow.contains("permissions: write-all") {
+            return Err(format!(
+                "{} contains a privileged trigger or broad write permission",
+                display(root, &path)
+            ));
+        }
+        for line in workflow.lines().map(str::trim) {
+            let Some(reference) = line.strip_prefix("uses:").map(str::trim) else {
+                continue;
+            };
+            let Some((action, revision)) = reference.split_once('@') else {
+                return Err(format!("workflow action is missing an immutable revision: {reference}"));
+            };
+            let revision = revision.split_ascii_whitespace().next().unwrap_or_default();
+            if action.is_empty() || revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(format!("workflow action is not pinned to a full commit: {reference}"));
+            }
         }
     }
     Ok(())

@@ -1,32 +1,73 @@
 //! Single-owner Supgang peer service with bounded retry and contact gossip.
 
-use std::{collections::BTreeMap, io, net::SocketAddr, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    net::SocketAddr,
+    num::NonZeroU16,
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
-use quinn::{Connection, Endpoint};
+use quinn::Endpoint;
 use thiserror::Error;
 
 use crate::{
     candidate::{CandidateKind, CandidateTransport, EndpointCandidate, MAX_CANDIDATES},
-    contact::PeerContact,
     control::{self, ControlListener},
     ids::NodeId,
-    network,
     peer_directory::{PeerDirectory, PeerDirectoryError},
     profile::PeerName,
-    record::Capabilities,
-    session,
+    router_mapping::{RouterMapping, RouterMappingStatus, shutdown as shutdown_router_mapping},
+    settings::{DEFAULT_ADDRESS_HISTORY, MAX_ADDRESS_HISTORY, MIN_ADDRESS_HISTORY},
     state::{self, LocalState, StateError},
-    sync::{self, MAX_SYNC_CONTACTS, SyncPage},
+    sync::{self, SyncPage},
     transport::{self, TransportError, TransportIdentity},
     transport_storage::{self, TransportStorageError},
 };
 
+mod active;
+mod admission;
+mod config;
+mod connection;
+mod contact_state;
+mod events;
+mod gateway_reachability;
+mod interface_refresh;
+mod live_session;
 mod local_control;
+mod peer_actor;
+mod rendezvous;
+mod retry_schedule;
+mod update_delivery;
 
-use local_control::{
-    import_received, initial_retry_delay, merge_and_broadcast_revocations, poll_control, process_peer_events,
-    shutdown_receiver, spawn_revocation_listener, stop_if_requested,
+use active::ActiveConnection;
+pub(crate) use active::SessionAuthorization;
+use admission::InboundAdmission;
+use connection::{AuthenticatedExchange, SessionAuthentication, dial_observed_peer, dial_peer, inbound_session};
+use contact_state::{gossip_page, make_local_contact};
+use events::PeerEvent;
+use gateway_reachability::replace_gateway_reachability;
+use interface_refresh::{
+    InterfaceRefreshHealth, RouterMappingUpdateBudget, bounded_automatic_interfaces, interface_addresses,
+    refresh_service_candidates,
 };
+use live_session::{
+    LiveSessionState, SessionTaskResult, finish_ready_sessions, schedule_remembered_peer, schedule_rendezvous_offers,
+};
+use local_control::{
+    ControlView, PeerEventState, import_received, import_received_reachability, merge_received_revocations,
+    poll_control, process_peer_events, publish_gossip_if, revocation_listener, shutdown_receiver, stop_if_requested,
+};
+use peer_actor::{PeerActorRegistry, PeerUpdateContext, reap_ready_tasks, register_connection};
+use retry_schedule::{aligned_retry_delay, next_service_wait, retry_epoch};
+use update_delivery::UpdateDeliveryQueue;
+
+#[cfg(test)]
+use connection::candidate_race_delay;
+#[cfg(test)]
+use interface_refresh::replace_interface_candidates;
 
 /// Full-handshake deadline for one address candidate.
 pub const CONNECT_TIMEOUT_SECONDS: u64 = 4;
@@ -38,10 +79,24 @@ pub const DEFAULT_RETRY_SECONDS: u64 = 15;
 pub const DEFAULT_RECORD_LIFETIME_SECONDS: u64 = 6 * 60 * 60;
 /// Maximum long-lived authenticated neighbors retained by one service.
 pub const MAX_ACTIVE_PEERS: usize = 8;
+/// Maximum authenticated neighbors retained by an explicit always-on anchor.
+pub const MAX_ANCHOR_PEERS: usize = 64;
 /// Maximum pending peer-actor events waiting for the single state owner.
 pub const PEER_EVENT_QUEUE: usize = 32;
-/// Maximum recent authenticated-peer reflexive observations advertised at once.
-pub const MAX_REFLEXIVE_CANDIDATES: usize = 4;
+/// Compatibility ceiling across the independently bounded session pools.
+pub const MAX_PENDING_SESSIONS: usize = 18;
+/// Maximum unauthenticated inbound handshakes allowed to run concurrently.
+pub const MAX_PENDING_INBOUND_SESSIONS: usize = 8;
+/// Reserved inbound lane for source networks already bound to verified peer history.
+pub const MAX_PENDING_PRIORITY_INBOUND_SESSIONS: usize = 2;
+/// Maximum authenticated-recovery handshakes allowed to run concurrently.
+pub const MAX_PENDING_OUTBOUND_SESSIONS: usize = 8;
+/// Stagger between ranked connection candidates in one bounded race.
+pub const CANDIDATE_RACE_DELAY_MILLIS: u64 = 125;
+/// Retry rounds between secondary-direction recovery probes.
+pub const SECONDARY_RECOVERY_CADENCE: usize = 4;
+/// Interval for detecting automatic local interface changes without polling a public service.
+pub const AUTOMATIC_INTERFACE_REFRESH_SECONDS: u64 = 5;
 
 /// Explicit service network policy. Nothing is discovered through a public dependency.
 #[derive(Clone, Debug)]
@@ -56,11 +111,18 @@ pub struct ServiceConfig {
     pub retry_interval: Duration,
     /// Lifetime of each locally signed endpoint record.
     pub record_lifetime: Duration,
+    /// Number of historically signed peer addresses retained for recovery.
+    pub address_history: usize,
+    /// Whether active interface candidates are re-enumerated after network changes.
+    pub automatic_interface_refresh: bool,
+    /// Whether the local gateway maintains a renewable UDP mapping.
+    pub automatic_router_mapping: bool,
+    /// Maximum authenticated neighbors retained by this process.
+    pub max_active_peers: usize,
 }
 
 impl ServiceConfig {
     /// Creates a strict service configuration from explicit local and direct addresses.
-    ///
     /// # Errors
     ///
     /// Rejects port zero, absent or excessive advertisements, invalid address
@@ -100,6 +162,10 @@ impl ServiceConfig {
             candidates,
             retry_interval: Duration::from_secs(DEFAULT_RETRY_SECONDS),
             record_lifetime: Duration::from_secs(DEFAULT_RECORD_LIFETIME_SECONDS),
+            address_history: DEFAULT_ADDRESS_HISTORY,
+            automatic_interface_refresh: false,
+            automatic_router_mapping: false,
+            max_active_peers: MAX_ACTIVE_PEERS,
         })
     }
 
@@ -118,6 +184,45 @@ impl ServiceConfig {
         self.retry_interval = retry;
         self.record_lifetime = record_lifetime;
         Ok(self)
+    }
+
+    /// Replaces the per-peer historical-address retry budget.
+    ///
+    /// # Errors
+    ///
+    /// Rejects values outside the fixed memory and retry bounds.
+    pub fn with_address_history(mut self, address_history: usize) -> Result<Self, ServiceError> {
+        if !(MIN_ADDRESS_HISTORY..=MAX_ADDRESS_HISTORY).contains(&address_history) {
+            return Err(ServiceError::InvalidConfiguration);
+        }
+        self.address_history = address_history;
+        Ok(self)
+    }
+
+    /// Enables side-effect-free interface re-enumeration for automatic mode.
+    #[must_use]
+    pub fn with_automatic_interface_refresh(mut self, enabled: bool) -> Self {
+        self.automatic_interface_refresh = enabled;
+        if enabled {
+            let local = interface_addresses(&self.candidates, CandidateKind::Local);
+            let direct = interface_addresses(&self.candidates, CandidateKind::Direct);
+            self.candidates = bounded_automatic_interfaces(&local, &direct, &self.candidates);
+        }
+        self
+    }
+
+    /// Enables renewable local-gateway UDP mapping.
+    #[must_use]
+    pub const fn with_automatic_router_mapping(mut self, enabled: bool) -> Self {
+        self.automatic_router_mapping = enabled;
+        self
+    }
+
+    /// Enables the larger, still fixed neighbor budget for a user-owned anchor.
+    #[must_use]
+    pub const fn with_anchor_mode(mut self, enabled: bool) -> Self {
+        self.max_active_peers = if enabled { MAX_ANCHOR_PEERS } else { MAX_ACTIVE_PEERS };
+        self
     }
 }
 
@@ -151,9 +256,18 @@ pub enum ServiceError {
     /// This device's stable identity is present in the current root revocation set.
     #[error("local device identity is revoked")]
     LocalRevoked,
+    /// Owner renewal is required before this device can advertise again.
+    #[error("this computer's membership has expired; renew it with the hive owner")]
+    MembershipExpired,
     /// The caller's readiness notification failed after the socket bound.
     #[error("service readiness notification failed")]
     Readiness(#[source] io::Error),
+    /// A bounded network-session worker panicked or was canceled unexpectedly.
+    #[error("service network-session worker failed")]
+    SessionTask(#[from] tokio::task::JoinError),
+    /// Protected peer-update delivery state failed validation.
+    #[error("service update-delivery state failed validation")]
+    Update(#[from] crate::update::UpdateError),
 }
 
 /// Runs the service until the process receives an operating-system termination.
@@ -189,11 +303,12 @@ pub fn run_with_ready(
     }
     let transport_identity = transport_storage::load_or_create(state_directory.as_ref())?;
     let root_key = local_state.identity().root_verifying_key;
-    let mut directory = PeerDirectory::open(
+    let mut directory = PeerDirectory::open_with_history_limit(
         state_directory.as_ref(),
         root_key,
         local_state.identity().device.node_id(),
         local_state.revocations(),
+        config.address_history,
     )?;
     let runtime = transport::build_runtime()?;
     let control_listener = {
@@ -208,6 +323,7 @@ pub fn run_with_ready(
             endpoint,
             transport_identity,
             &control_listener,
+            state_directory.as_ref(),
             &mut local_state,
             &mut directory,
             config,
@@ -221,6 +337,8 @@ fn validate_config(config: &ServiceConfig) -> Result<(), ServiceError> {
         || config.candidates.is_empty()
         || config.candidates.len() > MAX_CANDIDATES
         || config.retry_interval < Duration::from_secs(1)
+        || !(1..=MAX_ANCHOR_PEERS).contains(&config.max_active_peers)
+        || !(MIN_ADDRESS_HISTORY..=MAX_ADDRESS_HISTORY).contains(&config.address_history)
         || !(Duration::from_hours(1)..=Duration::from_hours(168)).contains(&config.record_lifetime)
     {
         return Err(ServiceError::InvalidConfiguration);
@@ -232,6 +350,7 @@ async fn service_loop(
     endpoint: Endpoint,
     transport_identity: TransportIdentity,
     control_listener: &ControlListener,
+    state_directory: &Path,
     local_state: &mut LocalState,
     directory: &mut PeerDirectory,
     mut config: ServiceConfig,
@@ -246,6 +365,7 @@ async fn service_loop(
     let mut dial_cursor = 0_usize;
     let mut gossip_cursor = 0_usize;
     let local_node = local_state.identity().device.node_id();
+    let hive_id = local_state.identity().hive_id;
     let initial_page = gossip_page(
         &local_contact,
         directory,
@@ -255,316 +375,294 @@ async fn service_loop(
     );
     let (page_sender, _unused_page_receiver) = tokio::sync::watch::channel(initial_page);
     let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(PEER_EVENT_QUEUE);
-    let mut active = BTreeMap::<NodeId, Connection>::new();
+    let mut active = BTreeMap::<NodeId, ActiveConnection>::new();
+    let mut noncanonical_outbound = BTreeSet::<NodeId>::new();
+    let mut rendezvous_intents = rendezvous::RendezvousIntents::new();
+    let mut sync_mutation_budget = local_control::SyncMutationBudget::new();
+    let network_identity = Arc::new(local_state.identity().device.duplicate_for_network_actor());
+    let mut inbound_tasks = tokio::task::JoinSet::new();
+    let mut priority_inbound_tasks = tokio::task::JoinSet::new();
+    let mut outbound_tasks = tokio::task::JoinSet::new();
+    let mut actor_tasks = tokio::task::JoinSet::new();
+    let mut inbound_admission = InboundAdmission::new();
+    let mut outbound_in_flight = false;
     let mut shutdown = shutdown_receiver()?;
-    let mut next_dial = tokio::time::Instant::now() + initial_retry_delay(local_node, config.retry_interval);
+    let mut instance_bytes = [0_u8; 16];
+    getrandom::fill(&mut instance_bytes).map_err(|_| ServiceError::InvalidConfiguration)?;
+    let instance_id = hex::encode(instance_bytes);
+    let mut restart_requested = false;
+    let mut next_dial =
+        tokio::time::Instant::now() + aligned_retry_delay(hive_id, system_time_since_epoch()?, config.retry_interval);
     let refresh_delay = config.record_lifetime / 2;
     let mut next_refresh = tokio::time::Instant::now() + refresh_delay;
-
+    let interface_refresh = Duration::from_secs(AUTOMATIC_INTERFACE_REFRESH_SECONDS);
+    let mut next_interface_refresh = tokio::time::Instant::now() + interface_refresh;
+    let mut router_mapping = NonZeroU16::new(config.listen.port())
+        .filter(|_port| config.automatic_router_mapping)
+        .map(RouterMapping::start);
+    let mut router_mapping_budget = RouterMappingUpdateBudget::new(tokio::time::Instant::now());
+    let mut interface_refresh_health = InterfaceRefreshHealth::new();
+    let anchor_mode = config.max_active_peers > MAX_ACTIVE_PEERS;
+    let update_context = PeerUpdateContext::new(state_directory, local_state.identity());
+    let mut update_delivery = UpdateDeliveryQueue::open(state_directory, unix_time()?)?;
     loop {
-        if stop_if_requested(&mut shutdown, &endpoint).await {
-            return Ok(());
+        if restart_requested || stop_if_requested(&mut shutdown, &endpoint).await {
+            break;
         }
-        let mut directory_changed = process_peer_events(&mut event_receiver, &mut active, local_state, directory)?;
+        let mut directory_changed = false;
         let now = tokio::time::Instant::now();
-        if now >= next_refresh {
-            local_contact = make_local_contact(local_state, &transport_identity, &config)?;
-            next_refresh = now + refresh_delay;
-            directory_changed = true;
+        let wall_refresh = contact_state::needs_wall_clock_refresh(
+            local_contact.endpoint.record.issued_at,
+            local_contact.endpoint.record.expires_at,
+            unix_time()?,
+            refresh_delay.as_secs(),
+        );
+        if wall_refresh {
+            next_interface_refresh = now;
+            next_dial = now + aligned_retry_delay(hive_id, system_time_since_epoch()?, config.retry_interval);
         }
-        if directory_changed {
-            let page = gossip_page(
-                &local_contact,
+        let candidate_refresh = refresh_service_candidates(
+            &mut router_mapping,
+            &mut router_mapping_budget,
+            now,
+            &mut next_interface_refresh,
+            interface_refresh,
+            &mut config,
+            &mut interface_refresh_health,
+        );
+        if let Some(status) = candidate_refresh.mapping_changed {
+            directory_changed |= replace_gateway_reachability(local_state, directory, local_node, status)?;
+        }
+        directory_changed |= contact_state::refresh_contact_if_due(
+            local_state,
+            &transport_identity,
+            &config,
+            &mut local_contact,
+            &mut next_refresh,
+            (now, unix_time()?),
+            candidate_refresh.interfaces_changed,
+        )?;
+        publish_gossip_if(
+            directory_changed,
+            &page_sender,
+            &local_contact,
+            directory,
+            local_state,
+            &mut gossip_cursor,
+        )?;
+        let mut rendezvous_offers = Vec::new();
+        let directory_changed = process_peer_events(
+            &mut event_receiver,
+            PeerEventState {
+                active: &mut active,
+                noncanonical_outbound: &mut noncanonical_outbound,
+                local_state,
                 directory,
-                local_state.revocations(),
-                unix_time()?,
-                &mut gossip_cursor,
-            );
-            page_sender.send_replace(page);
-        }
-        if now >= next_dial {
-            let hints = directory
-                .dial_hints()
-                .into_iter()
-                .filter(|contact| {
-                    let peer = contact.endpoint.record.node_id;
-                    local_node < peer && !active.contains_key(&peer)
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if let Some(expected) = hints.get(dial_cursor % hints.len().max(1)).cloned() {
-                dial_cursor = dial_cursor.wrapping_add(1);
-                let page = page_sender.borrow().clone();
-                if let Some((exchange, connection)) =
-                    dial_peer(&endpoint, &local_contact, local_state, &expected, &page).await
-                {
-                    merge_and_broadcast_revocations(local_state, directory, &active, exchange.revocations, None)?;
-                    if local_state.revocations().contains(&exchange.peer) {
-                        connection.close(3_u8.into(), b"peer revoked");
-                        next_dial = tokio::time::Instant::now() + config.retry_interval;
-                        continue;
-                    }
-                    let _directory_changed = import_received(directory, exchange.contacts, unix_time()?)?;
-                    if apply_reflexive_observation(&mut config, exchange.observed_local_address) {
-                        local_contact = make_local_contact(local_state, &transport_identity, &config)?;
-                    }
-                    register_connection(
-                        connection,
-                        exchange.peer,
-                        ConnectionOrigin::Outbound,
-                        &mut PeerActorRegistry {
-                            local: local_node,
-                            active: &mut active,
-                            pages: &page_sender,
-                            events: &event_sender,
-                            interval: config.retry_interval,
-                        },
-                    );
-                    let page = gossip_page(
-                        &local_contact,
+                rendezvous_offers: &mut rendezvous_offers,
+                rendezvous_intents: &mut rendezvous_intents,
+                sync_budget: &mut sync_mutation_budget,
+            },
+        )?;
+        reap_ready_tasks(&mut actor_tasks)?;
+        let mut unused_outbound_slot = false;
+        finish_ready_sessions(
+            &mut priority_inbound_tasks,
+            &mut unused_outbound_slot,
+            &mut LiveSessionState {
+                update: Some(&update_context),
+                local_node,
+                local_state,
+                directory,
+                config: &mut config,
+                local_contact: &mut local_contact,
+                active: &mut active,
+                noncanonical_outbound: &mut noncanonical_outbound,
+                page_sender: &page_sender,
+                event_sender: &event_sender,
+                actor_tasks: &mut actor_tasks,
+                gossip_cursor: &mut gossip_cursor,
+            },
+        )?;
+        finish_ready_sessions(
+            &mut inbound_tasks,
+            &mut unused_outbound_slot,
+            &mut LiveSessionState {
+                update: Some(&update_context),
+                local_node,
+                local_state,
+                directory,
+                config: &mut config,
+                local_contact: &mut local_contact,
+                active: &mut active,
+                noncanonical_outbound: &mut noncanonical_outbound,
+                page_sender: &page_sender,
+                event_sender: &event_sender,
+                actor_tasks: &mut actor_tasks,
+                gossip_cursor: &mut gossip_cursor,
+            },
+        )?;
+        update_delivery.drive(
+            state_directory,
+            &update_context.admission,
+            local_state,
+            &active,
+            unix_time()?,
+        )?;
+        finish_ready_sessions(
+            &mut outbound_tasks,
+            &mut outbound_in_flight,
+            &mut LiveSessionState {
+                update: Some(&update_context),
+                local_node,
+                local_state,
+                directory,
+                config: &mut config,
+                local_contact: &mut local_contact,
+                active: &mut active,
+                noncanonical_outbound: &mut noncanonical_outbound,
+                page_sender: &page_sender,
+                event_sender: &event_sender,
+                actor_tasks: &mut actor_tasks,
+                gossip_cursor: &mut gossip_cursor,
+            },
+        )?;
+        rendezvous_offers.truncate(MAX_PENDING_OUTBOUND_SESSIONS.saturating_sub(outbound_tasks.len()));
+        schedule_rendezvous_offers(
+            &endpoint,
+            rendezvous_offers,
+            &network_identity,
+            &mut outbound_tasks,
+            &LiveSessionState {
+                update: Some(&update_context),
+                local_node,
+                local_state,
+                directory,
+                config: &mut config,
+                local_contact: &mut local_contact,
+                active: &mut active,
+                noncanonical_outbound: &mut noncanonical_outbound,
+                page_sender: &page_sender,
+                event_sender: &event_sender,
+                actor_tasks: &mut actor_tasks,
+                gossip_cursor: &mut gossip_cursor,
+            },
+        );
+        publish_gossip_if(
+            directory_changed,
+            &page_sender,
+            &local_contact,
+            directory,
+            local_state,
+            &mut gossip_cursor,
+        )?;
+        let now = tokio::time::Instant::now();
+        // Anchors must participate in outbound recovery too. Besides recovering
+        // through an open peer firewall, synchronized outbound rounds are the
+        // only sovereign chance of crossing compatible NATs without a relay.
+        if now >= next_dial && !outbound_in_flight {
+            let retry_round = retry_epoch(system_time_since_epoch()?, config.retry_interval);
+            if outbound_tasks.len() < MAX_PENDING_OUTBOUND_SESSIONS
+                && let Some(scheduled) = schedule_remembered_peer(
+                    &endpoint,
+                    &mut dial_cursor,
+                    retry_round,
+                    &network_identity,
+                    &mut outbound_tasks,
+                    &LiveSessionState {
+                        update: Some(&update_context),
+                        local_node,
+                        local_state,
                         directory,
-                        local_state.revocations(),
-                        unix_time()?,
-                        &mut gossip_cursor,
-                    );
-                    page_sender.send_replace(page);
+                        config: &mut config,
+                        local_contact: &mut local_contact,
+                        active: &mut active,
+                        noncanonical_outbound: &mut noncanonical_outbound,
+                        page_sender: &page_sender,
+                        event_sender: &event_sender,
+                        actor_tasks: &mut actor_tasks,
+                        gossip_cursor: &mut gossip_cursor,
+                    },
+                )
+            {
+                outbound_in_flight = scheduled.direct_started;
+                if let Some(intent) = rendezvous::request_introduction(&active, scheduled.target, retry_round) {
+                    rendezvous_intents.remember(intent, tokio::time::Instant::now());
                 }
             }
-            next_dial = tokio::time::Instant::now() + config.retry_interval;
+            next_dial = tokio::time::Instant::now()
+                + aligned_retry_delay(hive_id, system_time_since_epoch()?, config.retry_interval);
         }
 
-        let until_dial = next_dial.saturating_duration_since(tokio::time::Instant::now());
-        let until_refresh = next_refresh.saturating_duration_since(tokio::time::Instant::now());
-        let wait = until_dial.min(until_refresh).min(Duration::from_secs(1));
-        let control_wait = wait.min(Duration::from_millis(100));
-        if poll_control(
-            control_listener,
-            control_wait,
-            local_state,
-            directory,
-            &active,
-            config.listen,
-            &local_contact,
-        )
-        .await
-        {
-            let page = gossip_page(
-                &local_contact,
+        let wait = next_service_wait(
+            outbound_in_flight,
+            next_dial,
+            next_refresh,
+            config.automatic_interface_refresh.then_some(next_interface_refresh),
+        );
+        let incoming = tokio::select! {
+            control_changed = poll_control(
+                control_listener,
+                wait,
+                local_state,
                 directory,
-                local_state.revocations(),
-                unix_time()?,
-                &mut gossip_cursor,
-            );
-            page_sender.send_replace(page);
-            continue;
-        }
-        let network_wait = wait.saturating_sub(control_wait);
-        if let Ok(Some(incoming)) = tokio::time::timeout(network_wait, endpoint.accept()).await {
-            if !incoming.remote_address_validated() && incoming.may_retry() {
-                let _retry_result = incoming.retry();
-                continue;
-            }
-            let Ok(Ok(connection)) = tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS), incoming).await
-            else {
-                continue;
-            };
-            let page = page_sender.borrow().clone();
-            if let Ok(Ok(exchange)) = tokio::time::timeout(
-                Duration::from_secs(SESSION_TIMEOUT_SECONDS),
-                inbound_session(&connection, &local_contact, local_state, &page),
-            )
-            .await
-            {
-                merge_and_broadcast_revocations(local_state, directory, &active, exchange.revocations, None)?;
-                if local_state.revocations().contains(&exchange.peer) {
-                    connection.close(3_u8.into(), b"peer revoked");
-                    continue;
-                }
-                let _directory_changed = import_received(directory, exchange.contacts, unix_time()?)?;
-                if apply_reflexive_observation(&mut config, exchange.observed_local_address) {
-                    local_contact = make_local_contact(local_state, &transport_identity, &config)?;
-                }
-                register_connection(
-                    connection,
-                    exchange.peer,
-                    ConnectionOrigin::Inbound,
-                    &mut PeerActorRegistry {
-                        local: local_node,
-                        active: &mut active,
-                        pages: &page_sender,
-                        events: &event_sender,
-                        interval: config.retry_interval,
-                    },
-                );
-                let page = gossip_page(
+                &mut active,
+                ControlView {
+                    instance_id: &instance_id,
+                    restart_requested: &mut restart_requested,
+                    state_directory: &update_context.state_directory,
+                    update_delivery: &mut update_delivery,
+                    listen: config.listen,
+                    local_contact: &local_contact,
+                    router_mapping: router_mapping
+                        .as_ref()
+                        .map_or(RouterMappingStatus::Disabled, RouterMapping::status),
+                    anchor_mode,
+                },
+            ) => {
+                let control_changed = control_changed?;
+                publish_gossip_if(
+                    control_changed,
+                    &page_sender,
                     &local_contact,
                     directory,
-                    local_state.revocations(),
-                    unix_time()?,
+                    local_state,
                     &mut gossip_cursor,
-                );
-                page_sender.send_replace(page);
-            } else {
-                connection.close(1_u8.into(), b"authentication failed");
+                )?;
+                None
             }
+            incoming = endpoint.accept() => incoming,
+        };
+        if let Some(incoming) = incoming {
+            admission::schedule_admitted_incoming(
+                incoming,
+                &mut inbound_admission,
+                &network_identity,
+                &mut inbound_tasks,
+                &mut priority_inbound_tasks,
+                &LiveSessionState {
+                    update: Some(&update_context),
+                    local_node,
+                    local_state,
+                    directory,
+                    config: &mut config,
+                    local_contact: &mut local_contact,
+                    active: &mut active,
+                    noncanonical_outbound: &mut noncanonical_outbound,
+                    page_sender: &page_sender,
+                    event_sender: &event_sender,
+                    actor_tasks: &mut actor_tasks,
+                    gossip_cursor: &mut gossip_cursor,
+                },
+            );
         }
     }
-}
-
-fn make_local_contact(
-    state: &mut LocalState,
-    transport_identity: &TransportIdentity,
-    config: &ServiceConfig,
-) -> Result<PeerContact, ServiceError> {
-    let now = unix_time()?;
-    let membership = state.local_membership().cloned().ok_or(StateError::IdentityMismatch)?;
-    let endpoint = state.sign_endpoint_record(
-        config.display_name.clone(),
-        transport_identity.key_id(),
-        config.candidates.clone(),
-        Capabilities::NONE,
-        now,
-        now.saturating_add(config.record_lifetime.as_secs()),
-    )?;
-    Ok(PeerContact { membership, endpoint })
-}
-
-fn gossip_page(
-    local: &PeerContact,
-    directory: &PeerDirectory,
-    revocations: &crate::revocation::SignedRevocationList,
-    now: u64,
-    cursor: &mut usize,
-) -> SyncPage {
-    let peers = directory.usable_contacts(now);
-    let mut page = Vec::with_capacity(MAX_SYNC_CONTACTS);
-    page.push(local.clone());
-    if peers.is_empty() {
-        return SyncPage {
-            contacts: page,
-            revocations: revocations.clone(),
-        };
-    }
-    for offset in 0..MAX_SYNC_CONTACTS.saturating_sub(1).min(peers.len()) {
-        if let Some(contact) = peers.get(cursor.wrapping_add(offset) % peers.len()) {
-            page.push((*contact).clone());
-        }
-    }
-    *cursor = cursor.wrapping_add(MAX_SYNC_CONTACTS.saturating_sub(1));
-    SyncPage {
-        contacts: page,
-        revocations: revocations.clone(),
-    }
-}
-
-async fn dial_peer(
-    endpoint: &Endpoint,
-    local_contact: &PeerContact,
-    local_state: &LocalState,
-    expected: &PeerContact,
-    page: &SyncPage,
-) -> Option<(AuthenticatedExchange, Connection)> {
-    let candidates = &expected.endpoint.record.candidates;
-    let local_networks = network::interface_networks().unwrap_or_default();
-    for candidate_index in network::candidate_dial_order(candidates, &local_networks)
-        .into_iter()
-        .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
-    {
-        let Some(candidate) = candidates.get(candidate_index) else {
-            continue;
-        };
-        let client_config = transport::pinned_client_config(expected.endpoint.record.transport_key_id).ok()?;
-        let Ok(connecting) = endpoint.connect_with(client_config, candidate.address(), "supgang.invalid") else {
-            continue;
-        };
-        let Ok(Ok(connection)) = tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS), connecting).await
-        else {
-            continue;
-        };
-        let result = tokio::time::timeout(
-            Duration::from_secs(SESSION_TIMEOUT_SECONDS),
-            outbound_session(&connection, local_contact, local_state, expected, page),
-        )
-        .await;
-        if let Ok(Ok(received)) = result {
-            return Some((received, connection));
-        }
-        connection.close(1_u8.into(), b"authentication failed");
-    }
-    None
-}
-
-async fn outbound_session(
-    connection: &Connection,
-    local_contact: &PeerContact,
-    local_state: &LocalState,
-    expected: &PeerContact,
-    page: &SyncPage,
-) -> Result<AuthenticatedExchange, ()> {
-    let authenticated = session::authenticate_outbound(
-        connection,
-        local_contact,
-        &local_state.identity().device,
-        expected,
-        &local_state.identity().root_verifying_key,
-        local_state.revocations(),
-        unix_time().map_err(|_| ())?,
-    )
-    .await
-    .map_err(|_| ())?;
-    let synchronized = sync::exchange_outbound(connection, page).await.map_err(|_| ())?;
-    synchronized
-        .revocations
-        .verify(&local_state.identity().root_verifying_key)
-        .map_err(|_| ())?;
-    let mut contacts = synchronized.contacts;
-    let peer = authenticated.contact.endpoint.record.node_id;
-    contacts.push(authenticated.contact);
-    Ok(AuthenticatedExchange {
-        peer,
-        contacts,
-        revocations: synchronized.revocations,
-        observed_local_address: authenticated.observed_local_address,
-    })
-}
-
-async fn inbound_session(
-    connection: &Connection,
-    local_contact: &PeerContact,
-    local_state: &LocalState,
-    page: &SyncPage,
-) -> Result<AuthenticatedExchange, ()> {
-    let authenticated = session::authenticate_inbound(
-        connection,
-        local_contact,
-        &local_state.identity().device,
-        &local_state.identity().root_verifying_key,
-        local_state.revocations(),
-        unix_time().map_err(|_| ())?,
-    )
-    .await
-    .map_err(|_| ())?;
-    let synchronized = sync::exchange_inbound(connection, page).await.map_err(|_| ())?;
-    synchronized
-        .revocations
-        .verify(&local_state.identity().root_verifying_key)
-        .map_err(|_| ())?;
-    let mut contacts = synchronized.contacts;
-    let peer = authenticated.contact.endpoint.record.node_id;
-    contacts.push(authenticated.contact);
-    Ok(AuthenticatedExchange {
-        peer,
-        contacts,
-        revocations: synchronized.revocations,
-        observed_local_address: authenticated.observed_local_address,
-    })
-}
-
-struct AuthenticatedExchange {
-    peer: NodeId,
-    contacts: Vec<PeerContact>,
-    revocations: crate::revocation::SignedRevocationList,
-    observed_local_address: SocketAddr,
+    endpoint.close(0_u8.into(), b"service handoff");
+    inbound_tasks.shutdown().await;
+    priority_inbound_tasks.shutdown().await;
+    outbound_tasks.shutdown().await;
+    actor_tasks.shutdown().await;
+    shutdown_router_mapping(&mut router_mapping).await;
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -573,125 +671,23 @@ enum ConnectionOrigin {
     Outbound,
 }
 
-enum PeerEvent {
-    Contacts {
-        peer: NodeId,
-        page: SyncPage,
-    },
-    Revocations {
-        peer: NodeId,
-        revocations: crate::revocation::SignedRevocationList,
-    },
-    Closed {
-        peer: NodeId,
-    },
-}
-
-struct PeerActorRegistry<'a> {
+fn should_attempt_peer(
+    active: &BTreeMap<NodeId, ActiveConnection>,
     local: NodeId,
-    active: &'a mut BTreeMap<NodeId, Connection>,
-    pages: &'a tokio::sync::watch::Sender<SyncPage>,
-    events: &'a tokio::sync::mpsc::Sender<PeerEvent>,
-    interval: Duration,
-}
-
-fn register_connection(
-    connection: Connection,
     peer: NodeId,
-    origin: ConnectionOrigin,
-    registry: &mut PeerActorRegistry<'_>,
-) {
-    let preferred = matches!(origin, ConnectionOrigin::Outbound) == (registry.local < peer);
-    if !preferred || registry.active.contains_key(&peer) || registry.active.len() >= MAX_ACTIVE_PEERS {
-        connection.close(2_u8.into(), b"duplicate or neighbor limit");
-        return;
-    }
-    registry.active.insert(peer, connection.clone());
-    let page_receiver = registry.pages.subscribe();
-    let event_sender = registry.events.clone();
-    let notice_connection = connection.clone();
-    tokio::spawn(peer_actor(
-        connection,
-        peer,
-        registry.local < peer,
-        page_receiver,
-        event_sender,
-        registry.interval,
-    ));
-    let notice_events = registry.events.clone();
-    spawn_revocation_listener(notice_connection, peer, notice_events);
-}
-
-async fn peer_actor(
-    connection: Connection,
-    peer: NodeId,
-    initiator: bool,
-    pages: tokio::sync::watch::Receiver<SyncPage>,
-    events: tokio::sync::mpsc::Sender<PeerEvent>,
-    interval: Duration,
-) {
-    loop {
-        if initiator {
-            tokio::time::sleep(interval).await;
-        }
-        let page = pages.borrow().clone();
-        let exchange = if initiator {
-            tokio::time::timeout(
-                Duration::from_secs(SESSION_TIMEOUT_SECONDS),
-                sync::exchange_outbound(&connection, &page),
-            )
-            .await
-        } else {
-            tokio::time::timeout(
-                interval
-                    .saturating_mul(3)
-                    .max(Duration::from_secs(SESSION_TIMEOUT_SECONDS)),
-                sync::exchange_inbound(&connection, &page),
-            )
-            .await
-        };
-        let Ok(Ok(page)) = exchange else {
-            break;
-        };
-        if events.send(PeerEvent::Contacts { peer, page }).await.is_err() {
-            return;
-        }
-    }
-    let _closed = events.send(PeerEvent::Closed { peer }).await;
-}
-
-fn apply_reflexive_observation(config: &mut ServiceConfig, address: SocketAddr) -> bool {
-    let Ok(candidate) = EndpointCandidate::new(CandidateKind::Reflexive, CandidateTransport::QuicV1, address) else {
-        return false;
-    };
-    if config.candidates.contains(&candidate) {
-        return false;
-    }
-    let reflexive_count = config
-        .candidates
-        .iter()
-        .filter(|existing| existing.kind() == CandidateKind::Reflexive)
-        .count();
-    if reflexive_count >= MAX_REFLEXIVE_CANDIDATES {
-        if let Some(index) = config
-            .candidates
-            .iter()
-            .position(|existing| existing.kind() == CandidateKind::Reflexive)
-        {
-            config.candidates.remove(index);
-        }
-    } else if config.candidates.len() >= MAX_CANDIDATES {
-        return false;
-    }
-    config.candidates.push(candidate);
-    config.candidates.sort_unstable();
-    true
+    retry_round: usize,
+) -> bool {
+    !active.contains_key(&peer)
+        && (local < peer || retry_round % SECONDARY_RECOVERY_CADENCE == SECONDARY_RECOVERY_CADENCE - 1)
 }
 
 fn unix_time() -> Result<u64, ServiceError> {
+    system_time_since_epoch().map(|duration| duration.as_secs())
+}
+
+fn system_time_since_epoch() -> Result<Duration, ServiceError> {
     std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
         .map_err(|_| ServiceError::InvalidSystemTime)
 }
 

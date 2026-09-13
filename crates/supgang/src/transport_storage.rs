@@ -77,7 +77,7 @@ pub fn load(state_directory: impl AsRef<Path>) -> Result<TransportIdentity, Tran
 }
 
 fn load_file(path: &Path) -> Result<TransportIdentity, TransportStorageError> {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(no_follow_flag()?)
         .open(path)?;
@@ -86,8 +86,9 @@ fn load_file(path: &Path) -> Result<TransportIdentity, TransportStorageError> {
     if !(HEADER_BYTES + CHECKSUM_BYTES..=MAX_FILE_BYTES).contains(&length) {
         return Err(TransportStorageError::InvalidFile);
     }
-    let mut bytes = Vec::with_capacity(length);
-    file.read_to_end(&mut bytes)?;
+    let mut bytes = Vec::with_capacity(length.saturating_add(1));
+    file.take(u64::try_from(MAX_FILE_BYTES.saturating_add(1)).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
     let decoded = decode(&bytes);
     bytes.zeroize();
     decoded
@@ -102,6 +103,7 @@ fn write_new(path: &Path, identity: &TransportIdentity) -> Result<(), TransportS
             .mode(0o600)
             .custom_flags(no_follow_flag()?)
             .open(path)?;
+        supgang_acl::clear_inherited_acl(&file)?;
         validate_owner_file_metadata(&file)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
@@ -224,6 +226,20 @@ mod tests {
         fs::write(&target, b"not a key")?;
         std::os::unix::fs::symlink(&target, directory.join(super::TRANSPORT_IDENTITY_FILE_NAME))?;
         assert!(load_or_create(&directory).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn transport_key_file_rejects_trailing_growth() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let directory = temporary.path().join("state");
+        let _state = state::initialize(&directory)?;
+        drop(load_or_create(&directory)?);
+        let path = directory.join(super::TRANSPORT_IDENTITY_FILE_NAME);
+        let mut bytes = fs::read(&path)?;
+        bytes.extend_from_slice(&[0; 8]);
+        fs::write(&path, bytes)?;
+        assert!(matches!(load(&directory), Err(TransportStorageError::InvalidFile)));
         Ok(())
     }
 }

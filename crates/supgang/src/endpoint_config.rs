@@ -24,6 +24,7 @@ pub struct EndpointConfig {
     listen: SocketAddr,
     local: Vec<SocketAddr>,
     direct: Vec<SocketAddr>,
+    mapped: Vec<SocketAddr>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +46,7 @@ struct ConfiguredCandidate {
 enum ConfiguredKind {
     Local,
     Direct,
+    Mapped,
 }
 
 impl EndpointConfig {
@@ -87,6 +89,7 @@ impl EndpointConfig {
             listen: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
             local,
             direct,
+            mapped: Vec::new(),
         })
     }
 
@@ -114,10 +117,12 @@ impl EndpointConfig {
         let mut seen = BTreeSet::new();
         let mut local = Vec::new();
         let mut direct = Vec::new();
+        let mut mapped = Vec::new();
         for configured in document.candidates {
             let kind = match configured.kind {
                 ConfiguredKind::Local => CandidateKind::Local,
                 ConfiguredKind::Direct => CandidateKind::Direct,
+                ConfiguredKind::Mapped => CandidateKind::Mapped,
             };
             EndpointCandidate::new(kind, CandidateTransport::QuicV1, configured.address)
                 .map_err(|error| error.to_string())?;
@@ -127,12 +132,14 @@ impl EndpointConfig {
             match configured.kind {
                 ConfiguredKind::Local => local.push(configured.address),
                 ConfiguredKind::Direct => direct.push(configured.address),
+                ConfiguredKind::Mapped => mapped.push(configured.address),
             }
         }
         Ok(Self {
             listen: document.listen,
             local,
             direct,
+            mapped,
         })
     }
 
@@ -152,6 +159,12 @@ impl EndpointConfig {
     #[must_use]
     pub fn direct(&self) -> &[SocketAddr] {
         &self.direct
+    }
+
+    /// Returns explicitly classified public addresses forwarded by a gateway.
+    #[must_use]
+    pub fn mapped(&self) -> &[SocketAddr] {
+        &self.mapped
     }
 }
 
@@ -195,12 +208,13 @@ mod tests {
         let path = directory.path().join("endpoints.json");
         write_config(
             &path,
-            r#"{"listen":"[::]:44330","candidates":[{"kind":"local","address":"127.0.0.1:44330"}]}"#,
+            r#"{"listen":"[::]:44330","candidates":[{"kind":"local","address":"127.0.0.1:44330"},{"kind":"mapped","address":"8.8.8.8:44330"}]}"#,
         )?;
         let config = EndpointConfig::read(&path)?;
         assert_eq!(config.listen().port(), 44_330);
         assert_eq!(config.local().len(), 1);
         assert!(config.direct().is_empty());
+        assert_eq!(config.mapped().len(), 1);
         Ok(())
     }
 

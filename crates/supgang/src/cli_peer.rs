@@ -3,7 +3,7 @@
 use std::{path::Path, str::FromStr, time::SystemTime};
 
 use ed25519_dalek::VerifyingKey;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
     artifact,
@@ -13,10 +13,18 @@ use crate::{
     ids::NodeId,
     network::InterfaceNetwork,
     peer_directory::{ImportDecision, PeerDirectory},
-    profile,
+    peer_tag, profile,
     record::Capabilities,
     state, transport_storage,
 };
+
+pub use crate::cli_peer_types::{PeerRow, PeersOutput, ResolveOutput, ResolvedCandidate};
+
+mod resolution;
+
+#[cfg(test)]
+use resolution::resolved_candidates;
+use resolution::{resolved_peer_candidates, resolved_with_preference};
 
 /// Machine-readable result of publishing this computer's signed contact.
 #[derive(Debug, Serialize)]
@@ -38,59 +46,13 @@ pub struct ImportOutput {
     pub decision: &'static str,
 }
 
-/// A non-secret row returned by `peers`.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct PeerRow {
-    pub name: String,
-    pub name_source: String,
-    pub fingerprint: String,
-    pub node_id: String,
-    pub status: String,
-    pub generation: u64,
-    pub sequence: u64,
-    pub expires_at: u64,
-    pub candidate_count: usize,
-    pub addresses: Vec<ResolvedCandidate>,
-}
-
-/// Machine-readable peer-directory summary.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct PeersOutput {
-    pub schema: String,
-    pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub this_computer: Option<PeerRow>,
-    pub peers: Vec<PeerRow>,
-}
-
-/// One explicitly requested address candidate.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct ResolvedCandidate {
-    pub scope: String,
-    pub kind: String,
-    pub transport: String,
-    pub address: String,
-    pub provenance: String,
-    pub preferred: bool,
-}
-
-/// Machine-readable address resolution with signed-record provenance.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub struct ResolveOutput {
-    pub schema: String,
-    pub status: String,
-    pub node_id: String,
-    pub name: String,
-    pub fingerprint: String,
-    pub generation: u64,
-    pub sequence: u64,
-    pub issued_at: u64,
-    pub expires_at: u64,
-    pub candidates: Vec<ResolvedCandidate>,
+/// One exact or significant local selector match in descending relevance.
+#[derive(Clone, Debug, Serialize)]
+pub struct PeerSelectorMatch {
+    pub node_id: NodeId,
+    pub score: u8,
+    pub matched_by: &'static str,
+    pub exact: bool,
 }
 
 pub fn publish(
@@ -114,6 +76,12 @@ pub fn publish(
     for address in endpoints.direct() {
         candidates.push(
             EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, *address)
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    for address in endpoints.mapped() {
+        candidates.push(
+            EndpointCandidate::new(CandidateKind::Mapped, CandidateTransport::QuicV1, *address)
                 .map_err(|error| error.to_string())?,
         );
     }
@@ -187,7 +155,9 @@ pub fn peers(state_directory: &Path) -> Result<PeersOutput, String> {
         local_state.revocations(),
     )
     .map_err(|error| error.to_string())?;
-    Ok(peers_from_directory(&directory, &root_key, unix_time()?, this_computer))
+    let mut result = peers_from_directory(&directory, &root_key, unix_time()?, this_computer);
+    apply_tags(state_directory, &mut result)?;
+    Ok(result)
 }
 
 /// Reads the peer summary without creating a missing local profile.
@@ -202,7 +172,9 @@ pub fn peers_read_only(state_directory: &Path) -> Result<PeersOutput, String> {
         local_state.revocations(),
     )
     .map_err(|error| error.to_string())?;
-    Ok(peers_from_directory(&directory, &root_key, unix_time()?, this_computer))
+    let mut result = peers_from_directory(&directory, &root_key, unix_time()?, this_computer);
+    apply_tags(state_directory, &mut result)?;
+    Ok(result)
 }
 
 /// Resolves a peer from validating snapshots without repairing durable state.
@@ -215,9 +187,12 @@ pub fn resolve_read_only(state_directory: &Path, selector: &str) -> Result<Resol
         local_state.revocations(),
     )
     .map_err(|error| error.to_string())?;
-    let rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    let mut rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    apply_tags_to_rows(state_directory, &mut rows)?;
     let node_id = resolve_selector_from_rows(&rows, selector)?;
-    resolve_from_directory(&directory, node_id, unix_time()?)
+    let mut result = resolve_from_directory(&directory, node_id, unix_time()?)?;
+    apply_tags_to_resolve(state_directory, &mut result)?;
+    Ok(result)
 }
 
 pub fn peers_from_directory(
@@ -227,7 +202,7 @@ pub fn peers_from_directory(
     this_computer: PeerRow,
 ) -> PeersOutput {
     PeersOutput {
-        schema: "supgang.peers/v3".to_owned(),
+        schema: "supgang.peers/v5".to_owned(),
         status: "ok".to_owned(),
         this_computer: Some(this_computer),
         peers: peer_rows_from_directory(directory, root_key, now),
@@ -251,17 +226,26 @@ fn peer_rows_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, 
             } else {
                 "expired"
             };
-            let addresses = resolved_candidates(&record.candidates, &local_networks, status == "fresh");
+            let addresses = resolved_peer_candidates(
+                directory,
+                *node_id,
+                &record.candidates,
+                &local_networks,
+                now,
+                status == "fresh" && !entry.is_conflicted(),
+            );
             PeerRow {
                 name,
                 name_source: name_source.to_owned(),
+                tags: Vec::new(),
                 fingerprint: short_fingerprint(*node_id),
                 node_id: node_id.to_string(),
+                connected: None,
                 status: status.to_owned(),
                 generation: record.generation,
                 sequence: record.sequence,
                 expires_at: record.expires_at,
-                candidate_count: record.candidates.len(),
+                candidate_count: addresses.len(),
                 addresses,
             }
         })
@@ -270,21 +254,24 @@ fn peer_rows_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, 
 
 pub fn running_local_row(contact: &PeerContact) -> PeerRow {
     let record = &contact.endpoint.record;
-    let preferred_index = self_preferred_index(&record.candidates);
+    let local_networks = crate::network::interface_networks().unwrap_or_default();
+    let preferred_index = self_preferred_index(&record.candidates, &local_networks);
     PeerRow {
         name: record.display_name.as_ref().map_or_else(
             || format!("computer-{}", short_fingerprint(record.node_id)),
             ToString::to_string,
         ),
         name_source: "device-signed".to_owned(),
+        tags: Vec::new(),
         fingerprint: short_fingerprint(record.node_id),
         node_id: record.node_id.to_string(),
+        connected: Some(true),
         status: "running".to_owned(),
         generation: record.generation,
         sequence: record.sequence,
         expires_at: record.expires_at,
         candidate_count: record.candidates.len(),
-        addresses: resolved_with_preference(&record.candidates, preferred_index, "device-signed"),
+        addresses: resolved_with_preference(&record.candidates, preferred_index, "device-signed", &local_networks),
     }
 }
 
@@ -297,9 +284,12 @@ pub fn resolve(state_directory: &Path, selector: &str) -> Result<ResolveOutput, 
         local_state.revocations(),
     )
     .map_err(|error| error.to_string())?;
-    let rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    let mut rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    apply_tags_to_rows(state_directory, &mut rows)?;
     let node_id = resolve_selector_from_rows(&rows, selector)?;
-    resolve_from_directory(&directory, node_id, unix_time()?)
+    let mut result = resolve_from_directory(&directory, node_id, unix_time()?)?;
+    apply_tags_to_resolve(state_directory, &mut result)?;
+    Ok(result)
 }
 
 pub fn resolve_from_directory(directory: &PeerDirectory, node_id: NodeId, now: u64) -> Result<ResolveOutput, String> {
@@ -308,13 +298,14 @@ pub fn resolve_from_directory(directory: &PeerDirectory, node_id: NodeId, now: u
         .ok_or_else(|| "peer has no fresh, non-conflicted signed endpoint record".to_owned())?;
     let record = &contact.endpoint.record;
     let local_networks = crate::network::interface_networks().unwrap_or_default();
-    let candidates = resolved_candidates(&record.candidates, &local_networks, true);
+    let candidates = resolved_peer_candidates(directory, node_id, &record.candidates, &local_networks, now, true);
     let (name, _source) = display_name(record.display_name.as_ref(), node_id);
     Ok(ResolveOutput {
-        schema: "supgang.resolve/v2".to_owned(),
+        schema: "supgang.resolve/v4".to_owned(),
         status: "ok".to_owned(),
         node_id: node_id.to_string(),
         name,
+        tags: Vec::new(),
         fingerprint: short_fingerprint(node_id),
         generation: record.generation,
         sequence: record.sequence,
@@ -324,82 +315,216 @@ pub fn resolve_from_directory(directory: &PeerDirectory, node_id: NodeId, now: u
     })
 }
 
-/// Resolves an exact name, unique fingerprint prefix, or full stable node ID.
+/// Resolves an exact or uniquely significant peer selector.
 pub fn resolve_selector_from_rows(rows: &[PeerRow], selector: &str) -> Result<NodeId, String> {
+    let candidates = selector_matches_from_rows(rows, selector)?;
+    match candidates.as_slice() {
+        [selected] => Ok(selected.node_id),
+        [] => Err("no known peer significantly matches that name, tag, or fingerprint".to_owned()),
+        _ => Err(format!(
+            "{} peers match; run `supgang {selector}` to inspect them, then use a tag or fingerprint",
+            candidates.len()
+        )),
+    }
+}
+
+/// Returns every exact match, or every significantly ranked fuzzy match.
+pub fn selector_matches_from_rows(rows: &[PeerRow], selector: &str) -> Result<Vec<PeerSelectorMatch>, String> {
     if let Ok(node_id) = NodeId::from_str(selector) {
         return rows
             .iter()
             .any(|row| row.node_id == node_id.to_string())
-            .then_some(node_id)
+            .then_some(vec![PeerSelectorMatch {
+                node_id,
+                score: 100,
+                matched_by: "node-id",
+                exact: true,
+            }])
             .ok_or_else(|| "no known peer matches that node ID".to_owned());
     }
-    if selector.len() < 2 || selector.len() > crate::profile::MAX_PEER_NAME_BYTES {
-        return Err("peer selector must be a computer name, fingerprint, or full node ID".to_owned());
+    if selector.len() < 2 || selector.len() > crate::profile::MAX_PEER_NAME_BYTES || !selector.is_ascii() {
+        return Err("peer selector must be 2 through 63 ASCII characters, or a full node ID".to_owned());
     }
     let normalized = selector.to_ascii_lowercase();
-    let mut matches = rows
+    let mut exact_tags = rows
         .iter()
+        .filter(|row| row.tags.iter().any(|tag| tag.eq_ignore_ascii_case(selector)))
         .filter_map(|row| {
-            let name_matches = row.name.eq_ignore_ascii_case(selector);
-            let id_matches = selector.len() >= 8 && row.node_id.starts_with(&normalized);
-            if name_matches || id_matches {
-                NodeId::from_str(&row.node_id).ok()
-            } else {
-                None
-            }
+            Some(PeerSelectorMatch {
+                node_id: NodeId::from_str(&row.node_id).ok()?,
+                score: 100,
+                matched_by: "tag",
+                exact: true,
+            })
         })
-        .take(2)
         .collect::<Vec<_>>();
-    match matches.as_mut_slice() {
-        [node_id] => Ok(*node_id),
-        [] => Err("no known peer matches that computer name or fingerprint".to_owned()),
-        _ => Err("peer name or fingerprint is ambiguous; use the longer fingerprint shown by `supgang`".to_owned()),
+    if !exact_tags.is_empty() {
+        sort_selector_matches(&mut exact_tags, rows);
+        return Ok(exact_tags);
     }
-}
-
-fn resolved_candidates(
-    candidates: &[EndpointCandidate],
-    local_networks: &[InterfaceNetwork],
-    choose_preferred: bool,
-) -> Vec<ResolvedCandidate> {
-    let preferred_index = choose_preferred
-        .then(|| {
-            candidates
-                .iter()
-                .position(|candidate| {
-                    candidate.kind() == CandidateKind::Local
-                        && local_networks
-                            .iter()
-                            .any(|network| network.contains(candidate.address().ip()))
-                })
-                .or_else(|| {
-                    candidates
-                        .iter()
-                        .position(|candidate| candidate.kind() != CandidateKind::Local)
-                })
-                .or_else(|| (!candidates.is_empty()).then_some(0))
-        })
-        .flatten();
-    resolved_with_preference(candidates, preferred_index, "device-signed")
-}
-
-fn resolved_with_preference(
-    candidates: &[EndpointCandidate],
-    preferred_index: Option<usize>,
-    provenance: &str,
-) -> Vec<ResolvedCandidate> {
-    candidates
+    let mut exact = rows
         .iter()
-        .enumerate()
-        .map(|(index, candidate)| ResolvedCandidate {
-            scope: candidate_scope(candidate.kind()).to_owned(),
-            kind: candidate_kind_name(candidate.kind()).to_owned(),
-            transport: "quic-v1".to_owned(),
-            address: candidate.address().to_string(),
-            provenance: provenance.to_owned(),
-            preferred: Some(index) == preferred_index,
+        .filter_map(|row| exact_match(row, selector, &normalized))
+        .collect::<Vec<_>>();
+    if !exact.is_empty() {
+        sort_selector_matches(&mut exact, rows);
+        return Ok(exact);
+    }
+    let mut fuzzy = rows
+        .iter()
+        .filter_map(|row| fuzzy_match(row, &normalized))
+        .collect::<Vec<_>>();
+    sort_selector_matches(&mut fuzzy, rows);
+    Ok(fuzzy)
+}
+
+fn exact_match(row: &PeerRow, selector: &str, normalized: &str) -> Option<PeerSelectorMatch> {
+    let (matched_by, matches) = if row.name.eq_ignore_ascii_case(selector) {
+        ("name", true)
+    } else {
+        (
+            "fingerprint",
+            selector.len() >= 8 && row.node_id.starts_with(normalized),
+        )
+    };
+    if !matches {
+        return None;
+    }
+    Some(PeerSelectorMatch {
+        node_id: NodeId::from_str(&row.node_id).ok()?,
+        score: 100,
+        matched_by,
+        exact: true,
+    })
+}
+
+fn fuzzy_match(row: &PeerRow, normalized: &str) -> Option<PeerSelectorMatch> {
+    let name = fuzzy_text_score(&row.name.to_ascii_lowercase(), normalized).map(|score| (score, "name"));
+    let tag = row
+        .tags
+        .iter()
+        .filter_map(|tag| fuzzy_text_score(&tag.to_ascii_lowercase(), normalized))
+        .max()
+        .map(|score| (score, "tag"));
+    let (score, matched_by) = match (name, tag) {
+        (Some(name), Some(tag)) => {
+            if tag.0 >= name.0 {
+                tag
+            } else {
+                name
+            }
+        }
+        (Some(value), None) | (None, Some(value)) => value,
+        (None, None) => return None,
+    };
+    Some(PeerSelectorMatch {
+        node_id: NodeId::from_str(&row.node_id).ok()?,
+        score,
+        matched_by,
+        exact: false,
+    })
+}
+
+fn fuzzy_text_score(candidate: &str, query: &str) -> Option<u8> {
+    if candidate.starts_with(query) {
+        return Some(95_u8.saturating_sub(length_penalty(candidate, query)));
+    }
+    if query.len() >= 3
+        && let Some(position) = candidate.find(query)
+    {
+        return Some(85_u8.saturating_sub(u8::try_from(position).unwrap_or(u8::MAX).min(10)));
+    }
+    let maximum_distance = match query.len() {
+        0..=4 => 1,
+        5..=8 => 2,
+        _ => 3,
+    };
+    let distance = bounded_edit_distance(candidate.as_bytes(), query.as_bytes(), maximum_distance)?;
+    Some(
+        75_u8
+            .saturating_sub(u8::try_from(distance).unwrap_or(u8::MAX).saturating_mul(10))
+            .saturating_sub(length_penalty(candidate, query)),
+    )
+}
+
+fn length_penalty(candidate: &str, query: &str) -> u8 {
+    u8::try_from(candidate.len().abs_diff(query.len()))
+        .unwrap_or(u8::MAX)
+        .min(15)
+}
+
+fn bounded_edit_distance(left: &[u8], right: &[u8], maximum: usize) -> Option<usize> {
+    if left.len().abs_diff(right.len()) > maximum {
+        return None;
+    }
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len().saturating_add(1)];
+    for (left_index, left_byte) in left.iter().enumerate() {
+        let first = left_index.saturating_add(1);
+        *current.first_mut()? = first;
+        let mut row_minimum = first;
+        for (right_index, right_byte) in right.iter().enumerate() {
+            let next_index = right_index.saturating_add(1);
+            let substitution = previous
+                .get(right_index)?
+                .saturating_add(usize::from(left_byte != right_byte));
+            let insertion = current.get(right_index)?.saturating_add(1);
+            let deletion = previous.get(next_index)?.saturating_add(1);
+            let next = substitution.min(insertion).min(deletion);
+            *current.get_mut(next_index)? = next;
+            row_minimum = row_minimum.min(next);
+        }
+        if row_minimum > maximum {
+            return None;
+        }
+        core::mem::swap(&mut previous, &mut current);
+    }
+    let distance = *previous.get(right.len())?;
+    (distance <= maximum).then_some(distance)
+}
+
+fn sort_selector_matches(matches: &mut [PeerSelectorMatch], rows: &[PeerRow]) {
+    matches.sort_by(|left, right| {
+        right.score.cmp(&left.score).then_with(|| {
+            let left_name = rows
+                .iter()
+                .find(|row| row.node_id == left.node_id.to_string())
+                .map_or("", |row| row.name.as_str());
+            let right_name = rows
+                .iter()
+                .find(|row| row.node_id == right.node_id.to_string())
+                .map_or("", |row| row.name.as_str());
+            left_name
+                .to_ascii_lowercase()
+                .cmp(&right_name.to_ascii_lowercase())
+                .then_with(|| left.node_id.cmp(&right.node_id))
         })
-        .collect()
+    });
+}
+
+/// Applies validated local tags to a fleet snapshot from any source.
+pub fn apply_tags(state_directory: &Path, result: &mut PeersOutput) -> Result<(), String> {
+    apply_tags_to_rows(state_directory, &mut result.peers)
+}
+
+/// Applies validated local tags to peer rows from a daemon or immutable snapshot.
+pub fn apply_tags_to_rows(state_directory: &Path, rows: &mut [PeerRow]) -> Result<(), String> {
+    let tags = peer_tag::load(state_directory).map_err(|error| error.to_string())?;
+    for row in rows {
+        let node_id = NodeId::from_str(&row.node_id).map_err(|_| "peer row contains an invalid node ID".to_owned())?;
+        row.tags = tags.for_peer(&node_id);
+    }
+    Ok(())
+}
+
+/// Applies validated local tags to a resolved peer from any source.
+pub fn apply_tags_to_resolve(state_directory: &Path, result: &mut ResolveOutput) -> Result<(), String> {
+    let node_id =
+        NodeId::from_str(&result.node_id).map_err(|_| "resolved peer contains an invalid node ID".to_owned())?;
+    result.tags = peer_tag::load(state_directory)
+        .map_err(|error| error.to_string())?
+        .for_peer(&node_id);
+    Ok(())
 }
 
 fn stopped_local_row(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
@@ -418,18 +543,21 @@ fn stopped_local_row_with_name(local_state: &state::LocalState, name: &profile::
     let candidates = EndpointConfig::automatic(crate::endpoint_config::DEFAULT_PORT)
         .map(|config| candidates_from_config(&config))
         .unwrap_or_default();
-    let preferred_index = self_preferred_index(&candidates);
+    let local_networks = crate::network::interface_networks().unwrap_or_default();
+    let preferred_index = self_preferred_index(&candidates, &local_networks);
     PeerRow {
         name: name.to_string(),
         name_source: "local-profile".to_owned(),
+        tags: Vec::new(),
         fingerprint: short_fingerprint(node_id),
         node_id: node_id.to_string(),
+        connected: None,
         status: "stopped".to_owned(),
         generation: local_state.generation(),
         sequence: local_state.sequence(),
         expires_at: 0,
         candidate_count: candidates.len(),
-        addresses: resolved_with_preference(&candidates, preferred_index, "local-interface"),
+        addresses: resolved_with_preference(&candidates, preferred_index, "local-interface", &local_networks),
     }
 }
 
@@ -441,32 +569,38 @@ fn candidates_from_config(config: &EndpointConfig) -> Vec<EndpointCandidate> {
         .chain(config.direct().iter().filter_map(|address| {
             EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, *address).ok()
         }))
+        .chain(config.mapped().iter().filter_map(|address| {
+            EndpointCandidate::new(CandidateKind::Mapped, CandidateTransport::QuicV1, *address).ok()
+        }))
         .collect()
 }
 
-fn self_preferred_index(candidates: &[EndpointCandidate]) -> Option<usize> {
+fn self_preferred_index(candidates: &[EndpointCandidate], local_networks: &[InterfaceNetwork]) -> Option<usize> {
+    let compatible =
+        |candidate: &EndpointCandidate| crate::network::candidate_is_route_compatible(candidate, local_networks);
     candidates
         .iter()
         .position(|candidate| {
-            candidate.kind() == CandidateKind::Local
+            compatible(candidate)
+                && candidate.kind() == CandidateKind::Local
                 && matches!(candidate.address().ip(), std::net::IpAddr::V4(address) if address.is_private())
         })
         .or_else(|| {
-            candidates
-                .iter()
-                .position(|candidate| candidate.kind() == CandidateKind::Local && candidate.address().is_ipv4())
+            candidates.iter().position(|candidate| {
+                compatible(candidate) && candidate.kind() == CandidateKind::Local && candidate.address().is_ipv4()
+            })
         })
         .or_else(|| {
             candidates
                 .iter()
-                .position(|candidate| candidate.kind() == CandidateKind::Local)
+                .position(|candidate| compatible(candidate) && candidate.kind() == CandidateKind::Local)
         })
         .or_else(|| {
-            candidates
-                .iter()
-                .position(|candidate| candidate.kind() != CandidateKind::Local && candidate.address().is_ipv4())
+            candidates.iter().position(|candidate| {
+                compatible(candidate) && candidate.kind() != CandidateKind::Local && candidate.address().is_ipv4()
+            })
         })
-        .or_else(|| (!candidates.is_empty()).then_some(0))
+        .or_else(|| candidates.iter().position(compatible))
 }
 
 fn display_name(name: Option<&crate::profile::PeerName>, node_id: NodeId) -> (String, &'static str) {
@@ -493,7 +627,7 @@ const fn candidate_kind_name(kind: CandidateKind) -> &'static str {
     match kind {
         CandidateKind::Local => "local",
         CandidateKind::Direct => "direct",
-        CandidateKind::Reflexive => "reflexive",
+        CandidateKind::Reflexive => "device-claimed",
         CandidateKind::Mapped => "mapped",
         CandidateKind::OwnedRelay => "owned-relay",
     }
@@ -516,88 +650,4 @@ fn unix_time() -> Result<u64, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        str::FromStr,
-    };
-
-    use super::{PeerRow, resolve_selector_from_rows, resolved_candidates, self_preferred_index};
-    use crate::{
-        candidate::{CandidateKind, CandidateTransport, EndpointCandidate},
-        ids::NodeId,
-        network::InterfaceNetwork,
-    };
-
-    fn row(name: &str, byte: u8) -> PeerRow {
-        let node_id = NodeId::from_bytes([byte; 32]);
-        PeerRow {
-            name: name.to_owned(),
-            name_source: "device-signed".to_owned(),
-            fingerprint: node_id.to_string().chars().take(8).collect(),
-            node_id: node_id.to_string(),
-            status: "fresh".to_owned(),
-            generation: 0,
-            sequence: 1,
-            expires_at: 100,
-            candidate_count: 0,
-            addresses: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn names_are_convenient_but_ambiguity_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let first = row("Solis", 1);
-        let second = row("Solis", 2);
-        assert_eq!(
-            resolve_selector_from_rows(std::slice::from_ref(&first), "solis")?,
-            NodeId::from_str(&first.node_id)?
-        );
-        assert!(resolve_selector_from_rows(&[first.clone(), second], "Solis").is_err());
-        assert_eq!(
-            resolve_selector_from_rows(std::slice::from_ref(&first), &first.fingerprint)?,
-            NodeId::from_str(&first.node_id)?
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn historical_addresses_are_never_recommended() -> Result<(), Box<dyn std::error::Error>> {
-        let candidates = [EndpointCandidate::new(
-            CandidateKind::Local,
-            CandidateTransport::QuicV1,
-            SocketAddr::from(([192, 168, 1, 191], 4_433)),
-        )?];
-        let networks = [InterfaceNetwork::new(
-            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
-            IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0)),
-        )];
-
-        let addresses = resolved_candidates(&candidates, &networks, false);
-        assert!(addresses.iter().all(|address| !address.preferred));
-        Ok(())
-    }
-
-    #[test]
-    fn this_computer_prefers_a_private_ipv4_interface() -> Result<(), Box<dyn std::error::Error>> {
-        let candidates = [
-            EndpointCandidate::new(
-                CandidateKind::Local,
-                CandidateTransport::QuicV1,
-                SocketAddr::from(([100, 77, 1, 2], 44_330)),
-            )?,
-            EndpointCandidate::new(
-                CandidateKind::Local,
-                CandidateTransport::QuicV1,
-                SocketAddr::from(([192, 168, 1, 20], 44_330)),
-            )?,
-            EndpointCandidate::new(
-                CandidateKind::Direct,
-                CandidateTransport::QuicV1,
-                SocketAddr::from(([8, 8, 8, 8], 44_330)),
-            )?,
-        ];
-        assert_eq!(self_preferred_index(&candidates), Some(1));
-        Ok(())
-    }
-}
+mod tests;
