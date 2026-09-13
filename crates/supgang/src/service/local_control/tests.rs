@@ -64,6 +64,7 @@ fn signed_contact(
                     SocketAddr::from(([127, 0, 0, 1], port)),
                 )?],
                 capabilities: Capabilities::NONE,
+                services: Vec::new(),
             },
             device,
         )?,

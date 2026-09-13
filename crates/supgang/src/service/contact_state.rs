@@ -4,7 +4,7 @@ use crate::{
     contact::PeerContact,
     membership::MembershipRoles,
     peer_directory::PeerDirectory,
-    record::Capabilities,
+    record::{Capabilities, EndpointClaims},
     state::{LocalState, StateError},
     sync::{MAX_SYNC_CONTACTS, SyncPage},
     transport::TransportIdentity,
@@ -60,8 +60,11 @@ pub(super) fn make_local_contact(
     let endpoint = state.sign_endpoint_record(
         config.display_name.clone(),
         transport_identity.key_id(),
-        config.candidates.clone(),
-        capabilities,
+        EndpointClaims {
+            candidates: config.candidates.clone(),
+            capabilities,
+            services: config.services.clone(),
+        },
         now,
         now.saturating_add(config.record_lifetime.as_secs())
             .min(membership.certificate.expires_at),

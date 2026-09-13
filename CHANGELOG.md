@@ -25,6 +25,15 @@ The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken 
 
 ### Added
 
+- Added signed service advertisements (ADR 0002): `supgang advertise NAME PORT --key-pin HEX` and
+  `supgang unadvertise NAME` record, in the owner-only profile beside the computer name, up to
+  four services this computer runs; the next signed endpoint record (protocol version 3, its own
+  signature domain) carries them, and `peers`, `resolve`, and the MCP tools return them as
+  `services` (`supgang.peers/v6`, `supgang.resolve/v5`). Supgang carries the claim and never
+  dials the port. Records at versions 1 and 2 keep verifying, and a member that advertises
+  nothing keeps signing version 2, so an upgrade alone changes nothing older members see; a
+  member that advertises signs version 3, which a member that has not upgraded rejects whole,
+  so advertise once the fleet has upgraded.
 - Added explicitly owner-enabled renewable UDP port mapping through PCP or NAT-PMP in automatic
   endpoint mode, with global-address validation, rate-limited signed updates, explicit unverified
   provenance, network-change replacement, default-off policy, and best-effort orderly lease deletion. UPnP is

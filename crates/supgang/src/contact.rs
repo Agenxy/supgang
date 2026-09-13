@@ -214,6 +214,7 @@ mod tests {
                     SocketAddr::from(([127, 0, 0, 1], 4_433)),
                 )?],
                 capabilities: Capabilities::NONE,
+                services: Vec::new(),
             },
             &device,
         )?;

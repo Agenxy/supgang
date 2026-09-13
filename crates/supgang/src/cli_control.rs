@@ -376,7 +376,17 @@ fn render_computer(
         }
     }
     *hidden = hidden.saturating_add(computer.addresses.len().saturating_sub(shown.len()));
+    render_services(computer, output)?;
     writeln!(output)
+}
+
+/// One line per advertised service: what the computer says it runs and
+/// where, never whether it answers.
+fn render_services(computer: &cli_peer::PeerRow, output: &mut dyn Write) -> std::io::Result<()> {
+    for service in &computer.services {
+        writeln!(output, "  {:<6} {} on port {}", "runs", service.name, service.port)?;
+    }
+    Ok(())
 }
 
 fn peer_status_label(computer: &cli_peer::PeerRow) -> &str {
@@ -413,6 +423,7 @@ fn render_all_addresses(computer: &cli_peer::PeerRow, output: &mut dyn Write) ->
             }
         )?;
     }
+    render_services(computer, output)?;
     writeln!(output)
 }
 

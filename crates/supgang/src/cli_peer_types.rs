@@ -22,6 +22,25 @@ pub struct PeerRow {
     pub expires_at: u64,
     pub candidate_count: usize,
     pub addresses: Vec<ResolvedCandidate>,
+    /// Services the computer advertises in its signed record, at its addresses.
+    #[serde(default)]
+    pub services: Vec<ServiceRow>,
+}
+
+/// One service a computer says it offers, signed by that computer's device.
+///
+/// A claim, not an observation: Supgang has not dialled the port. A consumer
+/// that connects to one of the computer's addresses on `port` and finds a
+/// TLS key whose SHA-256 is `key_pin` is talking to what the computer signed.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ServiceRow {
+    /// The service's own name: `dibs`, `remap`, and so on.
+    pub name: String,
+    /// The port it listens on, at the computer's addresses.
+    pub port: u16,
+    /// Lowercase hex SHA-256 of the service's TLS public key.
+    pub key_pin: String,
 }
 
 /// Machine-readable peer-directory summary.
@@ -74,4 +93,17 @@ pub struct ResolveOutput {
     pub issued_at: u64,
     pub expires_at: u64,
     pub candidates: Vec<ResolvedCandidate>,
+    /// Services the computer advertises in its signed record, at these candidates.
+    #[serde(default)]
+    pub services: Vec<ServiceRow>,
+}
+
+impl From<&crate::record::ServiceAdvert> for ServiceRow {
+    fn from(advert: &crate::record::ServiceAdvert) -> Self {
+        Self {
+            name: advert.name.as_str().to_owned(),
+            port: advert.port,
+            key_pin: advert.key_pin_hex(),
+        }
+    }
 }

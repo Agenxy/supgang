@@ -67,6 +67,7 @@ mod tests {
                     SocketAddr::from(([1, 1, 1, 1], 4_433)),
                 )?],
                 capabilities: Capabilities::NONE,
+                services: Vec::new(),
             },
             &identity,
         )
