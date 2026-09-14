@@ -42,12 +42,18 @@ pub(super) fn validate_compatible_identity(authority: &Path, candidate: &Path) -
     validate_platform_identity(authority, candidate)
 }
 
+// Off macOS there is no platform code signature to check, so these accept
+// everything. They keep the `Result` shape of their macOS twins on purpose:
+// the callers above are written once for both, and clippy's `const fn` and
+// `unnecessary_wraps` advice would apply only to this half.
 #[cfg(not(target_os = "macos"))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn validate_platform_signature(_path: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn validate_platform_identity(_authority: &Path, _candidate: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
