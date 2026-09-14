@@ -19,6 +19,7 @@ use crate::{
     ids::NodeId,
     peer_directory::{PeerDirectory, PeerDirectoryError},
     profile::PeerName,
+    record::ServiceAdvert,
     router_mapping::{RouterMapping, RouterMappingStatus, shutdown as shutdown_router_mapping},
     settings::{DEFAULT_ADDRESS_HISTORY, MAX_ADDRESS_HISTORY, MIN_ADDRESS_HISTORY},
     state::{self, LocalState, StateError},
@@ -107,6 +108,9 @@ pub struct ServiceConfig {
     pub listen: SocketAddr,
     /// Addresses intentionally published in this device's signed record.
     pub candidates: Vec<EndpointCandidate>,
+    /// Services this computer advertises in that record, read from the
+    /// profile when the service starts, as the name is.
+    pub services: Vec<ServiceAdvert>,
     /// Delay between bounded attempts to one remembered peer.
     pub retry_interval: Duration,
     /// Lifetime of each locally signed endpoint record.
@@ -160,6 +164,7 @@ impl ServiceConfig {
             display_name,
             listen,
             candidates,
+            services: Vec::new(),
             retry_interval: Duration::from_secs(DEFAULT_RETRY_SECONDS),
             record_lifetime: Duration::from_secs(DEFAULT_RECORD_LIFETIME_SECONDS),
             address_history: DEFAULT_ADDRESS_HISTORY,

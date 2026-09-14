@@ -264,6 +264,7 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         "HomeServer",
     ])?;
     assert_eq!(renamed.get("name"), Some(&serde_json::json!("HomeServer")));
+    advertise_dibs(joiner_text)?;
     write_endpoints(&endpoints, "127.0.0.1:4433", "local")?;
     run_json(&[
         "supgang",
@@ -333,8 +334,9 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
     let resolved_tag = run_json(&["supgang", "--json", "--state-dir", founder_text, "resolve", "home"])?;
     assert_eq!(resolved_tag.get("node_id"), requested.get("node_id"));
     assert_eq!(resolved_tag.get("tags"), Some(&serde_json::json!(["home"])));
+    assert_dibs_resolved(&resolved_tag);
     let listed = run_json(&["supgang", "--json", "--state-dir", founder_text])?;
-    assert_eq!(listed.get("schema"), Some(&serde_json::json!("supgang.peers/v5")));
+    assert_eq!(listed.get("schema"), Some(&serde_json::json!("supgang.peers/v6")));
     assert!(
         listed
             .get("this_computer")
@@ -358,6 +360,42 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
     );
     assert_human_fleet_output(founder_text)?;
     Ok(())
+}
+
+/// The joiner says it runs Dibs on 4777 behind a known key, while its
+/// service is stopped, the way `name set` is done.
+fn advertise_dibs(state: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let pin = "ab".repeat(32);
+    let advertised = run_json(&[
+        "supgang",
+        "--json",
+        "--state-dir",
+        state,
+        "advertise",
+        "dibs",
+        "4777",
+        "--key-pin",
+        &pin,
+    ])?;
+    assert_eq!(
+        advertised.get("schema"),
+        Some(&serde_json::json!("supgang.services/v1"))
+    );
+    assert_eq!(
+        advertised.get("services"),
+        Some(&serde_json::json!([{"name": "dibs", "port": 4777, "key_pin": pin}]))
+    );
+    Ok(())
+}
+
+/// The joiner's advertisement crossed in its signed contact: the founder now
+/// knows what the joiner runs, on which port, with which key.
+fn assert_dibs_resolved(resolved: &serde_json::Value) {
+    assert_eq!(resolved.get("schema"), Some(&serde_json::json!("supgang.resolve/v5")));
+    assert_eq!(
+        resolved.get("services"),
+        Some(&serde_json::json!([{"name": "dibs", "port": 4777, "key_pin": "ab".repeat(32)}]))
+    );
 }
 
 fn assert_human_fleet_output(founder_state: &str) -> Result<(), Box<dyn std::error::Error>> {

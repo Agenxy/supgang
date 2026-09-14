@@ -7,7 +7,6 @@ use minicbor::{decode, encode};
 use thiserror::Error;
 
 use crate::{
-    candidate::EndpointCandidate,
     ids::{HiveId, NodeId, TransportKeyId},
     invitation::{InvitationError, JoinBundle, JoinRequest},
     journal::{Journal, JournalError},
@@ -16,7 +15,10 @@ use crate::{
         SignedMembership,
     },
     profile::PeerName,
-    record::{Capabilities, ENDPOINT_RECORD_VERSION, EndpointRecord, RecordError, SignedEndpointRecord},
+    record::{
+        Capabilities, ENDPOINT_RECORD_VERSION, ENDPOINT_RECORD_VERSION_V2, EndpointClaims, EndpointRecord, RecordError,
+        SignedEndpointRecord,
+    },
     revocation::{REVOCATION_VERSION, RevocationError, RevocationList, SignedRevocationList},
     state_lock::{StateLock, StateLockError},
     storage::{self, LocalIdentity, StorageError},
@@ -171,11 +173,15 @@ impl LocalState {
         &mut self,
         display_name: PeerName,
         transport_key_id: TransportKeyId,
-        candidates: Vec<EndpointCandidate>,
-        capabilities: Capabilities,
+        claims: EndpointClaims,
         issued_at: u64,
         expires_at: u64,
     ) -> Result<SignedEndpointRecord, StateError> {
+        let EndpointClaims {
+            candidates,
+            capabilities,
+            services,
+        } = claims;
         let membership = self.local_membership().ok_or(StateError::IdentityMismatch)?;
         if expires_at > membership.certificate.expires_at {
             return Err(RecordError::OutlivesMembership.into());
@@ -191,8 +197,17 @@ impl LocalState {
             return Err(StateError::UnauthorizedCapability);
         }
         let next = self.sequence.checked_add(1).ok_or(StateError::CounterExhausted)?;
+        // A record that advertises nothing is signed at the version every
+        // member reads. Only an advertisement needs the newer version, so it
+        // is the operator who runs `advertise` who decides the fleet must
+        // have upgraded, not every address refresh.
+        let protocol_version = if services.is_empty() {
+            ENDPOINT_RECORD_VERSION_V2
+        } else {
+            ENDPOINT_RECORD_VERSION
+        };
         let mut record = EndpointRecord {
-            protocol_version: ENDPOINT_RECORD_VERSION,
+            protocol_version,
             hive_id: self.identity.hive_id,
             node_id: self.identity.device.node_id(),
             display_name: Some(display_name),
@@ -203,6 +218,7 @@ impl LocalState {
             expires_at,
             candidates,
             capabilities,
+            services,
         };
         record.canonicalize_candidates();
         record.validate_shape()?;

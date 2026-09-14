@@ -124,6 +124,24 @@ pub enum Command {
         #[arg(value_name = "PEER")]
         peer: String,
     },
+    /// Advertise a service this computer runs, signed into its peer record.
+    Advertise {
+        /// The service's own name: 1-16 lowercase letters, digits, or hyphens.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// The port the service listens on at this computer's addresses.
+        #[arg(value_name = "PORT")]
+        port: u16,
+        /// SHA-256 of the service's TLS public key, as 64 hex digits.
+        #[arg(long, value_name = "HEX")]
+        key_pin: String,
+    },
+    /// Stop advertising a service.
+    Unadvertise {
+        /// Name of the advertised service.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
     /// Give a peer a local shell-friendly nickname.
     Tag {
         /// Existing computer name, tag, fingerprint, or stable node ID.

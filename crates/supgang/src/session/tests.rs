@@ -67,6 +67,7 @@ fn contact_at(
                 SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
             )?],
             capabilities: Capabilities::NONE,
+            services: Vec::new(),
         },
         device,
     )?;
