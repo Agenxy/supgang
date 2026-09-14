@@ -9,7 +9,10 @@ use crate::{
     candidate::{CandidateError, CandidateKind, CandidateTransport, EndpointCandidate, MAX_CANDIDATES},
     ids::{HiveId, NodeId, TransportKeyId},
     profile::PeerName,
-    record::{Capabilities, ENDPOINT_RECORD_VERSION, ENDPOINT_RECORD_VERSION_V1, EndpointRecord, SignedEndpointRecord},
+    record::{
+        Capabilities, ENDPOINT_RECORD_VERSION, ENDPOINT_RECORD_VERSION_V1, ENDPOINT_RECORD_VERSION_V2, EndpointRecord,
+        MAX_SERVICE_ADVERTS, ServiceAdvert, ServiceName, SignedEndpointRecord,
+    },
 };
 
 /// Maximum accepted size of a canonical unsigned endpoint record.
@@ -20,6 +23,8 @@ pub const MAX_SIGNED_ENDPOINT_RECORD_BYTES: usize = 4_096;
 const SIGNED_ENVELOPE_VERSION: u16 = 1;
 const RECORD_FIELDS_V1: u64 = 10;
 const RECORD_FIELDS_V2: u64 = 11;
+const RECORD_FIELDS_V3: u64 = 12;
+const SERVICE_FIELDS: u64 = 3;
 const CANDIDATE_FIELDS: u64 = 4;
 
 /// An encoding or decoding failure at the network boundary.
@@ -58,6 +63,9 @@ pub enum WireError {
     /// The signed display name is invalid.
     #[error("endpoint record display name is invalid")]
     DisplayName,
+    /// A service advertisement violated protocol invariants.
+    #[error("wire service advertisement is invalid")]
+    Service,
     /// Signature bytes did not have the required size.
     #[error("wire signature must contain exactly 64 bytes")]
     SignatureLength,
@@ -79,7 +87,8 @@ pub fn encode_endpoint_record(record: &EndpointRecord) -> Result<Vec<u8>, WireEr
     let mut encoder = Encoder::new(&mut output);
     let fields = match record.protocol_version {
         ENDPOINT_RECORD_VERSION_V1 if record.display_name.is_none() => RECORD_FIELDS_V1,
-        ENDPOINT_RECORD_VERSION if record.display_name.is_some() => RECORD_FIELDS_V2,
+        ENDPOINT_RECORD_VERSION_V2 if record.display_name.is_some() => RECORD_FIELDS_V2,
+        ENDPOINT_RECORD_VERSION if record.display_name.is_some() => RECORD_FIELDS_V3,
         _ => return Err(WireError::RecordVersion),
     };
     encoder.array(fields)?;
@@ -99,6 +108,15 @@ pub fn encode_endpoint_record(record: &EndpointRecord) -> Result<Vec<u8>, WireEr
         encode_candidate(&mut encoder, candidate)?;
     }
     encoder.u64(record.capabilities.bits())?;
+    if fields == RECORD_FIELDS_V3 {
+        encoder.array(u64::try_from(record.services.len()).map_err(|_| WireError::IntegerRange)?)?;
+        for service in &record.services {
+            encoder.array(SERVICE_FIELDS)?;
+            encoder.str(service.name.as_str())?;
+            encoder.u16(service.port)?;
+            encoder.bytes(&service.key_pin)?;
+        }
+    }
     if output.len() > MAX_ENDPOINT_RECORD_BYTES {
         return Err(WireError::Oversized);
     }
@@ -119,8 +137,11 @@ pub fn decode_endpoint_record(input: &[u8]) -> Result<EndpointRecord, WireError>
     let protocol_version = decoder.u16()?;
     let display_name_present = match protocol_version {
         ENDPOINT_RECORD_VERSION_V1 if fields == RECORD_FIELDS_V1 => false,
-        ENDPOINT_RECORD_VERSION if fields == RECORD_FIELDS_V2 => true,
-        ENDPOINT_RECORD_VERSION_V1 | ENDPOINT_RECORD_VERSION => return Err(WireError::WrongFieldCount),
+        ENDPOINT_RECORD_VERSION_V2 if fields == RECORD_FIELDS_V2 => true,
+        ENDPOINT_RECORD_VERSION if fields == RECORD_FIELDS_V3 => true,
+        ENDPOINT_RECORD_VERSION_V1 | ENDPOINT_RECORD_VERSION_V2 | ENDPOINT_RECORD_VERSION => {
+            return Err(WireError::WrongFieldCount);
+        }
         _ => return Err(WireError::RecordVersion),
     };
     let hive_id = HiveId::from_bytes(read_fixed::<32>(&mut decoder)?);
@@ -144,6 +165,17 @@ pub fn decode_endpoint_record(input: &[u8]) -> Result<EndpointRecord, WireError>
         candidates.push(decode_candidate(&mut decoder)?);
     }
     let capabilities = Capabilities::from_bits(decoder.u64()?).map_err(|_| WireError::Capability)?;
+    let mut services = Vec::new();
+    if fields == RECORD_FIELDS_V3 {
+        let service_count = read_array_len(&mut decoder)?;
+        if service_count > MAX_SERVICE_ADVERTS {
+            return Err(WireError::Oversized);
+        }
+        services.reserve_exact(service_count);
+        for _ in 0..service_count {
+            services.push(decode_service(&mut decoder)?);
+        }
+    }
     ensure_finished(&decoder, input)?;
     let record = EndpointRecord {
         protocol_version,
@@ -157,11 +189,24 @@ pub fn decode_endpoint_record(input: &[u8]) -> Result<EndpointRecord, WireError>
         expires_at,
         candidates,
         capabilities,
+        services,
     };
     if encode_endpoint_record(&record)?.as_slice() != input {
         return Err(WireError::NonCanonical);
     }
     Ok(record)
+}
+
+fn decode_service(decoder: &mut Decoder<'_>) -> Result<ServiceAdvert, WireError> {
+    if decoder.array()?.ok_or(WireError::WrongFieldCount)? != SERVICE_FIELDS {
+        return Err(WireError::WrongFieldCount);
+    }
+    let name = ServiceName::new(decoder.str()?.to_owned()).map_err(|_| WireError::Service)?;
+    let port = decoder.u16()?;
+    let key_pin = read_fixed::<32>(decoder)?;
+    let service = ServiceAdvert { name, port, key_pin };
+    service.validate().map_err(|_| WireError::Service)?;
+    Ok(service)
 }
 
 /// Encodes a signed endpoint-record envelope.
@@ -310,6 +355,7 @@ mod tests {
                 SocketAddr::from(([8, 8, 4, 4], 7_777)),
             )?],
             capabilities: Capabilities::NONE,
+            services: Vec::new(),
         };
         let signed = SignedEndpointRecord::sign(record, &identity)?;
         Ok((identity, signed))
@@ -321,6 +367,26 @@ mod tests {
         let bytes = encode_signed_endpoint_record(&signed)?;
         let decoded = decode_signed_endpoint_record(&bytes)?;
         assert_eq!(decoded, signed);
+        decoded.verify(&identity.verifying_key())?;
+        Ok(())
+    }
+
+    // A record that advertises carries the advertisements canonically and
+    // verifies; four of them stay inside the byte budget.
+    #[test]
+    fn advertised_services_round_trip_within_the_budget() -> Result<(), Box<dyn std::error::Error>> {
+        let (identity, current) = signed_record()?;
+        let mut record = current.record;
+        record.protocol_version = crate::record::ENDPOINT_RECORD_VERSION;
+        record.services = ["a-service", "dibs", "remap", "zzzzzzzzzzzzzzzz"]
+            .into_iter()
+            .map(|name| crate::record::ServiceAdvert::new(name, 65_535, &"ff".repeat(32)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let signed = SignedEndpointRecord::sign(record, &identity)?;
+        let bytes = encode_signed_endpoint_record(&signed)?;
+        let decoded = decode_signed_endpoint_record(&bytes)?;
+        assert_eq!(decoded, signed);
+        assert_eq!(decoded.record.services.len(), 4);
         decoded.verify(&identity.verifying_key())?;
         Ok(())
     }

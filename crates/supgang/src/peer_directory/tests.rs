@@ -61,6 +61,7 @@ fn contact_with_ports(
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             capabilities: Capabilities::NONE,
+            services: Vec::new(),
         },
         device,
     )?;
@@ -107,6 +108,7 @@ fn public_contact_with_ports(
             expires_at: 100,
             candidates,
             capabilities: Capabilities::NONE,
+            services: Vec::new(),
         },
         device,
     )?;

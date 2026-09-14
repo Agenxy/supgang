@@ -451,7 +451,7 @@ mod tests {
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let executable = temporary.path().join("supgang");
-        fs::copy(std::env::current_exe()?, &executable)?;
+        fs::copy(super::super::tests::fixture_executable()?, &executable)?;
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
         sign_lifecycle_fixture(&executable, 0)?;
         let _installed = initialize_installed(&state, &executable)?;
@@ -466,7 +466,7 @@ mod tests {
         let updates = crate::update::updates_directory(state, false)?;
         let slots = crate::update::ensure_child(&updates, crate::update::SLOTS_DIRECTORY)?;
         let unsigned = state.join(format!(".lifecycle-candidate-{marker}"));
-        let bytes = fs::read(std::env::current_exe()?)?;
+        let bytes = fs::read(super::super::tests::fixture_executable()?)?;
         crate::update::write_new_file(&unsigned, &bytes, 0o700)?;
         sign_lifecycle_fixture(&unsigned, marker)?;
         let signed_bytes = fs::read(&unsigned)?;
@@ -589,7 +589,7 @@ mod tests {
         write_atomic(&updates, PENDING_FILE, &serde_json::to_vec(&obsolete_record)?, 0o600)?;
 
         let replacement = temporary.path().join("replacement-supgang");
-        fs::copy(std::env::current_exe()?, &replacement)?;
+        fs::copy(super::super::tests::fixture_executable()?, &replacement)?;
         fs::set_permissions(&replacement, fs::Permissions::from_mode(0o700))?;
         sign_lifecycle_fixture(&replacement, 6)?;
         let installed = initialize_installed(&state, &replacement)?;

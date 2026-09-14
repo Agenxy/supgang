@@ -133,6 +133,20 @@ where
         }
         Some(Command::Status) => cli_control::status(&state_directory, cli.json, output, error),
         Some(Command::Name { command }) => cli_profile::name(&state_directory, command, cli.json, output, error),
+        Some(Command::Advertise { name, port, key_pin }) => cli_profile::advertise(
+            &state_directory,
+            cli_profile::Advertise::Add { name, port, key_pin },
+            cli.json,
+            output,
+            error,
+        ),
+        Some(Command::Unadvertise { name }) => cli_profile::advertise(
+            &state_directory,
+            cli_profile::Advertise::Remove { name },
+            cli.json,
+            output,
+            error,
+        ),
         Some(Command::JoinRequest { output: request_file }) => {
             join_request(&state_directory, &request_file, cli.json, output, error)
         }

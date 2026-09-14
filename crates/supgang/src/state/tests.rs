@@ -10,7 +10,7 @@ use crate::{
     invitation::JoinBundle,
     journal::MAX_JOURNAL_BYTES,
     membership::{MAX_MEMBERSHIP_LIFETIME_SECONDS, MembershipRoles},
-    record::Capabilities,
+    record::{Capabilities, EndpointClaims},
     revocation::{REVOCATION_VERSION, RevocationList, SignedRevocationList},
     storage,
 };
@@ -197,15 +197,23 @@ fn endpoint_signature_is_returned_only_after_sequence_persistence() -> Result<()
     let signed = state.sign_endpoint_record(
         crate::profile::PeerName::new("Test Computer")?,
         TransportKeyId::from_public_material(b"ephemeral transport key"),
-        vec![EndpointCandidate::new(
-            CandidateKind::Local,
-            CandidateTransport::QuicV1,
-            std::net::SocketAddr::from(([127, 0, 0, 1], 4_433)),
-        )?],
-        Capabilities::NONE,
+        EndpointClaims {
+            candidates: vec![EndpointCandidate::new(
+                CandidateKind::Local,
+                CandidateTransport::QuicV1,
+                std::net::SocketAddr::from(([127, 0, 0, 1], 4_433)),
+            )?],
+            capabilities: Capabilities::NONE,
+            services: Vec::new(),
+        },
         now,
         now.saturating_add(3_600),
     )?;
+    assert_eq!(
+        signed.record.protocol_version,
+        crate::record::ENDPOINT_RECORD_VERSION_V2,
+        "a record that advertises nothing stays readable by members that have not upgraded"
+    );
     signed.verify_authorized(
         state.local_membership().ok_or("missing local membership")?,
         &state.identity().root_verifying_key,

@@ -477,6 +477,7 @@ mod tests {
                             SocketAddr::from(([127, 0, 0, 1], 44_331)),
                         )?],
                         capabilities: Capabilities::NONE,
+                        services: Vec::new(),
                     },
                     &peer,
                 )?,

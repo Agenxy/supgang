@@ -44,7 +44,7 @@ fn initialize_active_fixture(
     directory: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let executable = directory.join("installed-supgang");
-    fs::copy(std::env::current_exe()?, &executable)?;
+    fs::copy(fixture_executable()?, &executable)?;
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
     sign_update_fixture(&executable, 1)?;
     let _installed = initialize_installed(state, &executable)?;
@@ -121,7 +121,7 @@ fn signed_repository() -> Result<SignedRepository, Box<dyn std::error::Error>> {
     let targets_directory = tempfile::tempdir()?;
     let target_name = format!("supgang-9999.0.0-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let target_path = targets_directory.path().join(&target_name);
-    fs::copy(std::env::current_exe()?, &target_path)?;
+    fs::copy(fixture_executable()?, &target_path)?;
     fs::set_permissions(&target_path, fs::Permissions::from_mode(0o700))?;
     sign_update_fixture(&target_path, 2)?;
     let target_payload = fs::read(&target_path)?;
@@ -207,7 +207,7 @@ fn repository_with_root_rotation(seed: u8, version: &str) -> Result<SignedReposi
     let trust = tempfile::tempdir()?;
     let target_name = format!("supgang-{version}-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let target_path = targets_directory.path().join(&target_name);
-    fs::copy(std::env::current_exe()?, &target_path)?;
+    fs::copy(fixture_executable()?, &target_path)?;
     fs::set_permissions(&target_path, fs::Permissions::from_mode(0o700))?;
     sign_update_fixture(&target_path, 2)?;
     let target_payload = fs::read(&target_path)?;
@@ -406,7 +406,7 @@ fn update_status_rejects_a_corrupted_pending_record() -> Result<(), Box<dyn std:
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let executable = temporary.path().join("supgang");
-    fs::copy(std::env::current_exe()?, &executable)?;
+    fs::copy(fixture_executable()?, &executable)?;
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
     let _installed = initialize_installed(&state, &executable)?;
     let updates = super::updates_directory(&state, false)?;
@@ -423,7 +423,7 @@ fn local_reinstall_refreshes_changed_bytes_at_the_same_version() -> Result<(), B
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let executable = temporary.path().join("supgang");
-    fs::copy(std::env::current_exe()?, &executable)?;
+    fs::copy(fixture_executable()?, &executable)?;
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
     sign_update_fixture(&executable, 1)?;
     let first = initialize_installed(&state, &executable)?;
@@ -670,4 +670,22 @@ fn root_authorized_bundle_crosses_real_quic_and_is_independently_verified() -> R
         client.close(0_u8.into(), b"test complete");
         Ok::<(), Box<dyn std::error::Error>>(())
     })
+}
+
+/// The executable the update tests stage, sign, and install as a fixture.
+///
+/// On macOS it is the test binary itself, because the lifecycle fixtures are
+/// re-signed with `codesign` and need a real Mach-O. On Linux the test binary
+/// carries its full DWARF and can exceed `MAX_UPDATE_TARGET_BYTES`, so every
+/// test that copied it failed with `InvalidBundle` on the hosted runner before
+/// testing anything; `/bin/true` is a real ELF the cap accepts.
+pub(super) fn fixture_executable() -> std::io::Result<std::path::PathBuf> {
+    if cfg!(target_os = "macos") {
+        return std::env::current_exe();
+    }
+    let small = std::path::PathBuf::from("/bin/true");
+    if small.is_file() {
+        return Ok(small);
+    }
+    std::env::current_exe()
 }

@@ -52,9 +52,13 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
                 output,
                 error,
             )?;
-            run_cargo(
+            let scratch = test_scratch()?;
+            let test_environment: Vec<(&str, &str)> =
+                scratch.iter().map(|directory| ("TMPDIR", directory.as_str())).collect();
+            run_cargo_with_env(
                 &root,
                 &["test", "--workspace", "--all-targets", "--locked"],
+                &test_environment,
                 output,
                 error,
             )?;
@@ -110,6 +114,39 @@ fn run_cargo_with_env(
         let _write_result = writeln!(error, "cargo {} returned {status}", arguments.join(" "));
         Err(format!("cargo {} did not pass", arguments.join(" ")))
     }
+}
+
+/// Where the test suites put their temporary state.
+///
+/// Storage refuses any ancestor that other users can write, which is the
+/// point of it, and on Linux the default temporary directory is exactly that:
+/// `/tmp` is world-writable with the sticky bit. Every test that touches
+/// state then fails with `UnsafeAncestor` before testing anything, which is
+/// what the hosted Linux runner reported. `$HOME/.cache` is the user's own,
+/// so the tests exercise the rule there instead of tripping on it.
+///
+/// macOS is left alone: its per-user temporary directory under `/var/folders`
+/// is already owner-only, and the checkout is not a safe alternative there,
+/// because `~/Desktop` carries a sharing ACL the storage rules reject.
+fn test_scratch() -> Result<Option<String>, String> {
+    if cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
+    let scratch = PathBuf::from(home).join(".cache").join("supgang").join("test-tmp");
+    fs::create_dir_all(&scratch)
+        .map_err(|create_error| format!("could not create {}: {create_error}", scratch.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700))
+            .map_err(|mode_error| format!("could not restrict {}: {mode_error}", scratch.display()))?;
+    }
+    scratch
+        .into_os_string()
+        .into_string()
+        .map(Some)
+        .map_err(|_| "the home path is not valid Unicode".to_owned())
 }
 
 fn workspace_root() -> Result<PathBuf, String> {

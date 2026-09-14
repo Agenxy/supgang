@@ -44,9 +44,11 @@ pub fn run(state_directory: &Path, options: RunOptions<'_>, output: &mut dyn Wri
     let local_state = state::open(state_directory).map_err(|error| error.to_string())?;
     let display_name = profile::load_or_create(state_directory, local_state.identity().device.node_id())
         .map_err(|error| error.to_string())?;
+    let services = profile::services(state_directory).map_err(|error| error.to_string())?;
     drop(local_state);
     let local_settings = settings::load(state_directory).map_err(|error| error.to_string())?;
     let config = service::ServiceConfig::new(display_name, endpoints.listen(), endpoints.local(), endpoints.direct())
+        .and_then(|value| value.with_services(services))
         .and_then(|value| value.with_mapped_addresses(endpoints.mapped()))
         .and_then(|value| {
             value.with_intervals(

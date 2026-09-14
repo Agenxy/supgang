@@ -14,11 +14,11 @@ use crate::{
     network::InterfaceNetwork,
     peer_directory::{ImportDecision, PeerDirectory},
     peer_tag, profile,
-    record::Capabilities,
+    record::{Capabilities, EndpointClaims},
     state, transport_storage,
 };
 
-pub use crate::cli_peer_types::{PeerRow, PeersOutput, ResolveOutput, ResolvedCandidate};
+pub use crate::cli_peer_types::{PeerRow, PeersOutput, ResolveOutput, ResolvedCandidate, ServiceRow};
 
 mod resolution;
 
@@ -99,8 +99,11 @@ pub fn publish(
         .sign_endpoint_record(
             display_name,
             transport.key_id(),
-            candidates,
-            Capabilities::NONE,
+            EndpointClaims {
+                candidates,
+                capabilities: Capabilities::NONE,
+                services: profile::services(state_directory).map_err(|error| error.to_string())?,
+            },
             now,
             expires_at,
         )
@@ -202,7 +205,7 @@ pub fn peers_from_directory(
     this_computer: PeerRow,
 ) -> PeersOutput {
     PeersOutput {
-        schema: "supgang.peers/v5".to_owned(),
+        schema: "supgang.peers/v6".to_owned(),
         status: "ok".to_owned(),
         this_computer: Some(this_computer),
         peers: peer_rows_from_directory(directory, root_key, now),
@@ -247,6 +250,7 @@ fn peer_rows_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, 
                 expires_at: record.expires_at,
                 candidate_count: addresses.len(),
                 addresses,
+                services: record.services.iter().map(Into::into).collect(),
             }
         })
         .collect()
@@ -272,6 +276,7 @@ pub fn running_local_row(contact: &PeerContact) -> PeerRow {
         expires_at: record.expires_at,
         candidate_count: record.candidates.len(),
         addresses: resolved_with_preference(&record.candidates, preferred_index, "device-signed", &local_networks),
+        services: record.services.iter().map(Into::into).collect(),
     }
 }
 
@@ -301,7 +306,7 @@ pub fn resolve_from_directory(directory: &PeerDirectory, node_id: NodeId, now: u
     let candidates = resolved_peer_candidates(directory, node_id, &record.candidates, &local_networks, now, true);
     let (name, _source) = display_name(record.display_name.as_ref(), node_id);
     Ok(ResolveOutput {
-        schema: "supgang.resolve/v4".to_owned(),
+        schema: "supgang.resolve/v5".to_owned(),
         status: "ok".to_owned(),
         node_id: node_id.to_string(),
         name,
@@ -312,6 +317,7 @@ pub fn resolve_from_directory(directory: &PeerDirectory, node_id: NodeId, now: u
         issued_at: record.issued_at,
         expires_at: record.expires_at,
         candidates,
+        services: record.services.iter().map(Into::into).collect(),
     })
 }
 
@@ -530,15 +536,21 @@ pub fn apply_tags_to_resolve(state_directory: &Path, result: &mut ResolveOutput)
 fn stopped_local_row(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
     let node_id = local_state.identity().device.node_id();
     let name = profile::load_or_create(state_directory, node_id).map_err(|error| error.to_string())?;
-    Ok(stopped_local_row_with_name(local_state, &name))
+    let services = profile::services(state_directory).map_err(|error| error.to_string())?;
+    Ok(stopped_local_row_with_name(local_state, &name, &services))
 }
 
 fn stopped_local_row_read_only(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
     let name = profile::load(state_directory).map_err(|error| error.to_string())?;
-    Ok(stopped_local_row_with_name(local_state, &name))
+    let services = profile::services(state_directory).map_err(|error| error.to_string())?;
+    Ok(stopped_local_row_with_name(local_state, &name, &services))
 }
 
-fn stopped_local_row_with_name(local_state: &state::LocalState, name: &profile::PeerName) -> PeerRow {
+fn stopped_local_row_with_name(
+    local_state: &state::LocalState,
+    name: &profile::PeerName,
+    services: &[crate::record::ServiceAdvert],
+) -> PeerRow {
     let node_id = local_state.identity().device.node_id();
     let candidates = EndpointConfig::automatic(crate::endpoint_config::DEFAULT_PORT)
         .map(|config| candidates_from_config(&config))
@@ -558,6 +570,7 @@ fn stopped_local_row_with_name(local_state: &state::LocalState, name: &profile::
         expires_at: 0,
         candidate_count: candidates.len(),
         addresses: resolved_with_preference(&candidates, preferred_index, "local-interface", &local_networks),
+        services: services.iter().map(Into::into).collect(),
     }
 }
 

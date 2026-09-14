@@ -249,6 +249,23 @@ Names are signed human labels, not authorization identities. Supgang accepts por
 and always shows a short stable fingerprint beside them. Duplicate names are allowed on the wire,
 but ambiguous CLI selection fails closed and asks for the fingerprint.
 
+## Advertise the services a computer runs
+
+Other software on a member can be found through the same signed record: a short service name,
+the port it listens on at this computer's addresses, and the SHA-256 of the TLS key it presents.
+Like `name set`, this is changed while the service is stopped and signed on the next start:
+
+```text
+supgang --state-dir "$HOME/.local/share/supgang" advertise dibs 4777 --key-pin <64 hex digits>
+supgang --state-dir "$HOME/.local/share/supgang" unadvertise dibs
+```
+
+`supgang peers`, `supgang resolve`, and the MCP `resolve` tool return `services` beside the
+addresses. An advertisement is a claim by the computer that signed it, bounded to four per record;
+Supgang never dials the port, and a consumer that connects and finds the pinned key has exactly the
+assurance Supgang gives about the computer's own transport. See
+[ADR 0002](docs/architecture/0002-service-advertisements.md).
+
 ## Bootstrap direct contact
 
 The current milestone intentionally requires one explicit initial contact exchange. On each

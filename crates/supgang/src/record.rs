@@ -15,10 +15,176 @@ use crate::{
 
 const ENDPOINT_RECORD_SIGNATURE_DOMAIN_V1: &[u8] = b"supgang/endpoint-record/v1\0";
 const ENDPOINT_RECORD_SIGNATURE_DOMAIN_V2: &[u8] = b"supgang/endpoint-record/v2\0";
+const ENDPOINT_RECORD_SIGNATURE_DOMAIN_V3: &[u8] = b"supgang/endpoint-record/v3\0";
 /// First endpoint-record protocol version, retained for verified migration.
 pub const ENDPOINT_RECORD_VERSION_V1: u16 = 1;
-/// Current endpoint-record protocol version.
-pub const ENDPOINT_RECORD_VERSION: u16 = 2;
+/// Second endpoint-record protocol version: a device-signed display name.
+pub const ENDPOINT_RECORD_VERSION_V2: u16 = 2;
+/// Current endpoint-record protocol version: bounded service advertisements.
+pub const ENDPOINT_RECORD_VERSION: u16 = 3;
+/// Maximum service advertisements one record may carry.
+pub const MAX_SERVICE_ADVERTS: usize = 4;
+/// Maximum bytes in a service name.
+pub const MAX_SERVICE_NAME_BYTES: usize = 16;
+
+/// The name of a locally offered service, as its own software calls it.
+///
+/// One to sixteen lowercase ASCII letters, digits and hyphens, not starting
+/// with a hyphen: a stable key a consumer matches, never text a person is
+/// asked to read as an identity.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ServiceName(String);
+
+impl TryFrom<String> for ServiceName {
+    type Error = RecordError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ServiceName> for String {
+    fn from(name: ServiceName) -> Self {
+        name.0
+    }
+}
+
+impl ServiceName {
+    /// Validates a service name.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty, overlong, or non-portable name.
+    pub fn new(value: impl Into<String>) -> Result<Self, RecordError> {
+        let value = value.into();
+        let bytes = value.as_bytes();
+        let portable = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-';
+        if bytes.is_empty()
+            || bytes.len() > MAX_SERVICE_NAME_BYTES
+            || bytes.first() == Some(&b'-')
+            || !bytes.iter().all(portable)
+        {
+            return Err(RecordError::InvalidServiceName);
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One service the signing computer offers: its name, the port it listens
+/// on at this computer's addresses, and a pin of the TLS key it presents.
+///
+/// A claim by the device that signed the record, never an observation, and
+/// it confers no authorization: a consumer that dials the port and finds the
+/// pinned key has exactly the assurance Supgang gives about the computer's
+/// own transport. No address is carried; the record's candidates are the
+/// addresses, so an advertisement can never point at a third party.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct ServiceAdvert {
+    /// The service's own name, unique within a record.
+    pub name: ServiceName,
+    /// The port the service listens on, at the record's candidates.
+    pub port: u16,
+    /// SHA-256 of the service's TLS public key, as the service states it.
+    #[serde(with = "hex_pin")]
+    pub key_pin: [u8; 32],
+}
+
+impl ServiceAdvert {
+    /// Validates one advertisement on its own: the name portable, the port
+    /// nonzero. The name is enforced by its type; the port is not, so every
+    /// path that admits an advertisement (signing, a stored profile, the
+    /// wire) asks this rather than trusting the constructor was used.
+    ///
+    /// # Errors
+    ///
+    /// Rejects port zero.
+    pub const fn validate(&self) -> Result<(), RecordError> {
+        if self.port == 0 {
+            return Err(RecordError::InvalidServicePort);
+        }
+        Ok(())
+    }
+
+    /// Builds an advertisement from the operator's words: a name, a port,
+    /// and the pin as 64 hexadecimal digits.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid name, port zero, or a pin that is not 32 bytes of hex.
+    pub fn new(name: impl Into<String>, port: u16, key_pin_hex: &str) -> Result<Self, RecordError> {
+        let name = ServiceName::new(name)?;
+        if port == 0 {
+            return Err(RecordError::InvalidServicePort);
+        }
+        let key_pin = parse_key_pin(key_pin_hex)?;
+        Ok(Self { name, port, key_pin })
+    }
+
+    /// Returns the pin as lowercase hexadecimal.
+    #[must_use]
+    pub fn key_pin_hex(&self) -> String {
+        hex::encode(self.key_pin)
+    }
+}
+
+fn parse_key_pin(text: &str) -> Result<[u8; 32], RecordError> {
+    let bytes = hex::decode(text).map_err(|_| RecordError::InvalidKeyPin)?;
+    bytes.try_into().map_err(|_| RecordError::InvalidKeyPin)
+}
+
+/// Serde helpers that write a key pin as hexadecimal text, the form an
+/// operator can compare with what their service prints.
+mod hex_pin {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(pin: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        hex::encode(pin).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        super::parse_key_pin(&text).map_err(serde::de::Error::custom)
+    }
+}
+/// Validates a list of advertisements as a record would carry them: each
+/// valid on its own, at most `MAX_SERVICE_ADVERTS`, strictly sorted by
+/// unique name.
+///
+/// # Errors
+///
+/// Returns the first violated invariant.
+pub fn validate_services(services: &[ServiceAdvert]) -> Result<(), RecordError> {
+    if services.len() > MAX_SERVICE_ADVERTS {
+        return Err(RecordError::TooManyServices);
+    }
+    if !services
+        .windows(2)
+        .all(|pair| matches!(pair, [first, second] if first.name < second.name))
+    {
+        return Err(RecordError::ServicesNotCanonical);
+    }
+    services.iter().try_for_each(ServiceAdvert::validate)
+}
+
+/// What a record claims about its computer beyond identity and time: where
+/// it is, which roles it holds, and what it runs.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EndpointClaims {
+    /// Addresses the computer can be reached at.
+    pub candidates: Vec<EndpointCandidate>,
+    /// Roles the computer offers the hive.
+    pub capabilities: Capabilities,
+    /// Services the computer runs at those addresses.
+    pub services: Vec<ServiceAdvert>,
+}
+
 /// Maximum lifetime of one endpoint record, in seconds.
 pub const MAX_RECORD_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Maximum tolerated future clock skew, in seconds.
@@ -96,6 +262,8 @@ pub struct EndpointRecord {
     pub candidates: Vec<EndpointCandidate>,
     /// Optional node roles relevant to discovery and control-frame forwarding.
     pub capabilities: Capabilities,
+    /// Bounded, sorted service advertisements; empty before v3.
+    pub services: Vec<ServiceAdvert>,
 }
 
 impl EndpointRecord {
@@ -107,13 +275,17 @@ impl EndpointRecord {
     pub fn validate_shape(&self) -> Result<(), RecordError> {
         if !matches!(
             self.protocol_version,
-            ENDPOINT_RECORD_VERSION_V1 | ENDPOINT_RECORD_VERSION
+            ENDPOINT_RECORD_VERSION_V1 | ENDPOINT_RECORD_VERSION_V2 | ENDPOINT_RECORD_VERSION
         ) {
             return Err(RecordError::UnsupportedVersion);
         }
         if (self.protocol_version == ENDPOINT_RECORD_VERSION_V1) != self.display_name.is_none() {
             return Err(RecordError::InvalidDisplayName);
         }
+        if self.protocol_version < ENDPOINT_RECORD_VERSION && !self.services.is_empty() {
+            return Err(RecordError::ServicesNotSupported);
+        }
+        validate_services(&self.services)?;
         if self.sequence == 0 {
             return Err(RecordError::ZeroSequence);
         }
@@ -148,10 +320,15 @@ impl EndpointRecord {
         Ok(())
     }
 
-    /// Sorts and deduplicates candidate endpoints before signing.
+    /// Sorts and deduplicates candidate endpoints and service advertisements
+    /// before signing. Two advertisements with one name and different content
+    /// are left for `validate_shape` to refuse: a record must not silently
+    /// drop one of two claims.
     pub fn canonicalize_candidates(&mut self) {
         self.candidates.sort_unstable();
         self.candidates.dedup();
+        self.services.sort_unstable();
+        self.services.dedup();
     }
 }
 
@@ -256,6 +433,26 @@ pub enum RecordError {
     /// The protocol version is not supported.
     #[error("endpoint record protocol version is not supported")]
     UnsupportedVersion,
+    /// A service name is empty, overlong, or not lowercase ASCII.
+    #[error(
+        "service name must be 1 through 16 lowercase ASCII letters, digits, or hyphens, not starting with a hyphen"
+    )]
+    InvalidServiceName,
+    /// A service port was zero.
+    #[error("service port must be 1 through 65535")]
+    InvalidServicePort,
+    /// A key pin was not 32 bytes of hexadecimal.
+    #[error("service key pin must be 64 hexadecimal digits: the SHA-256 of the service's TLS public key")]
+    InvalidKeyPin,
+    /// Service advertisements appeared in a record version that has none.
+    #[error("endpoint record version does not carry service advertisements")]
+    ServicesNotSupported,
+    /// More service advertisements than the protocol allows.
+    #[error("endpoint record has too many service advertisements")]
+    TooManyServices,
+    /// Service advertisements are not strictly sorted by unique name.
+    #[error("endpoint record service advertisements are not canonical")]
+    ServicesNotCanonical,
     /// The display-name field does not match the record version.
     #[error("endpoint record display name is invalid for this protocol version")]
     InvalidDisplayName,
@@ -321,7 +518,8 @@ fn strictly_sorted<T: Ord>(items: &[T]) -> bool {
 const fn signature_domain(protocol_version: u16) -> Result<&'static [u8], RecordError> {
     match protocol_version {
         ENDPOINT_RECORD_VERSION_V1 => Ok(ENDPOINT_RECORD_SIGNATURE_DOMAIN_V1),
-        ENDPOINT_RECORD_VERSION => Ok(ENDPOINT_RECORD_SIGNATURE_DOMAIN_V2),
+        ENDPOINT_RECORD_VERSION_V2 => Ok(ENDPOINT_RECORD_SIGNATURE_DOMAIN_V2),
+        ENDPOINT_RECORD_VERSION => Ok(ENDPOINT_RECORD_SIGNATURE_DOMAIN_V3),
         _ => Err(RecordError::UnsupportedVersion),
     }
 }
@@ -330,7 +528,10 @@ const fn signature_domain(protocol_version: u16) -> Result<&'static [u8], Record
 mod tests {
     use std::net::SocketAddr;
 
-    use super::{Capabilities, ENDPOINT_RECORD_VERSION, EndpointRecord, RecordError, SignedEndpointRecord};
+    use super::{
+        Capabilities, ENDPOINT_RECORD_VERSION, EndpointRecord, RecordError, ServiceAdvert, ServiceName,
+        SignedEndpointRecord,
+    };
     use crate::{
         candidate::{CandidateKind, CandidateTransport, EndpointCandidate},
         identity::DeviceIdentity,
@@ -354,6 +555,7 @@ mod tests {
                 SocketAddr::from(([8, 8, 8, 8], 443)),
             )?],
             capabilities: Capabilities::INTRODUCER | Capabilities::CONTROL_RELAY,
+            services: Vec::new(),
         })
     }
 
@@ -362,6 +564,49 @@ mod tests {
         let identity = DeviceIdentity::generate()?;
         let signed = SignedEndpointRecord::sign(record(&identity)?, &identity)?;
         signed.verify(&identity.verifying_key())?;
+        Ok(())
+    }
+
+    // The rules an advertisement is held to, on every path it can arrive by:
+    // a name the type refuses even through serde, port zero refused by
+    // validation, two claims under one name refused rather than one dropped,
+    // and a version-2 record refusing to carry any.
+    #[test]
+    fn service_advertisements_are_validated_on_every_path() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(
+            serde_json::from_str::<ServiceName>("\"Dibs\"").is_err(),
+            "an invalid name deserialized"
+        );
+        assert!(serde_json::from_str::<ServiceName>("\"dibs\"").is_ok());
+        assert!(matches!(
+            ServiceAdvert::new("dibs", 0, &"ab".repeat(32)),
+            Err(RecordError::InvalidServicePort)
+        ));
+        assert!(matches!(
+            ServiceAdvert::new("dibs", 1, "ab"),
+            Err(RecordError::InvalidKeyPin)
+        ));
+        let identity = DeviceIdentity::generate()?;
+        let mut record = record(&identity)?;
+        record.services = vec![ServiceAdvert::new("dibs", 4_777, &"ab".repeat(32))?];
+        if let Some(first) = record.services.first_mut() {
+            first.port = 0;
+        }
+        assert_eq!(record.validate_shape(), Err(RecordError::InvalidServicePort));
+        record.services = vec![
+            ServiceAdvert::new("dibs", 4_777, &"ab".repeat(32))?,
+            ServiceAdvert::new("dibs", 4_790, &"ab".repeat(32))?,
+        ];
+        assert_eq!(
+            SignedEndpointRecord::sign(record.clone(), &identity).map(|_| ()),
+            Err(RecordError::ServicesNotCanonical),
+            "two claims under one name must not become one"
+        );
+        record.services = vec![ServiceAdvert::new("dibs", 4_777, &"ab".repeat(32))?];
+        record.protocol_version = super::ENDPOINT_RECORD_VERSION_V2;
+        assert_eq!(record.validate_shape(), Err(RecordError::ServicesNotSupported));
+        record.protocol_version = ENDPOINT_RECORD_VERSION;
+        SignedEndpointRecord::sign(record, &identity)?.verify(&identity.verifying_key())?;
         Ok(())
     }
 

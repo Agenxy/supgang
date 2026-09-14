@@ -57,6 +57,10 @@ pub struct Report {
 /// Background-service validation or manager failure.
 #[derive(Debug, Error)]
 pub enum ServiceError {
+    // Raised only by the macOS boot-service path, so the variant follows the
+    // module that constructs it: on Linux it would be dead code under
+    // `-D warnings`.
+    #[cfg(target_os = "macos")]
     #[error(
         "this boot service needs owner setup; run the reviewed macOS setup script to install, change, stop, or remove it"
     )]
@@ -83,6 +87,7 @@ pub enum ServiceError {
     UnmanagedProcess,
     #[error("the operating-system background manager rejected the request")]
     Manager,
+    #[cfg(target_os = "macos")]
     #[error(
         "macOS has no suitable login session for this service; sign in to the desktop as this account, or use the macOS owner setup script for startup at boot without login"
     )]
