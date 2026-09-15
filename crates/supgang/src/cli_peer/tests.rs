@@ -228,5 +228,10 @@ fn this_computer_resolves_from_its_own_signed_record() -> Result<(), Box<dyn std
         .map(|service| (service.name.as_str(), service.port, service.key_pin.as_str()))
         .collect();
     assert_eq!(services, vec![("compass", 8_471, pin)]);
+    // Rendering is not authorization: the service answers for this computer only
+    // after the record verifies at the time of asking, and past its expiry the same
+    // record does not.
+    contact.verify(&root.verifying_key(), 50)?;
+    assert!(contact.verify(&root.verifying_key(), 101).is_err());
     Ok(())
 }

@@ -443,10 +443,25 @@ async fn handle_control(
         }
         .into_unchanged(),
         // This computer answers for itself from the record it signs, as any member
-        // would answer for it.
+        // would answer for it: checked now against the root, its membership, the
+        // record's validity and the revocations known here, so a record this
+        // service holds but could no longer prove is refused, not served.
         Ok(Ok(ControlRequest::Resolve(node_id))) if node_id == local_state.identity().device.node_id() => {
-            ControlReply::Resolve {
-                value: cli_peer::resolve_local(local_contact),
+            match unix_time() {
+                Err(error) => ControlReply::Error {
+                    message: error.to_string(),
+                },
+                Ok(_) if directory.is_revoked(&node_id) => ControlReply::Error {
+                    message: "this computer's identity is revoked".to_owned(),
+                },
+                Ok(now) => match local_contact.verify(&local_state.identity().root_verifying_key, now) {
+                    Ok(()) => ControlReply::Resolve {
+                        value: cli_peer::resolve_local(local_contact),
+                    },
+                    Err(error) => ControlReply::Error {
+                        message: format!("this computer's signed record is not currently valid: {error}"),
+                    },
+                },
             }
             .into_unchanged()
         }
