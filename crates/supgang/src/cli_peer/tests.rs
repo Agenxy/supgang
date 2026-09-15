@@ -159,3 +159,74 @@ fn this_computer_prefers_a_private_ipv4_interface() -> Result<(), Box<dyn std::e
     assert_eq!(self_preferred_index(&candidates, &networks), Some(1));
     Ok(())
 }
+
+#[test]
+fn this_computer_resolves_from_its_own_signed_record() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        contact::PeerContact,
+        identity::{DeviceIdentity, RootIdentity},
+        membership::{MEMBERSHIP_VERSION, MembershipCertificate, MembershipRoles, SignedMembership},
+        record::{Capabilities, ENDPOINT_RECORD_VERSION, EndpointRecord, ServiceAdvert, SignedEndpointRecord},
+    };
+    let root = RootIdentity::generate()?;
+    let device = DeviceIdentity::generate()?;
+    let membership = SignedMembership::sign(
+        MembershipCertificate {
+            version: MEMBERSHIP_VERSION,
+            hive_id: root.hive_id(),
+            node_id: device.node_id(),
+            device_verifying_key: device.verifying_key().to_bytes(),
+            serial: 1,
+            issued_at: 10,
+            expires_at: 1_000,
+            roles: MembershipRoles::DEVICE,
+            admission_nonce: [1; 32],
+        },
+        &root,
+    )?;
+    let pin = "35d43a1cbf81272e0dcaeff9fe4b4747e25b7dbd1ec630f6136d23ed0ae8cd87";
+    let endpoint = SignedEndpointRecord::sign(
+        EndpointRecord {
+            protocol_version: ENDPOINT_RECORD_VERSION,
+            hive_id: root.hive_id(),
+            node_id: device.node_id(),
+            display_name: Some(crate::profile::PeerName::new("MacMarine")?),
+            transport_key_id: crate::ids::TransportKeyId::from_public_material(b"transport"),
+            generation: 2,
+            sequence: 7,
+            issued_at: 20,
+            expires_at: 100,
+            candidates: vec![EndpointCandidate::new(
+                CandidateKind::Local,
+                CandidateTransport::QuicV1,
+                SocketAddr::from(([192, 168, 1, 205], 44_330)),
+            )?],
+            capabilities: Capabilities::NONE,
+            services: vec![ServiceAdvert::new("compass", 8_471, pin)?],
+        },
+        &device,
+    )?;
+    let contact = PeerContact { membership, endpoint };
+    // What a member would be told about this computer, told to itself: the same
+    // shape, the signed expiry, the service and its pin, so a name routed here
+    // to a service on this computer answers.
+    let resolved = super::resolve_local(&contact);
+    assert_eq!(resolved.schema, "supgang.resolve/v5");
+    assert_eq!(resolved.name, "MacMarine");
+    assert_eq!(resolved.node_id, device.node_id().to_string());
+    assert_eq!((resolved.generation, resolved.sequence), (2, 7));
+    assert_eq!((resolved.issued_at, resolved.expires_at), (20, 100));
+    let addresses: Vec<(&str, &str)> = resolved
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.address.as_str(), candidate.provenance.as_str()))
+        .collect();
+    assert_eq!(addresses, vec![("192.168.1.205:44330", "device-signed")]);
+    let services: Vec<(&str, u16, &str)> = resolved
+        .services
+        .iter()
+        .map(|service| (service.name.as_str(), service.port, service.key_pin.as_str()))
+        .collect();
+    assert_eq!(services, vec![("compass", 8_471, pin)]);
+    Ok(())
+}

@@ -138,8 +138,13 @@ pub fn resolve(
     if let Ok(node_id) = NodeId::from_str(selector) {
         return resolve_node(state_directory, node_id, json, output, error);
     }
-    match peers_snapshot(state_directory).and_then(|value| cli_peer::resolve_selector_from_rows(&value.peers, selector))
-    {
+    // This computer is a peer a name may select too: its own row is among those
+    // the selector is read against.
+    match peers_snapshot(state_directory).and_then(|value| {
+        let mut rows = value.peers;
+        rows.extend(value.this_computer);
+        cli_peer::resolve_selector_from_rows(&rows, selector)
+    }) {
         Ok(node_id) => resolve_node(state_directory, node_id, json, output, error),
         Err(message) => render_error(json, &message, output, error),
     }

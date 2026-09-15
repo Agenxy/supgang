@@ -25,6 +25,11 @@ The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken 
 
 ### Added
 
+- `supgang resolve` answers for this computer as it would for any member, from the record the
+  running service signs (its expiry, addresses and advertised services included), so a Remap
+  name routed to a service on this computer (`supgang://<this computer>/<service>`) reaches it
+  here too. The computer's own row is among those a selector is read against. Without the
+  service running there is no signed record, and the answer says so as before.
 - Added signed service advertisements (ADR 0002): `supgang advertise NAME PORT --key-pin HEX` and
   `supgang unadvertise NAME` record, in the owner-only profile beside the computer name, up to
   four services this computer runs; the next signed endpoint record (protocol version 3, its own

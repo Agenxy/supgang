@@ -280,6 +280,30 @@ pub fn running_local_row(contact: &PeerContact) -> PeerRow {
     }
 }
 
+/// This computer, resolved from its own signed record (what the running service
+/// signs and exchanges). A service on this computer is reached by the same
+/// contract as one on any other member, so a name routed to it here answers.
+pub fn resolve_local(contact: &PeerContact) -> ResolveOutput {
+    let record = &contact.endpoint.record;
+    let local_networks = crate::network::interface_networks().unwrap_or_default();
+    let preferred_index = self_preferred_index(&record.candidates, &local_networks);
+    let (name, _source) = display_name(record.display_name.as_ref(), record.node_id);
+    ResolveOutput {
+        schema: "supgang.resolve/v5".to_owned(),
+        status: "ok".to_owned(),
+        node_id: record.node_id.to_string(),
+        name,
+        tags: Vec::new(),
+        fingerprint: short_fingerprint(record.node_id),
+        generation: record.generation,
+        sequence: record.sequence,
+        issued_at: record.issued_at,
+        expires_at: record.expires_at,
+        candidates: resolved_with_preference(&record.candidates, preferred_index, "device-signed", &local_networks),
+        services: record.services.iter().map(Into::into).collect(),
+    }
+}
+
 pub fn resolve(state_directory: &Path, selector: &str) -> Result<ResolveOutput, String> {
     let local_state = state::open(state_directory).map_err(|error| error.to_string())?;
     let directory = PeerDirectory::open(

@@ -442,6 +442,14 @@ async fn handle_control(
             },
         }
         .into_unchanged(),
+        // This computer answers for itself from the record it signs, as any member
+        // would answer for it.
+        Ok(Ok(ControlRequest::Resolve(node_id))) if node_id == local_state.identity().device.node_id() => {
+            ControlReply::Resolve {
+                value: cli_peer::resolve_local(local_contact),
+            }
+            .into_unchanged()
+        }
         Ok(Ok(ControlRequest::Resolve(node_id))) => unix_time()
             .map_or_else(
                 |error| ControlReply::Error {
