@@ -1,6 +1,6 @@
 # ADR 0003: Hardware-held device keys and device-certified subordinate keys
 
-Status: proposed (third draft, after astra's two security reviews)
+Status: proposed (fourth draft, after astra's three security reviews and the owner's no-single-point-of-failure requirement)
 
 Date: 2026-09-19
 
@@ -40,11 +40,12 @@ already keeps apart (root, device, transport; docs/security/threat-model.md,
      so (a device cannot prove where another key lives; the label says what
      the owner enrolled it as, and `doctor` says the same).
    - `purpose`: exactly one of `publish`, `service`, `transport-client`,
-     `transport-server`, `attest`, `code-sign`, `release`, `time`,
-     `ssh-host`, `ssh-user` (the last five from the sovereign-trust roadmap,
-     docs/architecture/roadmap-sovereign-trust.md; each with its audience
-     schema stated when it is built). Not `sync`: custody is an attribute
-     above, not a purpose; a synced key still has one narrow operational
+     `transport-server`, `attest`. A purpose a verifier does not implement
+     is refused, never accepted as harmless. The sovereign-trust roadmap
+     (docs/architecture/roadmap-sovereign-trust.md) names further *roles*
+     (code signing, releases, SSH); each is an authorization of its own, by
+     the root, naming who may sign what, and not a purpose a device may
+     certify for itself. Not `sync`: custody is an attribute above, not a
      purpose.
    - `audience`: what the key may speak for, a schema per purpose, and an
      unknown or incompatible combination is rejected: for `service`, the
@@ -62,20 +63,26 @@ already keeps apart (root, device, transport; docs/security/threat-model.md,
    - `policy`: the version of the signer policy (below) in force.
    - `possession`: the subject key's signature, in its own algorithm, over
      domain `supgang/certified-key-possession/v1\0` and the canonical bytes
-     of the fields above this one (`hive` through `policy`; neither
-     `possession` nor `signature` is part of them): the key proved it was
-     there at certification, bound to exactly this certificate. A consumer
-     re-verifies possession whenever the key is used in a protocol that lets
-     it (a TLS handshake, a DPoP proof, a transcript signature).
-   - `signature`: the device key's, over the canonical bytes of every field
-     above, `possession` included.
-   Depth is one: a certified key certifies nothing. At most 16 live
-   certificates per device; consumers reject a record carrying more.
+     of the fields above this one (`hive` through `policy`): the key proved
+     it was there at certification, bound to exactly this certificate. A
+     certificate authenticates a key only together with a fresh proof of
+     possession in the protocol that uses it (the TLS handshake for
+     `transport-*`, the DPoP proof, the transcript signature for `attest`):
+     the certificate says the device vouched for the key; the protocol says
+     the key is present now. Both are mandatory.
+   A certificate carries no signature of its own: it is an authenticated
+   statement *inside* the device-signed authority manifest (below), and a
+   proof that presents a certificate presents the manifest, or its digest
+   with the manifest fetched from the record. One construction, one
+   signature, one typed operation that produces it. Depth is one: a
+   certified key certifies nothing. At most 16 live certificates per device;
+   consumers reject a manifest carrying more.
 
-3. **Revocation of certified keys is a device-signed complete set,** as the
-   root's revocation of devices is: `CertifiedKeyRevocations/v1`, the device's
-   `NodeId`, authority epoch, a monotonic `sequence`, the sorted set of revoked
-   certificate ids, signed by the device key. A newer set may not remove an id.
+3. **Revocation of certified keys is a complete set inside the manifest,** as
+   the root's revocation of devices is: `CertifiedKeyRevocations/v1`, the
+   sorted set of revoked certificate ids, monotonic across manifest revisions
+   (a newer manifest may not remove an id; a revoked id is never certified
+   again).
    The set rides in the endpoint record's authority manifest and is reconciled
    as records are; a consumer keeps the greatest sequence seen. Omission from a
    record is *not* revocation: a certificate is live until its `not_after`, or
@@ -107,12 +114,18 @@ new. Renewing freshness is signing a new manifest, and that needs the device
 key: the owner's presence on a hardware-held key. That is a deliberate cost
 (a touch a week on a laptop that publishes authority; none on one that
 publishes only addresses, since a manifest with no certificates and no
-services need not be renewed); a *status issuer*, a `publish`-like purpose
-whose only power is to re-sign the same manifest with a new `issued_at`, is
-the relief valve and is stated here as allowed, with the consequence that a
-same-user process holding that key can keep stale authority looking fresh
-for as long as the manifest's own `not_after` bounds allow. The owner chooses
-per device; `doctor` says which. ADR 0002 advertisements move into the
+services need not be renewed). A separate status issuer is *not* part of
+this ADR: re-signing changes device-signed content, and a lease that could
+extend freshness would need its own delegation, ceiling and sequence; if it
+is ever wanted it is a later ADR, and until then a device that cannot renew
+is stale, which is the truthful state. **Acceptance of a certificate** is the
+intersection of: the manifest not past `next_update`; `issued_at` plus the
+consumer's maximum status age for the purpose not passed; the certificate's
+own `not_before`/`not_after`; the issuer's membership valid and not revoked
+under the newest root set the consumer holds, itself within its maximum age;
+and the certificate id absent from the revocation set. A manifest whose
+`issued_at` is in the consumer's future by more than 5 minutes is refused.
+ADR 0002 advertisements move into the
 manifest: a service pin is authority, not an address. A record whose
 manifest signature fails is rejected whole. A consumer that once saw a
 certificate for a service never falls back to a bare pin for it. The same
@@ -157,16 +170,24 @@ and no device key confers it. It is issued by the hive root, once per hive:
 - **A trust-anchor manifest**, root-signed (`supgang/trust-anchor/v1\0`):
   the CA's SPKI, its X.509 certificate, an epoch, and validity. The
   certificate: `basicConstraints` critical `CA:TRUE, pathLen:0`; `keyUsage`
-  critical `keyCertSign` only; `nameConstraints` critical, `permittedSubtrees`
-  one `dNSName` `.<hive-label>.gang` (an X.509 subtree: the suffix and every
-  name under it; there is no wildcard matching) and `iPAddress` none,
-  `excludedSubtrees` the rest by omission; the label chosen at founding and
-  stable. Whether a platform *enforces* name constraints on a user-installed
-  anchor is not assumed: before an anchor is installed on a platform, that
-  platform is tested with a leaf for a forbidden name and must refuse it
-  (`supgang trust verify` runs that test against a throwaway pair and records
-  the result per platform), and an anchor is not installed under a
-  confinement claim the platform does not honour. Members install the anchor
+  critical `keyCertSign` only; `nameConstraints` critical with
+  `permittedSubtrees`: `dNSName` `<hive-label>.gang` (the RFC 5280 subtree:
+  the label itself and every name under it; the leading-dot form is not
+  used, and the apex is permitted deliberately so `<hive>.gang` may carry a
+  member directory), `iPAddress` `0.0.0.0/32` and `::/128` (a permitted
+  subtree that matches nothing, which is how IP names are denied; omitting
+  the form would permit it), and `excludedSubtrees`: `rfc822Name` and
+  `uniformResourceIdentifier` each with an empty-suffix constraint so those
+  forms are excluded outright. Leaves carry `dNSName` SANs only. Whether a
+  platform *enforces* name constraints on a user-installed anchor is not
+  assumed: `supgang trust verify` builds a throwaway anchor of this exact
+  profile in an isolated store (a temporary keychain on macOS, a temporary
+  NSS database on Linux, a disposable profile in a browser) and checks, with
+  a positive control, that a leaf for an allowed name is accepted and that
+  leaves for a forbidden DNS name, an IP SAN, a mixed SAN set and a
+  subordinate CA are each refused; the result is recorded per platform and
+  browser, and an anchor is installed in the real store only where every
+  refusal held. Members install the anchor
   into platform trust only when the manifest verifies under the root they
   already trust, and remove it when a newer manifest supersedes or a
   root-signed withdrawal arrives, completing removal before the new one is
@@ -177,8 +198,13 @@ and no device key confers it. It is issued by the hive root, once per hive:
   SPKI is the certified key, validity at most 90 days, `serverAuth` only. A
   consumer serving TLS (Compass's `compassd`) presents that leaf; Remap's
   gateway may keep pinning as today, browsers verify the chain.
-- Names are allocated by the founder (`supgang trust name <label>`), one per
-  service instance, recorded root-signed so two instances never collide;
+- Names are allocated by the root (`supgang trust name <label> --device
+  <node> --instance <id>`, a root operation), one per service instance,
+  recorded root-signed as `{hostname, instance id, device NodeId, epoch}` so
+  two instances never collide and a leaf for the name is issued only to a
+  `transport-server` key that device certified for that instance and
+  hostname; moving the name to another device is a new allocation that
+  supersedes the old;
   each instance's exact hostname (`compass.<hive>.gang`, or
   `compass-2.<hive>.gang`) is Remap's to resolve, and the RP ID for WebAuthn
   is that exact hostname. A consumer that had a standalone hostname before
@@ -188,45 +214,86 @@ and no device key confers it. It is issued by the hive root, once per hive:
   instance-specific anchor rather than renaming; renaming is a destructive
   migration the owner runs on purpose.
 
-## Root lifecycle
+## Root authority: no single point of failure
 
-The root stays Ed25519, file-held by the founder, and gains what a root over
-hardware-held devices must have before this ships:
+The owner's requirement (2026-09-19): a gang adds and drops computers; some
+will have no hardware key store; losing a laptop must not lose the ability to
+administer the gang from another; there is no central point of failure; and
+the result is provably secure. A founder-held root with a founder-held
+recovery key fails that requirement twice over. So the root is not a key held
+anywhere; it is a **threshold** the owner's devices hold shares of.
 
-- **Recovery authority.** At founding, or at the migration to this ADR, the
-  founder enrols a second key, held apart (a security key, or a file on media
-  the owner keeps offline), whose only power is to sign a *root succession*.
-  `RootSuccession/v1`: the stable `HiveId`, the predecessor root's public key
-  and epoch, the successor root's public key, the next epoch (exactly
-  predecessor + 1), the recovery authority's identity, `kind`: `planned` or
-  `recovery`, an issuance time, the successor's possession signature over the
-  rest, and the recovery authority's signature over everything. Only the
-  recovery authority advances the root epoch; an active root cannot sign a
-  succession and so cannot pre-empt recovery with a larger epoch. Members
-  accept a succession whose predecessor is their current root and whose
-  signer is the recovery authority they were founded with; two successions
-  from the same predecessor are equivocation, and the member stops until the
-  owner resolves it in person. A `planned` succession keeps every membership
-  the predecessor issued until its own expiry; a `recovery` succession keeps
-  none: every device re-enrols, every trust anchor the predecessor issued is
-  withdrawn, and the founder re-issues what is still wanted. Re-enrolment is
-  the honest answer to a compromised root; a "surviving snapshot" would be
-  the attacker's to choose. The recovery authority itself is rotated by a
-  `planned` succession signed by the old recovery authority naming a new one.
+- **The root is a k-of-n threshold signing group** (FROST over Ed25519, RFC
+  9591; the root's algorithm stays Ed25519, which is what FROST is specified
+  for). At founding the owner names the devices that hold shares (n) and how
+  many must act together (k), with 2 of 3 as the default the CLI proposes and
+  `k >= 2` required whenever `n >= 2`; a hive with a single device is 1 of 1
+  and says so in `doctor` as the weakest possible configuration. Each share
+  is held by that device's provider: in hardware where the device has it, in
+  an owner-only file where it does not. No device is special; the founder is
+  merely the first shareholder.
+- **Every root operation is a signing session** among k shareholders:
+  membership issuance, revocation sets, trust anchors, name allocations,
+  successions and share changes. The session runs over Supgang's own member
+  channel (the shareholders are members), with the request shown on each
+  participating device and approved with presence there. The output is one
+  ordinary Ed25519 signature verifiable by the root public key: verifiers,
+  records and the wire do not know the root is a group, and a hive may move
+  from 1 of 1 to 2 of 3 without any record format changing.
+- **Provable**: fewer than k shares yield no information about the root
+  secret and cannot produce a signature (the threshold property); the
+  signature is standard Ed25519, so the security of every signed object is
+  that of the root key itself. A stolen laptop holds one share: worthless
+  alone, and the remaining shareholders re-share to exclude it.
+- **Losing a device is a share change, not a recovery.** `supgang root
+  reshare` is a root operation (k of the remaining shareholders sign): it
+  produces a fresh set of shares for a new (k, n) over the *same* root public
+  key, so nothing downstream changes; the lost device's old share is dead
+  because the polynomial is new. Adding a device is the same operation.
+  Losing k or more devices at once is the one loss the threshold cannot
+  absorb: the owner chooses (k, n) knowing that, and the recovery below
+  exists for it.
+- **Succession** (`RootSuccession/v1`) is for a root that is compromised or
+  must change algorithm, not for a lost device. Fields: the stable `HiveId`
+  (the hash of the founding root public key, never changing), the
+  predecessor root public key and epoch, the successor root public key, the
+  next epoch (exactly predecessor + 1), `kind`: `planned` or `recovery`, an
+  issuance time, the successor's possession signature over the rest, and the
+  signature. A `planned` succession is signed by the predecessor root (k of
+  n); a `recovery` succession is signed by the **recovery threshold**: a
+  second, larger threshold over the same shareholders plus any offline shares
+  the owner keeps (a security key in a drawer, a file on media kept apart),
+  with its own `(k_r, n_r)` chosen so that no set of devices small enough to
+  be stolen together can meet it, and no set of devices small enough to be
+  lost together can prevent it. Only a recovery succession may advance the
+  epoch past what the current root could reach, so a compromised root cannot
+  pre-empt recovery. Two successions from one predecessor with different
+  content are equivocation and a member stops until the owner resolves it in
+  person; identical successions delivered twice are one.
+- **What a succession keeps.** `planned`: the predecessor signs, in the same
+  session, a frozen set of the memberships and revocations it issued, by
+  their identifiers and digests, and members accept under the retired root
+  only what that set names: a later thief of the retired root can add nothing.
+  `recovery`: nothing is kept; every device re-enrols under the new root, every
+  trust anchor and name allocation the predecessor issued is withdrawn, and the
+  shareholders re-share for the new root. Re-enrolment is the honest answer to
+  a compromised root.
 - **Epochs and rollback.** Root revocation sets and successions carry the
   root epoch; a member persists the greatest epoch seen and refuses anything
   older. The durable head witness detects a rolled-back state file, not a
-  whole-machine restore that rolls the witness back with it; that boundary is
-  stated in the threat model already and stays. What limits it is
-  reconciliation: a restored member learns the greater epoch from the first
-  peer it meets, and until it does it is treated by peers as stale under the
-  freshness rule above.
-- **Stable hive identity.** `HiveId` becomes the hash of the *founding* root
-  key and never changes; a succession chains from it. Certificates and
-  manifests name the `HiveId`, so a root rotation does not invalidate them;
-  a succession that *revokes* the old root does.
-- **Offline members** catch up by the same reconciliation, processing
-  successions before anything else, as revocations are today.
+  whole-machine restore that rolls the witness back too; that boundary stays
+  as the threat model states it. A restored member is stale under the
+  freshness rule until it reconciles with a peer that holds newer authority;
+  what that guarantees is that peers do not treat it as current, not that it
+  learns everything at once.
+
+Threshold signing is the largest new mechanism in this ADR and gets its own
+ADR (0004) for the protocol: share generation without a dealer (each device
+contributes; no device ever holds the whole secret, not even at founding),
+the two-round FROST signing session over the member channel, presence at each
+participant, reshare, the recovery threshold's offline shares, and the
+adversarial vectors (a shareholder that lies, a session replayed, a share
+restored from backup after a reshare).
 
 ## Signer policy
 
@@ -248,11 +315,20 @@ process can still do, stated once and versioned (`policy: 1`):
   for one overlap). Never `sign(bytes)`. So a same-user process cannot make
   it sign an endpoint record with the device key, and a certificate cannot
   exist outside a signed manifest.
-- Every signing domain, assigned: root: membership, revocation sets, trust
-  anchors, successions (with the recovery authority). Device key: authority
-  manifests only. Publication key: endpoint records, session authentication
-  in the network protocol, checkpoints of local state, membership renewal
-  proof. Recovery authority: successions only. Nothing else signs.
+- Every signing domain, assigned. Root (threshold): `supgang/membership/v2`,
+  `supgang/revocation/v2`, `supgang/trust-anchor/v1`, `supgang/name/v1`,
+  `supgang/succession/v1`, `supgang/reshare/v1`. Device key:
+  `supgang/authority/v1` only. Publication key: `supgang/endpoint-record/v4`,
+  `supgang/session/v2`, `supgang/checkpoint/v2`, `supgang/renewal/v1`.
+  Subject keys: `supgang/certified-key-possession/v1` and their own
+  protocols. Nothing else signs. Stated consequence: a publication-key
+  compromise lets the attacker publish addresses and speak in the network
+  protocol as the device until the device revokes that key (an authority
+  update, presence); it cannot change what the device is authorised to do.
+- The helper reserves the next revision durably, signs, and publishes the
+  new manifest to local state atomically before it returns anything usable;
+  a crash between leaves a reserved, unused revision, never two manifests at
+  one revision.
 - What same-user malware can still do, stated: publish addresses of its
   choosing (as today), ask for a certification and hope the owner approves
   the prompt (the prompt shows purpose, audience and operations), read the
