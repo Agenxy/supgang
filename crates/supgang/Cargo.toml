@@ -27,6 +27,7 @@ gethostname.workspace = true
 hex.workspace = true
 jiff.workspace = true
 minicbor.workspace = true
+p256.workspace = true
 nix.workspace = true
 portmapper.workspace = true
 serde.workspace = true

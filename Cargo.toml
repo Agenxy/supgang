@@ -22,6 +22,7 @@ hex = { version = "=0.4.3", default-features = false, features = ["alloc"] }
 jiff = { version = "=0.2.35", default-features = false, features = ["std"] }
 libc = { version = "=0.2.189", default-features = false }
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc", "std"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
 nix = { version = "=0.31.3", default-features = false, features = ["net", "socket", "user"] }
 portmapper = { version = "=0.19.1", default-features = false }
 plist = { version = "=1.10.0", default-features = false, features = ["serde"] }

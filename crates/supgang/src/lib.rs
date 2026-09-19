@@ -16,6 +16,7 @@ pub(crate) mod cli_settings;
 pub(crate) mod cli_update;
 pub mod contact;
 pub(crate) mod control;
+pub mod device_key;
 pub mod endpoint_config;
 pub mod identity;
 pub mod ids;
