@@ -91,7 +91,8 @@ The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken 
   a peer address preferred or spending a retry on it. Signed but unusable addresses remain visible
   and are described as unavailable from the current network.
 - Up to four ranked candidates are raced with 125 ms spacing. Bilateral recovery uses hive-aligned
-  wall-clock windows, and the secondary direction now probes once per four rounds.
+  wall-clock windows. Both disconnected sides now probe every window; candidate rotation prevents
+  a failed prefix of addresses from starving later candidates.
 - Both endpoints now retain the same authenticated reverse-direction connection as a fallback. A
   preferred connection can deterministically replace it during simultaneous dialing, and outbound
   fallback connections remain usable for a user-owned anchor.

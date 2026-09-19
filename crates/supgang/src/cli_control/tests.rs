@@ -66,3 +66,42 @@ fn compact_view_shows_mapping_instead_of_incidental_direct_interface() {
     assert_eq!(selected.len(), 2);
     assert_eq!(selected.get(1).map(|candidate| candidate.kind.as_str()), Some("mapped"));
 }
+
+#[test]
+fn a_live_connection_address_remains_visible_after_address_reports_expire() -> Result<(), Box<dyn std::error::Error>> {
+    let mut peer: crate::cli_peer::PeerRow = serde_json::from_value(serde_json::json!({
+        "name":"Test Peer", "name_source":"device-signed", "fingerprint":"12345678", "node_id":"test",
+        "connected":true, "status":"fresh", "generation":0, "sequence":1, "expires_at":1000,
+        "candidate_count":0, "addresses":[],
+        "connection":{"remote_address":"192.0.2.1:44330", "received_datagrams":3, "sent_datagrams":4}
+    }))?;
+    for all in [false, true] {
+        let mut output = Vec::new();
+        super::render_computer(&peer, false, all, &mut output, &mut 0)?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("192.0.2.1:44330 (current connection)"));
+        assert!(!output.contains("no current address"));
+    }
+    peer.connected = Some(false);
+    let mut output = Vec::new();
+    super::render_computer(&peer, false, false, &mut output, &mut 0)?;
+    assert!(!std::str::from_utf8(&output)?.contains("current connection"));
+    peer.connected = Some(true);
+    peer.addresses.push(candidate("local", "192.168.1.2:44330", true));
+    output.clear();
+    super::render_computer(&peer, false, false, &mut output, &mut 0)?;
+    let text = String::from_utf8(output)?;
+    assert!(text.contains("192.0.2.1:44330 (current connection)"));
+    assert!(!text.contains("192.168.1.2"));
+    for connected in [None, Some(false), Some(true)] {
+        peer.connected = connected;
+        for status in ["revoked", "equivocation", "expired"] {
+            peer.status = status.to_owned();
+            assert!(!matches!(
+                super::peer_status_label(&peer),
+                "connected" | "not connected" | "connection unknown"
+            ));
+        }
+    }
+    Ok(())
+}

@@ -9,6 +9,14 @@ use crate::candidate::{CandidateKind, EndpointCandidate};
 
 pub(crate) const MAX_DIAL_CANDIDATES_PER_ROUND: usize = 4;
 
+/// Applies the same address-family eligibility rules to ephemeral sockets.
+pub(crate) fn address_is_route_compatible(address: std::net::SocketAddr, networks: &[InterfaceNetwork]) -> bool {
+    let transport = crate::candidate::CandidateTransport::QuicV1;
+    EndpointCandidate::new(CandidateKind::Local, transport, address)
+        .or_else(|_| EndpointCandidate::new(CandidateKind::Reflexive, transport, address))
+        .is_ok_and(|candidate| candidate_is_route_compatible(&candidate, networks))
+}
+
 /// One local interface address and its operating-system netmask.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InterfaceNetwork {
@@ -52,23 +60,33 @@ pub enum NetworkError {
     Enumeration,
 }
 
-/// Returns active physical-network IP interfaces and their matching netmasks.
+/// Returns active IP interfaces, including routed tunnels and bridges.
 ///
-/// Automatic discovery excludes known tunnel, container, peer-to-peer, and
-/// virtual bridge interfaces. Their addresses commonly look globally routed
-/// while accepting traffic only inside another product's overlay. A user who
-/// deliberately wants such an address can select it through `--endpoints`.
+/// An interface table is not a routing table. These addresses establish only
+/// address-family availability and on-link preference, never reachability.
 ///
 /// # Errors
 ///
 /// Returns an error when the operating system cannot enumerate interfaces.
 pub fn interface_networks() -> Result<Vec<InterfaceNetwork>, NetworkError> {
+    enumerate_interfaces(false)
+}
+
+/// Filters automatic advertisements, not the routes an explicit peer may use.
+pub(crate) fn automatic_interface_networks() -> Result<Vec<InterfaceNetwork>, NetworkError> {
+    enumerate_interfaces(true)
+}
+
+fn enumerate_interfaces(automatic: bool) -> Result<Vec<InterfaceNetwork>, NetworkError> {
     let mut networks = BTreeSet::new();
     for interface in getifaddrs().map_err(|_| NetworkError::Enumeration)? {
-        if !interface.flags.contains(InterfaceFlags::IFF_UP) || interface.flags.contains(InterfaceFlags::IFF_LOOPBACK) {
+        if !interface.flags.contains(InterfaceFlags::IFF_UP) {
             continue;
         }
-        if !is_automatic_interface(&interface.interface_name) {
+        if automatic
+            && (interface.flags.contains(InterfaceFlags::IFF_LOOPBACK)
+                || !is_automatic_interface(&interface.interface_name))
+        {
             continue;
         }
         let Some(address) = interface.address.as_ref().and_then(ip_from_storage) else {
@@ -92,8 +110,6 @@ fn is_automatic_interface(name: &str) -> bool {
     const VIRTUAL_PREFIXES: &[&str] = &[
         "anpi",
         "awdl",
-        "br-",
-        "bridge",
         "cni",
         "docker",
         "dummy",
@@ -161,31 +177,27 @@ pub(crate) fn candidate_dial_order(
     indices
 }
 
-/// Returns whether this host currently has a physical-network route family
-/// suitable for trying `candidate`.
+/// Returns whether a compatible source address family is available.
 ///
-/// This is deliberately weaker than reachability: a compatible public route
-/// can still be blocked by NAT or a firewall. It prevents an off-link LAN
-/// address or an IPv6-only address on an IPv4-only network from being presented
-/// and retried as though the operating system could route it.
+/// Private routes need not be directly attached: VPNs and ordinary routers
+/// may carry them. Off-link private candidates rank behind public candidates,
+/// but remain eligible for bounded, pinned attempts. The OS decides routing.
 #[must_use]
 pub(crate) fn candidate_is_route_compatible(
     candidate: &EndpointCandidate,
     local_networks: &[InterfaceNetwork],
 ) -> bool {
     let remote = candidate.address().ip();
-    if candidate.kind() == CandidateKind::Local {
+    if remote.is_loopback() || matches!(remote, IpAddr::V6(ip) if ip.is_unicast_link_local()) {
         return local_networks.iter().any(|network| network.contains(remote));
     }
     local_networks.iter().any(|network| match (network.address(), remote) {
         (IpAddr::V4(local), IpAddr::V4(_)) => !local.is_unspecified() && !local.is_loopback() && !local.is_link_local(),
-        (IpAddr::V6(local), IpAddr::V6(_)) => globally_routed_ipv6(local),
+        (IpAddr::V6(local), IpAddr::V6(_)) => {
+            !local.is_unspecified() && !local.is_loopback() && !local.is_unicast_link_local()
+        }
         _ => false,
     })
-}
-
-const fn globally_routed_ipv6(address: std::net::Ipv6Addr) -> bool {
-    address.octets()[0] & 0xe0 == 0x20
 }
 
 fn ip_from_storage(storage: &SockaddrStorage) -> Option<IpAddr> {
@@ -225,19 +237,12 @@ mod tests {
 
     #[test]
     fn automatic_discovery_excludes_overlay_and_virtual_interfaces() {
-        for physical in ["en0", "en1", "eth0", "wlan0", "wlp2s0", "wwan0", "bond0"] {
+        for physical in [
+            "en0", "en1", "eth0", "wlan0", "wlp2s0", "wwan0", "bond0", "bridge0", "br-lan",
+        ] {
             assert!(is_automatic_interface(physical), "{physical}");
         }
-        for virtual_name in [
-            "awdl0",
-            "bridge100",
-            "docker0",
-            "ipsec0",
-            "tailscale0",
-            "utun4",
-            "veth1234",
-            "wg0",
-        ] {
+        for virtual_name in ["awdl0", "docker0", "ipsec0", "tailscale0", "utun4", "veth1234", "wg0"] {
             assert!(!is_automatic_interface(virtual_name), "{virtual_name}");
         }
     }
@@ -303,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn route_compatibility_rejects_off_link_lan_and_missing_address_families() -> Result<(), Box<dyn std::error::Error>>
+    fn routed_private_addresses_remain_eligible_but_missing_families_do_not() -> Result<(), Box<dyn std::error::Error>>
     {
         let ipv4_only = [InterfaceNetwork::new(
             IpAddr::V4(Ipv4Addr::new(172, 16, 110, 141)),
@@ -325,7 +330,7 @@ mod tests {
             SocketAddr::from((Ipv6Addr::new(0x2600, 0x1700, 0, 0, 0, 0, 0, 1), 44_330)),
         )?;
 
-        assert!(!candidate_is_route_compatible(&off_link, &ipv4_only));
+        assert!(candidate_is_route_compatible(&off_link, &ipv4_only));
         assert!(candidate_is_route_compatible(&public_ipv4, &ipv4_only));
         assert!(!candidate_is_route_compatible(&public_ipv6, &ipv4_only));
         assert_eq!(candidate_dial_order(&[public_ipv6, public_ipv4], &ipv4_only), [1, 0]);

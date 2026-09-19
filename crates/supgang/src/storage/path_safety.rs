@@ -54,6 +54,7 @@ pub(super) fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, StorageE
 pub(super) fn validate_ancestor_chain(path: &Path, final_must_be_owner: bool) -> Result<(), StorageError> {
     let current_uid = rustix::process::getuid().as_raw();
     let mut current = PathBuf::from("/");
+    super::validate_descriptor_acl(&File::open(&current)?)?;
     let components = path.components().filter_map(|component| match component {
         Component::Normal(value) => Some(value),
         _ => None,
@@ -72,15 +73,7 @@ pub(super) fn validate_ancestor_chain(path: &Path, final_must_be_owner: bool) ->
             return Err(StorageError::UnsafeAncestor);
         }
         let owner = metadata.uid();
-        if owner != 0 && owner != current_uid {
-            return Err(StorageError::UnsafeAncestor);
-        }
-        if metadata.mode() & 0o022 != 0 {
-            return Err(StorageError::UnsafeAncestor);
-        }
-        if owner == current_uid {
-            super::validate_descriptor_acl(&File::open(&current)?)?;
-        }
+        validate_ancestor_access(&File::open(&current)?, owner, metadata.mode(), current_uid)?;
         if final_must_be_owner && index + 1 == component_count && owner != current_uid {
             return Err(StorageError::WrongOwner);
         }
@@ -91,6 +84,7 @@ pub(super) fn validate_ancestor_chain(path: &Path, final_must_be_owner: bool) ->
 
 fn validate_resolved_chain(path: &Path, final_must_be_owner: bool, current_uid: u32) -> Result<(), StorageError> {
     let mut current = PathBuf::from("/");
+    super::validate_descriptor_acl(&File::open(&current)?)?;
     let components = path.components().filter_map(|component| match component {
         Component::Normal(value) => Some(value),
         _ => None,
@@ -103,18 +97,56 @@ fn validate_resolved_chain(path: &Path, final_must_be_owner: bool, current_uid: 
             return Err(StorageError::UnsafeAncestor);
         }
         let owner = metadata.uid();
-        if owner != 0 && owner != current_uid {
-            return Err(StorageError::UnsafeAncestor);
-        }
-        if metadata.mode() & 0o022 != 0 {
-            return Err(StorageError::UnsafeAncestor);
-        }
-        if owner == current_uid {
-            super::validate_descriptor_acl(&File::open(&current)?)?;
-        }
+        validate_ancestor_access(&File::open(&current)?, owner, metadata.mode(), current_uid)?;
         if final_must_be_owner && index + 1 == component_count && owner != current_uid {
             return Err(StorageError::WrongOwner);
         }
     }
     Ok(())
+}
+
+fn validate_ancestor_access(file: &File, owner: u32, mode: u32, current_uid: u32) -> Result<(), StorageError> {
+    if (owner != 0 && owner != current_uid) || mode & 0o022 != 0 {
+        return Err(StorageError::UnsafeAncestor);
+    }
+    // Root ownership does not override ACL grants to another account.
+    super::validate_descriptor_acl(file)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{validate_ancestor_access, validate_ancestor_chain, validate_resolved_chain};
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
+    #[test]
+    fn both_ancestor_walks_reject_acl_grants_and_accept_deny_only() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let path = fs::canonicalize(temporary.path())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        let uid = rustix::process::getuid().as_raw();
+        for entry in ["everyone allow add_file,delete_child", "everyone deny delete"] {
+            assert!(
+                Command::new("/bin/chmod")
+                    .args(["+a", entry])
+                    .arg(&path)
+                    .status()?
+                    .success()
+            );
+            let allowed = entry.contains("deny");
+            // Exercise both ownership branches with a real ACL descriptor.
+            // Simulating UID 0 here avoids modifying any system-owned directory.
+            for owner in [0, uid] {
+                assert_eq!(
+                    validate_ancestor_access(&fs::File::open(&path)?, owner, 0o755, uid).is_ok(),
+                    allowed
+                );
+            }
+            assert_eq!(validate_ancestor_chain(&path, true).is_ok(), allowed);
+            assert_eq!(validate_resolved_chain(&path, true, uid).is_ok(), allowed);
+            assert!(Command::new("/bin/chmod").arg("-N").arg(&path).status()?.success());
+        }
+        // Exercise real, root-owned platform ancestors without privilege or mutation.
+        validate_ancestor_chain(std::path::Path::new("/private/var"), false)?;
+        Ok(())
+    }
 }

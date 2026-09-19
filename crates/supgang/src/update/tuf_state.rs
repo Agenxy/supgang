@@ -4,6 +4,7 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tough::schema::{Root, Signed, Snapshot, Targets, Timestamp};
 
 use super::{
     MAX_BUNDLE_ENTRIES, MAX_METADATA_BYTES, UpdateError, artifact_like_read, lifecycle, valid_entry_name,
@@ -11,8 +12,9 @@ use super::{
 };
 
 const STATE_FILE: &str = "tuf-state.json";
-const STATE_SCHEMA: &str = "supgang.tuf-state/v1";
+const STATE_SCHEMA: &str = "supgang.tuf-state/v2";
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
+#[cfg(test)]
 const REQUIRED_FILES: [&str; 4] = ["root.json", "timestamp.json", "snapshot.json", "targets.json"];
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -44,6 +46,43 @@ pub(super) fn seed(updates: &Path, empty_datastore: &Path) -> Result<(), UpdateE
     Ok(())
 }
 
+pub(super) fn seed_current(
+    updates: &Path,
+    datastore: &Path,
+    trust: &super::root_state::RootState,
+) -> Result<(), UpdateError> {
+    let current = trust.root();
+    seed(updates, datastore)?;
+    let root_path = datastore.join("root.json");
+    if root_path.exists() {
+        let bytes = artifact_like_read(&root_path, MAX_METADATA_BYTES, 0o600)?;
+        let old: Signed<Root> = serde_json::from_slice(&bytes).map_err(|_| UpdateError::Tuf)?;
+        if old.signed.version > current.signed.version {
+            return Err(UpdateError::InvalidTrustRoot);
+        }
+        // Mirror tough's fast-forward recovery even across a crash between
+        // independent root advancement and publishing the role-state snapshot.
+        if old.signed.version.get() < trust.role_reset_version()
+            || super::root_state::role_keys_changed(&old.signed, &current.signed)
+        {
+            for name in ["timestamp.json", "snapshot.json"] {
+                match fs::remove_file(datastore.join(name)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        fs::remove_file(&root_path)?;
+    }
+    write_new_file(
+        &root_path,
+        &serde_json::to_vec(current).map_err(|_| UpdateError::Tuf)?,
+        0o600,
+    )?;
+    commit(updates, datastore)
+}
+
 pub(super) fn commit(updates: &Path, datastore: &Path) -> Result<(), UpdateError> {
     let mut files = Vec::new();
     for entry in fs::read_dir(datastore)? {
@@ -62,6 +101,7 @@ pub(super) fn commit(updates: &Path, datastore: &Path) -> Result<(), UpdateError
         }
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         let bytes = artifact_like_read(&path, MAX_METADATA_BYTES, 0o600)?;
+        validate_metadata(&name, &bytes)?;
         files.push(StateFile {
             name,
             sha256: hex::encode(Sha256::digest(&bytes)),
@@ -85,7 +125,7 @@ pub(super) fn commit(updates: &Path, datastore: &Path) -> Result<(), UpdateError
 }
 
 fn validate(state: &State, encoded: Option<&[u8]>) -> Result<(), UpdateError> {
-    if state.schema != STATE_SCHEMA
+    if !matches!(state.schema.as_str(), STATE_SCHEMA | "supgang.tuf-state/v1")
         || state.files.is_empty()
         || state.files.len() > MAX_BUNDLE_ENTRIES
         || encoded.is_some_and(|bytes| serde_json::to_vec(state).map_or(true, |canonical| canonical != bytes))
@@ -109,13 +149,23 @@ fn validate(state: &State, encoded: Option<&[u8]>) -> Result<(), UpdateError> {
         }
         previous = Some(file.name.clone());
     }
-    if REQUIRED_FILES
-        .iter()
-        .any(|required| !state.files.iter().any(|file| file.name == *required))
-    {
+    // A valid root followed by a failed timestamp/snapshot/targets load is
+    // legitimate trusted progress, not a reason to discard that progress.
+    if !state.files.iter().any(|file| file.name == "root.json") {
         return Err(UpdateError::Tuf);
     }
     Ok(())
+}
+
+fn validate_metadata(name: &str, bytes: &[u8]) -> Result<(), UpdateError> {
+    let valid = match name {
+        "root.json" => serde_json::from_slice::<Signed<Root>>(bytes).is_ok(),
+        "timestamp.json" => serde_json::from_slice::<Signed<Timestamp>>(bytes).is_ok(),
+        "snapshot.json" => serde_json::from_slice::<Signed<Snapshot>>(bytes).is_ok(),
+        "latest_known_time.json" => serde_json::from_slice::<jiff::Timestamp>(bytes).is_ok(),
+        _ => serde_json::from_slice::<Signed<Targets>>(bytes).is_ok(),
+    };
+    if valid { Ok(()) } else { Err(UpdateError::Tuf) }
 }
 
 #[cfg(test)]
@@ -132,9 +182,10 @@ mod tests {
     }
 
     fn write_required(datastore: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-        for (index, name) in REQUIRED_FILES.iter().enumerate() {
+        let repository = crate::update::tests::signed_repository()?;
+        for name in REQUIRED_FILES {
             let path = datastore.join(name);
-            fs::write(&path, format!("metadata-{index}"))?;
+            fs::copy(repository.metadata.path().join(name), &path)?;
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         }
         Ok(())

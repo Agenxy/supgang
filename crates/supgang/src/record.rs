@@ -84,7 +84,8 @@ impl ServiceName {
 /// it confers no authorization: a consumer that dials the port and finds the
 /// pinned key has exactly the assurance Supgang gives about the computer's
 /// own transport. No address is carried; the record's candidates are the
-/// addresses, so an advertisement can never point at a third party.
+/// addresses. A signed candidate is not independent proof of address ownership;
+/// the consumer must authenticate the actual service before granting authority.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ServiceAdvert {
     /// The service's own name, unique within a record.

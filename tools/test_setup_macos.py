@@ -9,6 +9,8 @@ import importlib.util
 import os
 from pathlib import Path
 import pwd
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -106,6 +108,84 @@ class SetupTests(unittest.TestCase):
              patch.object(setup.time, "sleep"):
             setup.wait_for_stopped(self.owner)
         self.assertEqual(query.call_count, 2)
+
+    def test_signatures_are_verified_before_any_owner_command(self):
+        events = []
+        with patch.object(setup, "safe_read", return_value=b"binary"), \
+             patch.object(setup, "approve_runtime", side_effect=lambda *a, **k: events.append("verify")), \
+             patch.object(setup, "owner_command", side_effect=lambda *a: events.append("execute")):
+            setup.validate_installed(self.owner, "a" * 40, "b" * 64)
+        self.assertEqual(events, ["verify", "execute"])
+        for entry in (lambda: setup.validate_installed(self.owner),
+                      lambda: setup.apply(self.owner, {}, None, None)):
+            with patch.object(setup, "safe_read", return_value=b"binary"), \
+                 patch.object(setup, "approve_runtime", side_effect=RuntimeError("bad signature")), \
+                 patch.object(setup, "owner_command") as execute:
+                with self.assertRaises(RuntimeError):
+                    entry()
+                execute.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS descriptor ACL regression")
+    def test_acl_writable_supervisor_or_parent_is_rejected_before_execution(self):
+        with tempfile.TemporaryDirectory(prefix=".supgang-acl-test-", dir=Path.home()) as directory:
+            home = Path(directory)
+            owner = pwd.struct_passwd(("fixture", "*", os.getuid(), os.getgid(), "", str(home), "/bin/zsh"))
+            supervisor = home / "Library/Application Support" / setup.LABEL / "bin/supgang"
+            supervisor.parent.mkdir(parents=True, mode=0o700)
+            supervisor.write_bytes(b"not executable")
+            supervisor.chmod(0o700)
+            for target, acl in ((supervisor, "everyone allow write"),
+                                (supervisor.parent, "everyone allow add_file,delete_child")):
+                subprocess.run(["/bin/chmod", "+a", acl, str(target)], check=True)
+                try:
+                    with patch.object(setup, "owner_command") as execute, \
+                         patch.object(setup, "approve_runtime") as approve:
+                        with self.assertRaises(RuntimeError):
+                            setup.validate_installed(owner)
+                        execute.assert_not_called()
+                        approve.assert_not_called()
+                finally:
+                    subprocess.run(["/bin/chmod", "-N", str(target)], check=True)
+            subprocess.run(["/bin/chmod", "+a", "everyone deny delete", str(supervisor)], check=True)
+            try:
+                self.assertEqual(setup.safe_read(supervisor, os.getuid(), 32), b"not executable")
+                with patch.object(setup, "owner_command") as execute, patch.object(setup, "approve_runtime"):
+                    setup.validate_installed(owner)
+                    execute.assert_called_once()
+            finally:
+                subprocess.run(["/bin/chmod", "-N", str(supervisor)], check=True)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS descriptor ACL regression")
+    def test_fresh_artifact_acl_is_cleared_before_use(self):
+        with tempfile.TemporaryDirectory(prefix=".supgang-new-acl-test-", dir=Path.home()) as directory:
+            artifact = Path(directory) / "file"
+            with artifact.open("xb+") as stream:
+                artifact.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", "everyone allow read", str(artifact)], check=True)
+                with self.assertRaises(RuntimeError):
+                    setup.descriptor_acl(stream.fileno())
+                setup.descriptor_acl(stream.fileno(), clear_new=True)
+                setup.descriptor_acl(stream.fileno())
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS lock ancestor ACL regression")
+    def test_setup_lock_rejects_replaceable_parent_and_retains_exclusion(self):
+        with tempfile.TemporaryDirectory(prefix=".supgang-lock-test-", dir=Path.home()) as directory:
+            parent = Path(directory)
+            lock = parent / "setup.lock"
+            subprocess.run(["/bin/chmod", "+a", "everyone allow delete_child", str(parent)], check=True)
+            try:
+                with self.assertRaises(RuntimeError):
+                    setup.open_setup_lock(lock, os.getuid())
+                self.assertFalse(lock.exists())
+            finally:
+                subprocess.run(["/bin/chmod", "-N", str(parent)], check=True)
+            first = setup.open_setup_lock(lock, os.getuid())
+            try:
+                with self.assertRaisesRegex(RuntimeError, "already running"):
+                    setup.open_setup_lock(lock, os.getuid())
+            finally:
+                os.close(first)
+            os.close(setup.open_setup_lock(lock, os.getuid()))
 
 
 if __name__ == "__main__":

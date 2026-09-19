@@ -49,6 +49,12 @@ pub struct IncomingBundle {
     pub(crate) file: File,
 }
 
+impl Drop for IncomingBundle {
+    fn drop(&mut self) {
+        let _removed = fs::remove_file(&self.path);
+    }
+}
+
 pub fn prepare_outbound(state_directory: &Path, source: &Path) -> Result<[u8; UPDATE_DIGEST_BYTES], UpdateError> {
     let _lock = super::lock::UpdateLock::acquire(state_directory)?;
     let mut source = open_owner_file(source, 0o600, MAX_UPDATE_BUNDLE_BYTES)?;

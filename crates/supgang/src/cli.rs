@@ -560,7 +560,7 @@ fn doctor(state_directory: &PathBuf, json: bool, output: &mut dyn Write, error: 
                 detail: "local service returned an unexpected response".to_owned(),
             },
         ),
-        Ok(None) => match state::open(state_directory) {
+        Ok(None) => match state::open_read_only(state_directory) {
             Ok(state) if state.revocations().contains(&state.identity().device.node_id()) => (
                 false,
                 DoctorCheck {

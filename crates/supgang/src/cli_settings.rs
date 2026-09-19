@@ -15,6 +15,7 @@ struct SettingsOutput {
     status: &'static str,
     address_history: usize,
     source: &'static str,
+    applies_on: &'static str,
 }
 
 pub fn config(
@@ -51,10 +52,17 @@ fn render_settings(
         status: "ok",
         address_history: settings.address_history(),
         source,
+        applies_on: "next-service-start",
     };
     if json {
         render_json(&result, output, error)
-    } else if writeln!(output, "Peer address history: {}", result.address_history).is_ok() {
+    } else if writeln!(
+        output,
+        "Saved peer address history: {}\nRestart the service to apply saved settings.",
+        result.address_history
+    )
+    .is_ok()
+    {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(3)

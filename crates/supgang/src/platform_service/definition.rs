@@ -69,10 +69,11 @@ pub(super) fn render_systemd(
     anchor: bool,
     router_mapping: bool,
 ) -> Result<String, ServiceError> {
-    let executable = systemd_argument(executable)?;
+    let executable = systemd_argument(executable)?.replace('$', "$$");
+    let command_state = systemd_argument(state_directory)?.replace('$', "$$");
     let state_directory = systemd_argument(state_directory)?;
     let endpoint_arguments = if let Some(path) = endpoints {
-        format!(" --endpoints {}", systemd_argument(path)?)
+        format!(" --endpoints {}", systemd_argument(path)?.replace('$', "$$"))
     } else {
         String::new()
     };
@@ -80,7 +81,7 @@ pub(super) fn render_systemd(
     let mapping_argument = if router_mapping { " --router-mapping" } else { "" };
     let policy_arguments = format!("{anchor_argument}{mapping_argument}{endpoint_arguments}");
     Ok(format!(
-        "[Unit]\nDescription=Supgang sovereign peer discovery\n\n[Service]\nType=simple\nExecStart={executable} --json --state-dir {state_directory} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={state_directory}\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Supgang sovereign peer discovery\n\n[Service]\nType=simple\nExecStart={executable} --json --state-dir {command_state} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={state_directory}\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=default.target\n"
     ))
 }
 
@@ -137,6 +138,20 @@ mod tests {
         assert!(unit.contains("NoNewPrivileges=true"));
         assert!(unit.contains("StandardOutput=null"));
         assert!(unit.contains("CapabilityBoundingSet=\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn systemd_expansion_is_escaped_only_in_command_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let unit = render_systemd(
+            Path::new("/home/${USER}/sg"),
+            Path::new("/home/$STATE"),
+            Some(Path::new("/home/${CFG}")),
+            false,
+            false,
+        )?;
+        assert!(unit.contains("ExecStart=\"/home/$${USER}/sg\" --json --state-dir \"/home/$$STATE\" supervise --endpoints \"/home/$${CFG}\""));
+        assert!(unit.contains("ReadWritePaths=\"/home/$STATE\""));
         Ok(())
     }
 

@@ -171,7 +171,7 @@ fn write(updates: &Path, deliveries: &[QueuedPeerDelivery]) -> Result<(), Update
     if bytes.len() > MAX_DELIVERY_BYTES {
         return Err(UpdateError::Capacity);
     }
-    super::lifecycle::write_atomic(updates, DELIVERY_FILE, &bytes, 0o600)
+    super::lifecycle::write_atomic_bounded(updates, DELIVERY_FILE, &bytes, 0o600, MAX_DELIVERY_BYTES)
 }
 
 #[cfg(test)]
@@ -181,6 +181,25 @@ mod tests {
     use crate::ids::NodeId;
 
     use super::{DELIVERY_LIFETIME_SECONDS, finish_peer_delivery, load_peer_deliveries, queue_peer_delivery};
+
+    #[test]
+    fn four_maximal_deliveries_fit_the_advertised_document_bound() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let state = temporary.path().join("state");
+        drop(crate::state::initialize(&state)?);
+        let updates = crate::update::updates_directory(&state, true)?;
+        let entries = (0_u8..4)
+            .map(|index| super::QueuedPeerDelivery {
+                target: NodeId::from_bytes([index; 32]),
+                digest: [255; 32],
+                queued_at: u64::MAX - DELIVERY_LIFETIME_SECONDS,
+                expires_at: u64::MAX,
+            })
+            .collect::<Vec<_>>();
+        super::write(&updates, &entries)?;
+        assert_eq!(super::read(&updates)?, entries);
+        Ok(())
+    }
 
     #[test]
     fn delivery_survives_restart_and_protects_its_prepared_bundle() -> Result<(), Box<dyn std::error::Error>> {

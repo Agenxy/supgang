@@ -26,6 +26,7 @@ mod lifecycle;
 mod lock;
 mod root_state;
 mod supervisor;
+mod target_name;
 mod transaction;
 mod tuf_state;
 
@@ -44,8 +45,9 @@ pub(crate) use lifecycle::{
 };
 pub(crate) use lock::UpdateLock;
 pub use supervisor::{SupervisorError, SupervisorOptions, run_supervisor};
+use target_name::{is_target_byte, validate_target_name};
 pub use transaction::verify_and_stage;
-pub(crate) use transaction::verify_and_stage_locked;
+pub(crate) use transaction::verify_incoming;
 
 /// Maximum complete update bundle accepted from disk or a peer.
 pub const MAX_UPDATE_BUNDLE_BYTES: u64 = 160 * 1024 * 1024;
@@ -219,10 +221,10 @@ pub(super) struct MaterializedBundle {
 
 pub(super) async fn verify_materialized(bundle: &MaterializedBundle) -> Result<StagedUpdate, UpdateError> {
     let updates = updates_directory(&bundle.state_directory, true)?;
-    let trust = root_state::load(&updates)?;
+    let trust = root_state::advance(&updates, &bundle.metadata_directory)?;
     let root = trust.current_bytes()?;
     let datastore = ensure_child(&bundle.work_directory, "tuf-datastore")?;
-    tuf_state::seed(&updates, &datastore)?;
+    tuf_state::seed_current(&updates, &datastore, &trust)?;
     let metadata_url = directory_url(&bundle.metadata_directory)?;
     let targets_url = directory_url(&bundle.targets_directory)?;
     let transport = filesystem_transport::ProtectedFilesystemTransport::new(
@@ -232,7 +234,8 @@ pub(super) async fn verify_materialized(bundle: &MaterializedBundle) -> Result<S
         &targets_url,
         &bundle.targets_directory,
         MAX_UPDATE_TARGET_BYTES,
-    )?;
+    )?
+    .with_checkpoint(&updates, &datastore);
     let repository = RepositoryLoader::new(&root, metadata_url, targets_url)
         .transport(transport)
         .limits(Limits {
@@ -245,8 +248,11 @@ pub(super) async fn verify_materialized(bundle: &MaterializedBundle) -> Result<S
         .datastore(&datastore)
         .expiration_enforcement(ExpirationEnforcement::Safe)
         .load()
-        .await
-        .map_err(map_tough_load_error)?;
+        .await;
+    // Preserve authenticated partial progress even when a later role fails.
+    tuf_state::commit(&updates, &datastore)?;
+    let repository = repository.map_err(map_tough_load_error)?;
+    root_state::promote(&updates, trust, repository.root())?;
     let target_name = TargetName::new(bundle.target.clone()).map_err(|_| UpdateError::InvalidTargetName)?;
     let version = validate_target_name(target_name.raw())?;
     ensure_version_advances(&updates, &version)?;
@@ -291,8 +297,6 @@ pub(super) async fn verify_materialized(bundle: &MaterializedBundle) -> Result<S
         digest,
         executable,
     };
-    root_state::promote(&updates, trust, repository.root())?;
-    tuf_state::commit(&updates, &datastore)?;
     lifecycle::persist_staged(&updates, &staged)?;
     Ok(staged)
 }
@@ -305,23 +309,6 @@ fn map_tough_load_error(error: tough::error::Error) -> UpdateError {
         | tough::error::Error::DatastoreRemove { source, .. } => UpdateError::Io(source),
         _ => UpdateError::Tuf,
     }
-}
-
-fn validate_target_name(target: &str) -> Result<Version, UpdateError> {
-    let prefix = "supgang-";
-    let suffix = format!("-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let version = target
-        .strip_prefix(prefix)
-        .and_then(|value| value.strip_suffix(&suffix))
-        .ok_or(UpdateError::WrongPlatform)?;
-    if version.is_empty() || target.len() > 128 || !target.bytes().all(is_target_byte) {
-        return Err(UpdateError::InvalidTargetName);
-    }
-    Version::parse(version).map_err(|_| UpdateError::InvalidTargetName)
-}
-
-const fn is_target_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
 }
 
 fn ensure_version_advances(updates: &Path, candidate: &Version) -> Result<(), UpdateError> {

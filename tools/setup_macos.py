@@ -12,6 +12,8 @@ not part of the network service; no password or private key is read or stored.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -33,21 +35,135 @@ DAEMONS = Path("/Library/LaunchDaemons")
 MAX_DEFINITION = 32768
 
 
+def acl_api():
+    """Use only macOS's system library, with explicit descriptor-based ABI types."""
+    api = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    pointer = ctypes.c_void_p
+    integer = ctypes.c_int
+    for name, arguments, result in (
+        ("acl_get_fd_np", [integer, integer], pointer),
+        ("acl_get_entry", [pointer, integer, ctypes.POINTER(pointer)], integer),
+        ("acl_get_tag_type", [pointer, ctypes.POINTER(integer)], integer),
+        ("acl_init", [integer], pointer),
+        ("acl_set_fd_np", [integer, pointer, integer], integer),
+        ("acl_free", [pointer], integer),
+    ):
+        function = getattr(api, name)
+        function.argtypes, function.restype = arguments, result
+    return api
+
+
+def descriptor_acl(fd: int, clear_new: bool = False) -> None:
+    """Reject extended allow entries; clear ACLs only on freshly created objects.
+
+    Match the native installer's conservative policy, including root-owned
+    ancestors. Deny-only entries remain valid. No user-controlled helper runs.
+    """
+    if sys.platform != "darwin":
+        # The setup entry point is macOS-only, but its read tests also run on Linux.
+        for name in ("system.posix_acl_access", "system.posix_acl_default"):
+            try:
+                if clear_new:
+                    os.removexattr(fd, name)
+                elif os.getxattr(fd, name):
+                    raise RuntimeError("A setup object has an extended ACL grant.")
+            except OSError as error:
+                if error.errno not in (errno.ENODATA, errno.ENOTSUP):
+                    raise
+        return
+    api = acl_api()
+    acl = api.acl_init(0) if clear_new else api.acl_get_fd_np(fd, 0x100)
+    if not acl:
+        if not clear_new and ctypes.get_errno() == errno.ENOENT:
+            return
+        raise RuntimeError("A setup object's ACL could not be read.")
+    try:
+        if clear_new:
+            if api.acl_set_fd_np(fd, acl, 0x100) != 0:
+                raise RuntimeError("Inherited setup permissions could not be removed.")
+            return
+        entry = ctypes.c_void_p()
+        entry_id = 0
+        for _ in range(1024):
+            ctypes.set_errno(0)
+            if api.acl_get_entry(acl, entry_id, ctypes.byref(entry)) != 0:
+                if ctypes.get_errno() == errno.EINVAL:
+                    return
+                raise RuntimeError("A setup object's ACL could not be inspected.")
+            tag = ctypes.c_int()
+            if api.acl_get_tag_type(entry, ctypes.byref(tag)) != 0:
+                raise RuntimeError("A setup object's ACL entry could not be inspected.")
+            if tag.value != 2:  # ACL_EXTENDED_DENY; fail closed for allow/unknown tags.
+                raise RuntimeError("A setup object grants access through an extended ACL.")
+            entry_id = -1
+        raise RuntimeError("A setup object's ACL exceeds its entry limit.")
+    finally:
+        if api.acl_free(acl) != 0:
+            raise RuntimeError("A setup object's ACL could not be released.")
+
+
 def safe_ancestor(path: Path, meta: os.stat_result, uid: int) -> bool:
     sticky_library = path == Path("/Library") and meta.st_uid == 0 and meta.st_mode & 0o1000
     return (stat.S_ISDIR(meta.st_mode) and meta.st_uid in (0, uid) and not meta.st_mode & 0o002
             and (not meta.st_mode & 0o020 or bool(sticky_library)))
 
 
+def validate_ancestor(path: Path, uid: int) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not safe_ancestor(path, os.fstat(fd), uid):
+            raise RuntimeError("A setup path has an unsafe parent directory.")
+        descriptor_acl(fd)
+    finally:
+        os.close(fd)
+
+
+def create_protected_directory(path: Path, uid: int, gid: int) -> None:
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        validate_ancestor(path, uid)
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor_acl(fd, clear_new=True)
+        if os.getuid() == 0:
+            os.fchown(fd, uid, gid)
+    finally:
+        os.close(fd)
+    validate_ancestor(path, uid)
+
+
+def open_setup_lock(path: Path, uid: int) -> int:
+    for ancestor in reversed(path.parents):
+        validate_ancestor(ancestor, uid)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        created = True
+    except FileExistsError:
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+        created = False
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != uid or metadata.st_mode & 0o077:
+            raise RuntimeError("The owner setup lock is unsafe.")
+        descriptor_acl(fd, clear_new=created)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Another Supgang owner setup is already running.") from None
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def root_support() -> Path:
     parent = Path("/Library/Application Support")
     for directory in (Path("/Library"), parent):
-        if not safe_ancestor(directory, directory.lstat(), 0):
-            raise RuntimeError("The system support directory is unsafe.")
+        validate_ancestor(directory, 0)
     directory = parent / "org.agenxy.supgang-owner-setup"
-    directory.mkdir(mode=0o700, exist_ok=True)
-    if not safe_ancestor(directory, directory.lstat(), 0):
-        raise RuntimeError("The setup recovery directory is unsafe.")
+    create_protected_directory(directory, 0, 0)
     return directory
 
 
@@ -61,24 +177,25 @@ def checked(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[st
 
 def safe_read(path: Path, uid: int, maximum: int) -> bytes:
     for ancestor in reversed(path.parents):
-        meta = ancestor.lstat()
-        if not safe_ancestor(ancestor, meta, uid):
-            raise RuntimeError("A setup path has an unsafe parent directory.")
+        validate_ancestor(ancestor, uid)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as source:
         meta = os.fstat(source.fileno())
         if not stat.S_ISREG(meta.st_mode) or meta.st_uid != uid or meta.st_mode & 0o022:
             raise RuntimeError("A setup file has unsafe ownership or permissions.")
+        descriptor_acl(source.fileno())
         data = source.read(maximum + 1)
         if not data or len(data) > maximum:
             raise RuntimeError("A setup file is empty or exceeds its size limit.")
     return data
 
 
-def validate_installed(owner: pwd.struct_passwd) -> None:
+def validate_installed(owner: pwd.struct_passwd, fingerprint: str | None = None,
+                       certificate_sha256: str | None = None) -> None:
     state = Path(owner.pw_dir) / "Library/Application Support" / LABEL
     supervisor = state / "bin/supgang"
     safe_read(supervisor, owner.pw_uid, 128 * 1024 * 1024)
+    approve_runtime(owner, fingerprint, certificate_sha256, apply_changes=False)
     owner_command(owner, ["doctor", "--json"])
 
 
@@ -145,14 +262,13 @@ def wait_for_stopped(owner: pwd.struct_passwd) -> None:
 def write_definition(path: Path, data: bytes) -> None:
     # All destination ancestors are root-owned; replacement cannot follow a user symlink.
     for directory in (Path("/Library"), DAEMONS):
-        meta = directory.lstat()
-        if not safe_ancestor(directory, meta, 0):
-            raise RuntimeError("The system service directory is unsafe.")
+        validate_ancestor(directory, 0)
     if path.exists() or path.is_symlink():
         safe_read(path, 0, MAX_DEFINITION)
     fd, temporary = tempfile.mkstemp(prefix=f".{LABEL}-", dir=root_support())
     try:
         with os.fdopen(fd, "wb") as destination:
+            descriptor_acl(destination.fileno(), clear_new=True)
             os.fchmod(destination.fileno(), 0o644)
             destination.write(data)
             destination.flush()
@@ -172,6 +288,7 @@ def approve_runtime(owner: pwd.struct_passwd, fingerprint: str | None, certifica
                     apply_changes: bool = True) -> None:
     state = Path(owner.pw_dir) / "Library/Application Support" / LABEL
     supervisor = state / "bin/supgang"
+    safe_read(supervisor, owner.pw_uid, 128 * 1024 * 1024)
     active = json.loads(safe_read(state / "updates/active.json", owner.pw_uid, MAX_DEFINITION))
     digest = active.get("digest", "")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -220,15 +337,11 @@ def apply(owner: pwd.struct_passwd, definition: dict[str, object], fingerprint: 
     destination = DAEMONS / f"{LABEL}.{owner.pw_uid}.plist"
     system_target = f"system/{LABEL}.{owner.pw_uid}"
     # Validate owner state and current runtime before any manager changes.
-    validate_installed(owner)
+    validate_installed(owner, fingerprint, certificate_sha256)
     approve_runtime(owner, fingerprint, certificate_sha256)
     agent = Path(owner.pw_dir) / "Library/LaunchAgents" / f"{LABEL}.plist"
     recovery = Path(owner.pw_dir) / "Library/Application Support" / LABEL / "owner-setup"
-    if not recovery.exists():
-        recovery.mkdir(mode=0o700)
-        os.chown(recovery, owner.pw_uid, owner.pw_gid)
-    if not safe_ancestor(recovery, recovery.lstat(), owner.pw_uid):
-        raise RuntimeError("The owner recovery directory is unsafe.")
+    create_protected_directory(recovery, owner.pw_uid, owner.pw_gid)
     backup = recovery / "login-service.plist"
     previous_system = safe_read(destination, 0, MAX_DEFINITION) if destination.exists() else None
     previous_target = next((target for domain in ("gui", "user")
@@ -339,8 +452,7 @@ def main() -> None:
         print("No router changes, password collection, private-key exports, or privileged network service are involved.",
               flush=True)
     if not (args.apply or args.stop or args.uninstall):
-        validate_installed(owner)
-        approve_runtime(owner, args.trust_certificate, args.certificate_sha256, apply_changes=False)
+        validate_installed(owner, args.trust_certificate, args.certificate_sha256)
         print("Review the script, then add --apply to perform this setup.")
         return
     if os.getuid() != 0:
@@ -356,16 +468,9 @@ def main() -> None:
             print("Administrator approval or the approved setup command did not finish on this computer. "
                   "Read macOS's message above; no automatic retry was made.", file=sys.stderr)
         raise SystemExit(result.returncode)
-    lock_path = f"/var/run/{LABEL}.setup.{uid}.lock"
-    lock = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(lock, "rb+") as held_lock:
-        metadata = os.fstat(held_lock.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
-            raise RuntimeError("The owner setup lock is unsafe.")
-        try:
-            fcntl.flock(held_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("Another Supgang owner setup is already running.") from None
+    # Use the canonical system path; no unchecked /var symlink or parent ACL.
+    lock_path = Path("/private/var/run") / f"{LABEL}.setup.{uid}.lock"
+    with os.fdopen(open_setup_lock(lock_path, 0), "rb+"):
         if args.stop or args.uninstall:
             stop_or_remove(owner, args.uninstall)
         else:

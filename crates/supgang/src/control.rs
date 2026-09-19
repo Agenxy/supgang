@@ -22,6 +22,14 @@ use crate::{cli_peer, ids::NodeId, storage};
 
 /// Filename of the private local-control socket inside protected state.
 pub const CONTROL_SOCKET_FILE_NAME: &str = "control.sock";
+pub const STARTUP_ID_ENV: &str = "SUPGANG_STARTUP_ID";
+
+pub fn startup_id() -> String {
+    std::env::var(STARTUP_ID_ENV)
+        .ok()
+        .filter(|value| value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .unwrap_or_default()
+}
 
 const REQUEST_MAGIC: &[u8; 8] = b"SUPGIPC1";
 const REQUEST_STATUS: u8 = 1;
@@ -59,6 +67,15 @@ pub enum ControlRequest {
 /// Non-secret status returned by a running service.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ControlStatus {
+    /// Version compiled into the running executable.
+    #[serde(default)]
+    pub version: String,
+    /// Operating-system process serving this response.
+    #[serde(default)]
+    pub process_id: u32,
+    /// Supervisor challenge for this specific child startup; not a credential.
+    #[serde(default)]
+    pub startup_id: String,
     /// Random identifier for this running process, used to observe a completed restart.
     #[serde(default)]
     pub instance_id: String,

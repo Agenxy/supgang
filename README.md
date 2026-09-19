@@ -201,29 +201,33 @@ cargo run --locked --package supgang -- --help
 
 ## Create and join a hive
 
+The examples below consistently use the platform-default state directory. If you select a custom
+directory with `--state-dir`, use it on every command and in your MCP client configuration too.
+The optional macOS boot-setup script requires the standard account-home location.
+
 On the first computer:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" init
+supgang init
 ```
 
 On the computer that will join, create a request:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" join-request ./computer-b.request
+supgang join-request ./computer-b.request
 ```
 
 Carry that owner-only request file to the first computer. Authorize it there:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" invite ./computer-b.request ./computer-b.bundle \
+supgang invite ./computer-b.request ./computer-b.bundle \
   --expect-node <NODE_ID_SHOWN_ON_COMPUTER_B>
 ```
 
 Carry the new bundle back and install it on the joining computer:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" join ./computer-b.bundle \
+supgang join ./computer-b.bundle \
   --expect-hive <HIVE_ID_SHOWN_ON_THE_EXISTING_MEMBER>
 ```
 
@@ -241,8 +245,8 @@ private key. Move or destroy them according to your own backup policy after the 
 The default name is derived from the computer hostname. Inspect it or replace it before publishing:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" name
-supgang --state-dir "$HOME/.local/share/supgang" name set "Home B"
+supgang name
+supgang name set "Home B"
 ```
 
 Names are signed human labels, not authorization identities. Supgang accepts portable ASCII names
@@ -256,8 +260,8 @@ the port it listens on at this computer's addresses, and the SHA-256 of the TLS 
 Like `name set`, this is changed while the service is stopped and signed on the next start:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" advertise dibs 4777 --key-pin <64 hex digits>
-supgang --state-dir "$HOME/.local/share/supgang" unadvertise dibs
+supgang advertise dibs 4777 --key-pin <64 hex digits>
+supgang unadvertise dibs
 ```
 
 `supgang peers`, `supgang resolve`, and the MCP `resolve` tool return `services` beside the
@@ -273,7 +277,7 @@ computer, publish a signed contact. Supgang discovers active non-loopback interf
 without contacting any network service and uses UDP port 44330 by default:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" publish ./this-computer.contact
+supgang publish ./this-computer.contact
 ```
 
 For explicit policy, create an owner-only endpoint file without putting addresses in process
@@ -293,22 +297,22 @@ belongs directly to that computer. Use `kind: "mapped"` with `PUBLIC_IPV4:44330`
 forwards that UDP port to the computer. Then publish with the override:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" publish ./this-computer.contact \
+supgang publish ./this-computer.contact \
   --endpoints ./endpoints.json
 ```
 
 Carry each signed contact to the other computer and import it:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" import ./other-computer.contact
+supgang import ./other-computer.contact
 ```
 
 Install and start the per-user background service on each computer. Local interface discovery is
 the default; gateway configuration is not changed:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" service install
-supgang --state-dir "$HOME/.local/share/supgang" service status
+supgang service install
+supgang service status
 ```
 
 On macOS, a normal user installation starts when that account signs in to the desktop.
@@ -340,14 +344,14 @@ acceptance still needs a connection through the firewall after the runtime moves
 On a trusted network, explicitly allow a PCP or NAT-PMP request to the attached gateway:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" service install --router-mapping
+supgang service install --router-mapping
 ```
 
 If the home gateway does not support owner-enabled mapping, an owner-managed firewall opening or port
 forward can use the same validated endpoint policy as foreground mode:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" service install \
+supgang service install \
   --endpoints ./endpoints.json
 ```
 
@@ -361,7 +365,7 @@ user-owned computer that already has a reachable address, such as a small server
 a server in the user's own cloud account:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" service install --anchor
+supgang service install --anchor
 ```
 
 Foreground operation is `supgang anchor`. The anchor uses the same hive identity, signatures,
@@ -372,29 +376,29 @@ needs one reachable path. That can be native
 IPv6, an already-open public interface, an owner-enabled gateway mapping, or an owner-declared mapped
 address. Supgang cannot make a machine with no reachable path into a rendezvous point.
 
-Supgang evaluates addresses against the computer's current physical network before selecting one.
+Supgang checks available address families and prefers addresses on a directly attached network.
 For example, an IPv6-only home address remains visible but is reported as unavailable when the
 laptop is on an IPv4-only network. This check means the operating system can try the address; it is
 not proof that NAT or a firewall will admit the connection. Only an authenticated peer session is
 reported as connected.
 
-The installed macOS service runs in that account's native background launch domain, so it does not
-require the account to own the graphical desktop after installation. It restarts after a failure
+The default macOS service runs in the owner's login session. The optional owner-approved boot
+setup described above is required to start before login. The service restarts after a failure
 and uses the exact Supgang binary and state directory selected during installation. On Linux,
 staying active after logout also depends on the computer's systemd user-session policy. Stop,
 restart, or remove only the background definition with:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" service stop
-supgang --state-dir "$HOME/.local/share/supgang" service restart
-supgang --state-dir "$HOME/.local/share/supgang" service uninstall
+supgang service stop
+supgang service restart
+supgang service uninstall
 ```
 
 Uninstalling the service does not delete the hive identity, peer history, tags, or settings. For a
 temporary foreground session instead, use:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" run
+supgang run
 ```
 
 The `--router-mapping` option asks the current local gateway to map the listening UDP port through
@@ -404,19 +408,19 @@ public socket through an authenticated session. Mapping is disabled by default. 
 a network whose local gateway you intend to configure:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" run --router-mapping
+supgang run --router-mapping
 ```
 
 The explicit configuration remains available:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" run \
+supgang run \
   --endpoints ./endpoints.json
 ```
 
-Either computer may make a bounded authenticated recovery attempt. The lower stable node
-identifier retries in the preferred direction every round. The other computer probes once per
-four rounds, leaving quiet time for the preferred direction after a restart or firewall delay. Both
+Both computers make bounded authenticated recovery attempts in every shared retry window when
+they lack a live connection. The lower stable node identifier selects the preferred direction only
+when duplicate connections must be resolved; it never suppresses the other computer's attempts. Both
 ends retain a successfully authenticated reverse-direction connection as a fallback. If a preferred
 connection later arrives, it replaces that fallback deterministically. This avoids simultaneous-dial
 livelock without making recovery depend on one direction.
@@ -424,15 +428,15 @@ livelock without making recovery depend on one direction.
 Inspect non-secret state:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang"
-supgang --state-dir "$HOME/.local/share/supgang" status
-supgang --json --state-dir "$HOME/.local/share/supgang" doctor
-supgang --state-dir "$HOME/.local/share/supgang" peers
-supgang --state-dir "$HOME/.local/share/supgang" peers --all
-supgang --state-dir "$HOME/.local/share/supgang" tag Home B home
-supgang --state-dir "$HOME/.local/share/supgang" home
-supgang --state-dir "$HOME/.local/share/supgang" sol
-supgang --state-dir "$HOME/.local/share/supgang" resolve home
+supgang
+supgang status
+supgang --json doctor
+supgang peers
+supgang peers --all
+supgang tag "Home B" home
+supgang home
+supgang sol
+supgang resolve home
 ```
 
 The bare command and `peers` show this computer followed by every known peer. `connected` means an
@@ -455,9 +459,12 @@ supgang config set --address-history 32
 supgang config
 ```
 
-Historical addresses retain the signed contact and transport-key pin that originally authenticated
-them. They are tried only to recover a fresh record. They never appear as a current address in
-`supgang`, `resolve`, or MCP output.
+Signed-contact history retains its original device signature and transport-key pin. Separately,
+Supgang keeps a bounded, locally signed history of routes that completed fresh peer authentication.
+A saved route must match the peer transport pin; a private route also requires the same local
+interface address. That address is a network-context hint, not proof that the network is unchanged.
+Both histories are used only for recovery attempts and never shown as current advertised addresses.
+Raw introductions and unconfirmed reports do not become durable peer authority.
 
 `local` means a private or non-global interface candidate. `public` means a direct globally routed
 interface address, an address learned from an authenticated peer, an address returned by the local
@@ -528,7 +535,7 @@ prove that the address is reachable or that the device is uncompromised.
 Run this on the root-authority computer:
 
 ```text
-supgang --state-dir "$HOME/.local/share/supgang" revoke NODE_ID
+supgang revoke NODE_ID
 ```
 
 Revocation is permanent for that stable device key. The authority persists a new monotonic snapshot
@@ -548,9 +555,9 @@ it, exits, and refuses future startup. Repeating the command is idempotent.
 - Peer tags and `settings.toml` are owner-only, size-bounded, strict-schema files replaced atomically
   under nonblocking locks. Symlinks, unsafe modes, malformed data, unknown fields, and excess limits
   fail closed.
-- Historical retries accept only root-authorized, device-signed contacts. Revoked or conflicting
-  peers are excluded, duplicate addresses are removed, and every retry still requires the original
-  transport-key pin and a fresh channel-bound device proof.
+- Historical retries use root-authorized contacts and locally attested successful routes. Revoked
+  or conflicting peers are excluded, duplicate addresses are removed, and every retry still requires
+  the matching transport-key pin and a fresh channel-bound device proof.
 - Root, device, and transport signing roles use separate Rust types and signature domains.
 - The TLS provider prefers the standardized hybrid key exchange supported by rustls/AWS-LC, but
   device signatures are Ed25519. Supgang is not fully post-quantum.

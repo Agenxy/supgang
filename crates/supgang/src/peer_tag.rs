@@ -29,6 +29,7 @@ const PEER_TAG_VERSION: u16 = 1;
 const MAX_PEER_TAG_FILE_BYTES: u64 = 128 * 1024;
 const TEMPORARY_ATTEMPTS: usize = 8;
 const RESERVED_TAGS: &[&str] = &[
+    "advertise",
     "anchor",
     "doctor",
     "config",
@@ -47,8 +48,11 @@ const RESERVED_TAGS: &[&str] = &[
     "run",
     "service",
     "status",
+    "supervise",
     "tag",
     "untag",
+    "unadvertise",
+    "update",
 ];
 
 /// A shell-friendly local nickname that never replaces a stable node ID.
@@ -91,6 +95,18 @@ impl PeerTag {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Parses an existing tag for reading or removal, including a command name
+    /// that became reserved after the tag was originally created.
+    ///
+    /// # Errors
+    /// Rejects malformed text; this does not authorize adding a reserved tag.
+    pub fn existing(value: &str) -> Result<Self, PeerTagError> {
+        match Self::new(value) {
+            Err(PeerTagError::ReservedTag) => Ok(Self(value.to_owned())),
+            result => result,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for PeerTag {
@@ -99,7 +115,7 @@ impl<'de> Deserialize<'de> for PeerTag {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(serde::de::Error::custom)
+        Self::existing(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -227,6 +243,7 @@ pub fn load(state_directory: &Path) -> Result<PeerTags, PeerTagError> {
 /// Rejects invalid or conflicting tags, unsafe storage, concurrent mutation,
 /// configured limits, and persistence failures.
 pub fn add(state_directory: &Path, node_id: NodeId, tag: PeerTag) -> Result<PeerTagMutation, PeerTagError> {
+    let tag = PeerTag::new(tag.0)?;
     let (directory, _lock) = PeerTagLock::acquire(state_directory)?;
     let path = directory.join(PEER_TAG_FILE_NAME);
     let mut document = load_document(&path)?;
@@ -458,6 +475,26 @@ mod tests {
         for invalid in ["", "two words", "-flag", "end-", "lookalаike", "status"] {
             assert!(PeerTag::new(invalid).is_err(), "accepted {invalid}");
         }
+    }
+
+    #[test]
+    fn formerly_allowed_command_tags_remain_readable_and_removable() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("state");
+        drop(state::initialize(&path)?);
+        let node = NodeId::from_bytes([1; 32]);
+        let document = serde_json::json!({"version": 1, "tags": {node.to_string(): ["update"]}});
+        let file = path.join(PEER_TAG_FILE_NAME);
+        fs::write(&file, serde_json::to_vec(&document)?)?;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600))?;
+        assert_eq!(load(&path)?.find("update"), Some(node));
+        assert!(matches!(
+            add(&path, node, PeerTag::existing("update")?),
+            Err(PeerTagError::ReservedTag)
+        ));
+        assert!(remove(&path, PeerTag::existing("update")?)?.changed);
+        assert!(load(&path)?.find("update").is_none());
+        Ok(())
     }
 
     #[test]

@@ -73,10 +73,11 @@ pub fn peer(
     output: &mut dyn Write,
     error: &mut dyn Write,
 ) -> ExitCode {
-    let result = match peers_snapshot(state_directory) {
+    let mut result = match peers_snapshot(state_directory) {
         Ok(result) => result,
         Err(message) => return render_error(json, &message, output, error),
     };
+    result.peers.extend(result.this_computer.take());
     let matches = match cli_peer::selector_matches_from_rows(&result.peers, selector) {
         Ok(matches) if !matches.is_empty() => matches,
         Ok(_) => {
@@ -233,7 +234,7 @@ fn peers_snapshot(state_directory: &Path) -> Result<cli_peer::PeersOutput, Strin
         Ok(Some(ControlReply::Peers { value })) => value,
         Ok(Some(ControlReply::Error { message })) => return Err(message),
         Ok(Some(_)) => return Err("local service returned an unexpected response".to_owned()),
-        Ok(None) => cli_peer::peers(state_directory)?,
+        Ok(None) => cli_peer::peers_read_only(state_directory)?,
         Err(control_error) => return Err(control_error.to_string()),
     };
     cli_peer::apply_tags(state_directory, &mut result)?;
@@ -322,7 +323,15 @@ fn render_peer_matches_human(selector: &str, matches: &[PeerMatchOutput<'_>], ou
     }
     let mut hidden = 0;
     for matched in matches {
-        if render_computer(matched.peer, false, false, output, &mut hidden).is_err() {
+        if render_computer(
+            matched.peer,
+            matches!(matched.peer.status.as_str(), "running" | "stopped"),
+            false,
+            output,
+            &mut hidden,
+        )
+        .is_err()
+        {
             return ExitCode::from(EXIT_FAILURE);
         }
     }
@@ -363,7 +372,11 @@ fn render_computer(
         return render_all_addresses(computer, output);
     }
     let shown = compact_addresses(&computer.addresses);
-    if shown.is_empty() {
+    if computer.connected == Some(true)
+        && let Some(connection) = &computer.connection
+    {
+        writeln!(output, "  using  {} (current connection)", connection.remote_address)?;
+    } else if shown.is_empty() {
         if computer.addresses.is_empty() {
             writeln!(output, "  no current address")?;
         } else {
@@ -395,6 +408,12 @@ fn render_services(computer: &cli_peer::PeerRow, output: &mut dyn Write) -> std:
 }
 
 fn peer_status_label(computer: &cli_peer::PeerRow) -> &str {
+    match computer.status.as_str() {
+        "revoked" => return "revoked",
+        "equivocation" => return "conflicting signed records",
+        "expired" => return "saved address expired",
+        _ => {}
+    }
     match computer.connected {
         Some(true) => "connected",
         Some(false) => "not connected",
@@ -408,6 +427,11 @@ fn peer_status_label(computer: &cli_peer::PeerRow) -> &str {
 }
 
 fn render_all_addresses(computer: &cli_peer::PeerRow, output: &mut dyn Write) -> std::io::Result<()> {
+    if computer.connected == Some(true)
+        && let Some(connection) = &computer.connection
+    {
+        writeln!(output, "  using  {} (current connection)", connection.remote_address)?;
+    }
     if computer.addresses.is_empty() {
         writeln!(output, "  no signed addresses")?;
     }

@@ -164,6 +164,19 @@ pub(super) fn prune_unauthorized(active: &mut BTreeMap<NodeId, ActiveConnection>
     }
 }
 
+pub(super) fn retire_unroutable(
+    active: &mut BTreeMap<NodeId, ActiveConnection>,
+    networks: &[crate::network::InterfaceNetwork],
+) {
+    active.retain(|_, connection| {
+        let compatible = crate::network::address_is_route_compatible(connection.remote_address(), networks);
+        if !compatible {
+            connection.invalidate(b"network route changed");
+        }
+        compatible
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, net::SocketAddr, time::Duration};

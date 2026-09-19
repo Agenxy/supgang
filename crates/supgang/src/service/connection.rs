@@ -16,24 +16,16 @@ use super::{CANDIDATE_RACE_DELAY_MILLIS, CONNECT_TIMEOUT_SECONDS, SESSION_TIMEOU
 pub(super) async fn dial_peer(
     endpoint: &Endpoint,
     authentication: &SessionAuthentication<'_>,
-    expected: &PeerContact,
-    allowed_addresses: &[SocketAddr],
+    candidates: &[(PeerContact, SocketAddr)],
 ) -> Option<(AuthenticatedExchange, Connection)> {
     let local_networks = network::interface_networks().unwrap_or_default();
-    let addresses = allowed_addresses
+    let candidates = candidates
         .iter()
-        .copied()
-        .filter(|address| route_compatible_address(*address, &local_networks))
+        .filter(|(_, address)| network::address_is_route_compatible(*address, &local_networks))
+        .map(|(expected, address)| (expected, *address))
         .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
         .collect::<Vec<_>>();
-    dial_addresses(endpoint, authentication, expected, &addresses).await
-}
-
-fn route_compatible_address(address: SocketAddr, networks: &[network::InterfaceNetwork]) -> bool {
-    let transport = CandidateTransport::QuicV1;
-    EndpointCandidate::new(CandidateKind::Local, transport, address)
-        .or_else(|_| EndpointCandidate::new(CandidateKind::Reflexive, transport, address))
-        .is_ok_and(|candidate| network::candidate_is_route_compatible(&candidate, networks))
+    dial_candidates(endpoint, authentication, &candidates).await
 }
 
 pub(super) async fn dial_observed_peer(
@@ -59,8 +51,21 @@ async fn dial_addresses(
     expected: &PeerContact,
     addresses: &[SocketAddr],
 ) -> Option<(AuthenticatedExchange, Connection)> {
+    let candidates = addresses
+        .iter()
+        .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
+        .map(|address| (expected, *address))
+        .collect::<Vec<_>>();
+    dial_candidates(endpoint, authentication, &candidates).await
+}
+
+async fn dial_candidates(
+    endpoint: &Endpoint,
+    authentication: &SessionAuthentication<'_>,
+    candidates: &[(&PeerContact, SocketAddr)],
+) -> Option<(AuthenticatedExchange, Connection)> {
     let mut attempts = tokio::task::JoinSet::new();
-    for (index, address) in addresses
+    for (index, (expected, address)) in candidates
         .iter()
         .copied()
         .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
@@ -71,16 +76,18 @@ async fn dial_addresses(
         attempts.spawn(async move {
             tokio::time::sleep(candidate_race_delay(index)).await;
             let connecting = endpoint.connect_with(client_config, address, "supgang.invalid").ok()?;
-            tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS), connecting)
+            let connection = tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS), connecting)
                 .await
                 .ok()?
-                .ok()
+                .ok()?;
+            Some((index, connection))
         });
     }
     while let Some(joined) = attempts.join_next().await {
-        let Ok(Some(connection)) = joined else {
+        let Ok(Some((index, connection))) = joined else {
             continue;
         };
+        let (expected, _) = candidates.get(index)?;
         let result = tokio::time::timeout(
             Duration::from_secs(SESSION_TIMEOUT_SECONDS),
             outbound_session(&connection, authentication, expected),
@@ -190,3 +197,6 @@ pub(super) struct SessionAuthentication<'a> {
     pub(super) revocations: &'a crate::revocation::SignedRevocationList,
     pub(super) page: &'a SyncPage,
 }
+
+#[cfg(test)]
+mod tests;

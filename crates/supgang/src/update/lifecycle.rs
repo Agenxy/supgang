@@ -388,7 +388,7 @@ fn read_record(path: &Path) -> Result<Option<SlotRecord>, UpdateError> {
     Ok(Some(record))
 }
 
-fn prune_slots(updates: &Path) -> Result<(), UpdateError> {
+pub(super) fn prune_slots(updates: &Path) -> Result<(), UpdateError> {
     let slots = ensure_child(updates, super::SLOTS_DIRECTORY)?;
     let mut keep = BTreeSet::new();
     for name in [ACTIVE_FILE, PREVIOUS_FILE, STAGED_FILE, PENDING_FILE] {

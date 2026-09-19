@@ -4,6 +4,12 @@ Date: 2026-08-19
 
 Result: **not accepted end to end**
 
+Correction, 2026-09-17: the observations below remain historical evidence, but the conclusion that
+this failure proved connection impossible is superseded. Later investigation found retry and
+candidate-selection bugs and demonstrated conditional IPv4 recovery. See
+[the recovery investigation](../research/2026-09-17-dual-stack-two-device.md). A timeout or the lack
+of a signed public candidate does not exclude a usable remembered or authenticated observed route.
+
 This record deliberately separates laptop-side correctness from the product's required physical
 Laptop A-to-Home B wide-area acceptance. No public or private IP address is retained here.
 

@@ -4,6 +4,47 @@ use std::time::Duration;
 
 use crate::ids::HiveId;
 
+pub(super) fn should_attempt_peer(
+    active: &std::collections::BTreeMap<crate::ids::NodeId, super::active::ActiveConnection>,
+    peer: crate::ids::NodeId,
+) -> bool {
+    // A receiver behind a stateful firewall may need its own outbound packet
+    // before any peer packet can enter. Identity ordering selects the retained
+    // connection, never which device is allowed to participate in recovery.
+    !active.contains_key(&peer)
+}
+
+/// Keeps the preferred path and the other address family in every mixed batch.
+/// Rotates the remaining hints within the same fixed packet-attempt budget.
+pub(super) fn candidate_batch(addresses: &[std::net::SocketAddr], cycle: usize) -> Vec<std::net::SocketAddr> {
+    let limit = crate::network::MAX_DIAL_CANDIDATES_PER_ROUND;
+    let Some(first) = addresses.first().copied() else {
+        return Vec::new();
+    };
+    let other_family = addresses
+        .iter()
+        .position(|address| address.is_ipv4() != first.is_ipv4());
+    let mut batch = vec![first];
+    if let Some(address) = other_family.and_then(|index| addresses.get(index)) {
+        batch.push(*address);
+    }
+    let tail = addresses
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 0 && Some(*index) != other_family)
+        .map(|(_, address)| *address)
+        .collect::<Vec<_>>();
+    let slots = limit.saturating_sub(batch.len());
+    let remaining = tail.len();
+    if remaining <= slots {
+        batch.extend(tail);
+    } else {
+        let offset = (cycle % remaining) * slots % remaining;
+        batch.extend((0..slots).filter_map(|index| tail.get((offset + index) % remaining).copied()));
+    }
+    batch
+}
+
 /// Returns the next shared hive retry boundary after `now`.
 pub(super) fn aligned_retry_delay(hive: HiveId, now: Duration, interval: Duration) -> Duration {
     let interval_millis = interval.as_millis().max(1);
@@ -53,7 +94,7 @@ fn hive_offset_seed(hive: HiveId) -> u64 {
 mod tests {
     use std::time::Duration;
 
-    use super::{aligned_retry_delay, next_service_wait, retry_epoch};
+    use super::{aligned_retry_delay, candidate_batch, next_service_wait, retry_epoch};
     use crate::ids::HiveId;
 
     #[test]
@@ -75,6 +116,59 @@ mod tests {
         let first = aligned_retry_delay(HiveId::from_bytes([1; 32]), now, interval);
         let second = aligned_retry_delay(HiveId::from_bytes([2; 32]), now, interval);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn every_candidate_gets_a_bounded_attempt_including_the_tail() {
+        for count in 0_u16..=128 {
+            let addresses = (1..=count)
+                .map(|port| std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+                .collect::<Vec<_>>();
+            let mut seen = std::collections::BTreeSet::new();
+            for cycle in 0..usize::from(count).max(1) {
+                let batch = candidate_batch(&addresses, cycle);
+                assert!(batch.len() <= crate::network::MAX_DIAL_CANDIDATES_PER_ROUND);
+                assert_eq!(batch.first(), addresses.first());
+                assert_eq!(
+                    batch.iter().collect::<std::collections::BTreeSet<_>>().len(),
+                    batch.len()
+                );
+                seen.extend(batch);
+            }
+            assert_eq!(seen, addresses.into_iter().collect());
+        }
+    }
+
+    #[test]
+    fn both_address_families_participate_in_every_mixed_retry() -> Result<(), Box<dyn std::error::Error>> {
+        for reverse in [false, true] {
+            let mut addresses = (1..=7)
+                .map(|port| std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)))
+                .collect::<Vec<_>>();
+            addresses.push("127.0.0.1:100".parse()?);
+            if reverse {
+                addresses.reverse();
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for cycle in 0..32 {
+                let batch = candidate_batch(&addresses, cycle);
+                assert!(batch.len() <= crate::network::MAX_DIAL_CANDIDATES_PER_ROUND);
+                assert_eq!(
+                    batch.iter().collect::<std::collections::BTreeSet<_>>().len(),
+                    batch.len()
+                );
+                assert_eq!(batch.first(), addresses.first());
+                assert!(batch.iter().any(std::net::SocketAddr::is_ipv4));
+                assert!(batch.iter().any(std::net::SocketAddr::is_ipv6));
+                assert_ne!(
+                    batch.first().map(std::net::SocketAddr::is_ipv4),
+                    batch.get(1).map(std::net::SocketAddr::is_ipv4)
+                );
+                seen.extend(batch);
+            }
+            assert_eq!(seen, addresses.into_iter().collect());
+        }
+        Ok(())
     }
 
     #[tokio::test]

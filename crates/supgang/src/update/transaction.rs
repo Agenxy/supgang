@@ -18,19 +18,63 @@ pub async fn verify_and_stage(state_directory: &Path, bundle: &Path) -> Result<S
 pub async fn verify_and_stage_locked(
     state_directory: &Path,
     bundle: &Path,
-    _lock: UpdateLock,
+    lock: UpdateLock,
 ) -> Result<StagedUpdate, UpdateError> {
+    run_transaction(state_directory, bundle, lock, None).await
+}
+
+pub async fn verify_incoming(
+    state_directory: &Path,
+    incoming: super::carriage::IncomingBundle,
+    lock: UpdateLock,
+) -> Result<StagedUpdate, UpdateError> {
+    let path = incoming.path.clone();
+    run_transaction(state_directory, &path, lock, Some(incoming)).await
+}
+
+async fn run_transaction(
+    state_directory: &Path,
+    bundle: &Path,
+    lock: UpdateLock,
+    incoming: Option<super::carriage::IncomingBundle>,
+) -> Result<StagedUpdate, UpdateError> {
+    let state_directory = state_directory.to_path_buf();
+    let bundle = bundle.to_path_buf();
+    run_owned(lock, incoming, move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(transaction(&state_directory, &bundle))
+    })
+    .await
+}
+
+async fn run_owned(
+    lock: UpdateLock,
+    incoming: Option<super::carriage::IncomingBundle>,
+    operation: impl FnOnce() -> Result<StagedUpdate, UpdateError> + Send + 'static,
+) -> Result<StagedUpdate, UpdateError> {
+    // Cancellation of a network actor must not release a lock while its
+    // blocking materializer still runs or abandon authenticated trust progress.
+    // The file-only transaction owns its lock, runtime and cleanup to completion.
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock;
+        let _incoming = incoming;
+        operation()
+    })
+    .await
+    .map_err(|_| UpdateError::InvalidBundle)?
+}
+
+async fn transaction(state_directory: &Path, bundle: &Path) -> Result<StagedUpdate, UpdateError> {
     if super::lifecycle::activation_pending(state_directory)? {
         return Err(UpdateError::Busy);
     }
     recover_stale_work(state_directory)?;
-    let state_directory = state_directory.to_path_buf();
-    let bundle = bundle.to_path_buf();
-    let materialized = tokio::task::spawn_blocking(move || materialize_bundle(&state_directory, &bundle))
-        .await
-        .map_err(|_| UpdateError::InvalidBundle)??;
+    let updates = super::updates_directory(state_directory, true)?;
+    super::lifecycle::prune_slots(&updates)?;
+    let materialized = materialize_bundle(state_directory, bundle)?;
     let result = verify_materialized(&materialized).await;
-    let cleanup = remove_work_directory(&materialized.work_directory);
+    let cleanup =
+        remove_work_directory(&materialized.work_directory).and_then(|()| super::lifecycle::prune_slots(&updates));
     match (result, cleanup) {
         (Ok(staged), Ok(())) => Ok(staged),
         (Err(error), _) | (Ok(_), Err(error)) => Err(error),
@@ -64,3 +108,6 @@ fn recover_stale_work(state_directory: &Path) -> Result<(), UpdateError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

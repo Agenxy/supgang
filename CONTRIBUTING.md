@@ -31,7 +31,7 @@ replaceable and disabled unless deliberately configured.
 Run focused tests while iterating, then the complete gate:
 
 ```text
-cargo test --locked --package supgang TEST_NAME
+cargo test --locked --package supgang-core TEST_NAME
 make check
 cargo build --locked --workspace --release
 target/release/supgang --version
@@ -41,6 +41,11 @@ Protocol or service changes also need a real multi-process test. Exercise startu
 state-owner CLI access, interruption, restart, and the relevant failure path. Report the exact
 platform and any target not tested.
 
+The [network test lab design](docs/architecture/0002-network-test-lab.md) selects K7-managed
+macOS and Linux guests for repeatable network-transition testing. That integration is not yet
+an implemented acceptance gate. Keep model, Linux-kernel, macOS-guest, and physical-WAN
+evidence separate; neither an isolation flag nor a successful local test proves WAN recovery.
+
 ## Dependency changes
 
 Prefer no new dependency. When one is necessary:
@@ -48,12 +53,13 @@ Prefer no new dependency. When one is necessary:
 1. Verify the current stable version from its primary source.
 2. Pin it exactly and disable unused default features.
 3. Inspect normal, build, development, macOS, and Linux graphs.
-4. Run RustSec and licence checks with no ignored result:
+4. Run RustSec and licence checks. The only allowed advisory exception is the existing
+   maintenance-only `RUSTSEC-2024-0436`, explained in `docs/security/dependency-exceptions.md`:
 
    ```text
    cargo install --locked --version 0.22.2 cargo-audit
    cargo install --locked --version 0.20.2 cargo-deny
-   cargo audit --deny warnings
+   cargo audit --deny warnings --ignore RUSTSEC-2024-0436
    cargo deny check advisories licenses sources
    ```
 

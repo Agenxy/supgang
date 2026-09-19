@@ -42,7 +42,7 @@ rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_r
 tokio = { version = "=1.53.1", default-features = false, features = ["io-std", "io-util", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "=0.7.19", default-features = false, features = ["io"] }
 toml = { version = "=1.1.4", default-features = false, features = ["display", "parse", "serde", "std"] }
-supgang-acl = { path = "crates/supgang-acl" }
+supgang-acl = { path = "crates/supgang-acl", version = "=0.2.0-alpha.10" }
 
 [workspace.lints.rust]
 warnings = "deny"

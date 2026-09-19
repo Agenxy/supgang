@@ -42,6 +42,8 @@ enum AutomaticRefresh {
 pub(super) struct RouterMappingUpdateBudget {
     window_started: tokio::time::Instant,
     updates: u8,
+    published: Option<RouterMappingStatus>,
+    renew_at: tokio::time::Instant,
 }
 
 impl RouterMappingUpdateBudget {
@@ -49,6 +51,8 @@ impl RouterMappingUpdateBudget {
         Self {
             window_started: now,
             updates: 0,
+            published: None,
+            renew_at: now,
         }
     }
 
@@ -69,8 +73,25 @@ impl RouterMappingUpdateBudget {
         mapping: &mut RouterMapping,
         now: tokio::time::Instant,
     ) -> Option<RouterMappingStatus> {
-        let changed = mapping.take_change()?;
-        self.allow(now).then_some(changed)
+        // Observe the watch to clear network-refresh state, but retain the
+        // latest mapping in the mapper when publication is rate limited.
+        let _change = mapping.take_change();
+        self.observe(mapping.status(), now)
+    }
+
+    fn observe(&mut self, latest: RouterMappingStatus, now: tokio::time::Instant) -> Option<RouterMappingStatus> {
+        let mapped = matches!(latest, RouterMappingStatus::Mapped(_));
+        if self.published == Some(latest) && (!mapped || now < self.renew_at) {
+            return None;
+        }
+        // Withdrawal is never delayed. Stable valid leases need fresh signed
+        // claims too, even when their external address has not changed.
+        if mapped && !self.allow(now) {
+            return None;
+        }
+        self.published = Some(latest);
+        self.renew_at = now + ROUTER_MAPPING_UPDATE_WINDOW;
+        Some(latest)
     }
 }
 
@@ -231,6 +252,42 @@ fn bound_interface_candidates(local: &mut Vec<EndpointCandidate>, direct: &mut V
 #[cfg(test)]
 mod tests {
     use super::{MAX_ROUTER_MAPPING_UPDATES_PER_WINDOW, ROUTER_MAPPING_UPDATE_WINDOW, RouterMappingUpdateBudget};
+    use crate::router_mapping::RouterMappingStatus;
+
+    #[test]
+    fn unchanged_mapping_renews_before_its_claim_expires() {
+        let now = tokio::time::Instant::now();
+        let mut budget = RouterMappingUpdateBudget::new(now);
+        let mapped =
+            RouterMappingStatus::Mapped(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(8, 8, 8, 8), 4433));
+        assert_eq!(budget.observe(mapped, now), Some(mapped));
+        assert_eq!(budget.observe(mapped, now), None);
+        assert_eq!(budget.observe(mapped, now + ROUTER_MAPPING_UPDATE_WINDOW), Some(mapped));
+        assert_eq!(
+            budget.observe(mapped, now + ROUTER_MAPPING_UPDATE_WINDOW * 2),
+            Some(mapped)
+        );
+    }
+
+    #[test]
+    fn rate_limit_coalesces_latest_mapping_and_never_delays_withdrawal() {
+        let now = tokio::time::Instant::now();
+        let mut budget = RouterMappingUpdateBudget::new(now);
+        let mapping =
+            |port| RouterMappingStatus::Mapped(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(8, 8, 8, 8), port));
+        for port in 1..=4 {
+            assert_eq!(budget.observe(mapping(port), now), Some(mapping(port)));
+        }
+        assert_eq!(budget.observe(mapping(5), now), None);
+        assert_eq!(
+            budget.observe(mapping(6), now + ROUTER_MAPPING_UPDATE_WINDOW),
+            Some(mapping(6))
+        );
+        assert_eq!(
+            budget.observe(RouterMappingStatus::Unavailable, now),
+            Some(RouterMappingStatus::Unavailable)
+        );
+    }
 
     #[test]
     fn gateway_mapping_signature_churn_has_a_fixed_rate() {

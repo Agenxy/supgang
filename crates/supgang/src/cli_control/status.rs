@@ -49,10 +49,10 @@ pub fn status(state_directory: &Path, json: bool, output: &mut dyn Write, error:
         Ok(None) => {}
         Err(control_error) => return render_error(json, &control_error.to_string(), output, error),
     }
-    match state::open(state_directory) {
+    match state::open_read_only(state_directory) {
         Ok(state) => {
             let node_id = state.identity().device.node_id();
-            let name = match crate::profile::load_or_create(state_directory, node_id) {
+            let name = match crate::profile::load(state_directory) {
                 Ok(name) => name,
                 Err(profile_error) => return render_error(json, &profile_error.to_string(), output, error),
             };
@@ -171,7 +171,18 @@ fn human_reachability(reachability: &str) -> &str {
         "direct-address-unverified" => "a public interface is configured; no peer has confirmed it",
         "peer-reported-address" => "another authenticated computer reported this address; return traffic is unproved",
         "device-claimed-address" => "this computer claims a public address; independent reachability is unproved",
-        "local-only" => "local network only; no usable Internet path",
+        "local-only" => "no public address learned yet; outgoing connections may still work",
         _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn missing_public_address_does_not_claim_internet_is_unavailable() {
+        assert_eq!(
+            super::human_reachability("local-only"),
+            "no public address learned yet; outgoing connections may still work"
+        );
     }
 }

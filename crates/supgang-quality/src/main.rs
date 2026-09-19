@@ -13,6 +13,8 @@ const EXIT_FAILURE: u8 = 1;
 const MAX_SOURCE_LINES: usize = 700;
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 
+mod acceptance;
+
 fn main() -> ExitCode {
     let mut output = io::stdout().lock();
     let mut error = io::stderr().lock();
@@ -69,6 +71,7 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
                 output,
                 error,
             )?;
+            acceptance::run(&root, output, error)?;
             writeln!(output, "Supgang quality gates passed.").map_err(|write_error| write_error.to_string())?;
             Ok(())
         }
@@ -296,7 +299,11 @@ fn inspect_workspace_dependencies(root: &Path) -> Result<(), String> {
 
 fn inspect_package_identity(root: &Path) -> Result<(), String> {
     let root_license = fs::read_to_string(root.join("LICENSE")).map_err(|read_error| read_error.to_string())?;
-    for packaged_license in ["crates/supgang/LICENSE", "crates/supgang-cli/LICENSE"] {
+    for packaged_license in [
+        "crates/supgang/LICENSE",
+        "crates/supgang-cli/LICENSE",
+        "crates/supgang-acl/LICENSE",
+    ] {
         let packaged = fs::read_to_string(root.join(packaged_license)).map_err(|read_error| read_error.to_string())?;
         if packaged != root_license {
             return Err(format!(

@@ -1,0 +1,44 @@
+{
+  "id": "supgang-netlab-probe",
+  "isolated": false,
+  "placement": {"mobility": "pinned", "per_host_max_runners": 1},
+  "nodes": [
+    {
+      "id": "supgang-netlab-probe-kernel",
+      "kassette": {
+        "id": "supgang-netlab-probe-kernel",
+        "name": "supgang-netlab-probe-kernel",
+        "provider": "apple_container",
+        "image": "docker.io/library/debian@sha256:7215f78f35ffe58fe13f244fac9c4f21326d55187271fbb3e1a8aa5cc7e387ab",
+        "entrypoint": "/usr/bin/unshare",
+        "command": [
+          "--user", "--map-root-user", "--net", "--mount", "--pid",
+          "--fork", "--kill-child=KILL", "--mount-proc",
+          "/usr/bin/cat", "/proc/net/dev", "/proc/self/uid_map"
+        ],
+        "env": {},
+        "env_inherit": [],
+        "publish": [],
+        "publish_sockets": [],
+        "volumes": [],
+        "services": {},
+        "ssh_agent": false,
+        "no_dns": true,
+        "read_only_rootfs": true,
+        "detach": false,
+        "keep_container": false,
+        "restart_policy": "no",
+        "isolation": {"kind": "ephemeral_container"},
+        "labels": ["supgang.lab=infrastructure-probe", "supgang.lab.peer-count=0"],
+        "limits": {
+          "cpu": 1,
+          "memory_bytes": 268435456,
+          "disk_bytes": 1073741824,
+          "wall_time_seconds": 30
+        }
+      }
+    }
+  ],
+  "panels": [],
+  "connections": []
+}

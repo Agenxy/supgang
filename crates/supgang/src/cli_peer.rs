@@ -147,22 +147,6 @@ pub fn import(state_directory: &Path, input_path: &Path) -> Result<ImportOutput,
     })
 }
 
-pub fn peers(state_directory: &Path) -> Result<PeersOutput, String> {
-    let local_state = state::open(state_directory).map_err(|error| error.to_string())?;
-    let root_key = local_state.identity().root_verifying_key;
-    let this_computer = stopped_local_row(state_directory, &local_state)?;
-    let directory = PeerDirectory::open(
-        state_directory,
-        root_key,
-        local_state.identity().device.node_id(),
-        local_state.revocations(),
-    )
-    .map_err(|error| error.to_string())?;
-    let mut result = peers_from_directory(&directory, &root_key, unix_time()?, this_computer);
-    apply_tags(state_directory, &mut result)?;
-    Ok(result)
-}
-
 /// Reads the peer summary without creating a missing local profile.
 pub fn peers_read_only(state_directory: &Path) -> Result<PeersOutput, String> {
     let local_state = state::open_read_only(state_directory).map_err(|error| error.to_string())?;
@@ -191,8 +175,12 @@ pub fn resolve_read_only(state_directory: &Path, selector: &str) -> Result<Resol
     )
     .map_err(|error| error.to_string())?;
     let mut rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
+    rows.push(stopped_local_row_read_only(state_directory, &local_state)?);
     apply_tags_to_rows(state_directory, &mut rows)?;
     let node_id = resolve_selector_from_rows(&rows, selector)?;
+    if node_id == local_state.identity().device.node_id() {
+        return Err("this computer's service is stopped; start it to resolve its advertised addresses".to_owned());
+    }
     let mut result = resolve_from_directory(&directory, node_id, unix_time()?)?;
     apply_tags_to_resolve(state_directory, &mut result)?;
     Ok(result)
@@ -244,6 +232,7 @@ fn peer_rows_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, 
                 fingerprint: short_fingerprint(*node_id),
                 node_id: node_id.to_string(),
                 connected: None,
+                connection: None,
                 status: status.to_owned(),
                 generation: record.generation,
                 sequence: record.sequence,
@@ -256,10 +245,17 @@ fn peer_rows_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, 
         .collect()
 }
 
-pub fn running_local_row(contact: &PeerContact) -> PeerRow {
+pub fn running_local_row(contact: &PeerContact, directory: &PeerDirectory, now: u64) -> PeerRow {
     let record = &contact.endpoint.record;
     let local_networks = crate::network::interface_networks().unwrap_or_default();
-    let preferred_index = self_preferred_index(&record.candidates, &local_networks);
+    let addresses = resolved_peer_candidates(
+        directory,
+        record.node_id,
+        &record.candidates,
+        &local_networks,
+        now,
+        true,
+    );
     PeerRow {
         name: record.display_name.as_ref().map_or_else(
             || format!("computer-{}", short_fingerprint(record.node_id)),
@@ -270,12 +266,13 @@ pub fn running_local_row(contact: &PeerContact) -> PeerRow {
         fingerprint: short_fingerprint(record.node_id),
         node_id: record.node_id.to_string(),
         connected: Some(true),
+        connection: None,
         status: "running".to_owned(),
         generation: record.generation,
         sequence: record.sequence,
         expires_at: record.expires_at,
-        candidate_count: record.candidates.len(),
-        addresses: resolved_with_preference(&record.candidates, preferred_index, "device-signed", &local_networks),
+        candidate_count: addresses.len(),
+        addresses,
         services: record.services.iter().map(Into::into).collect(),
     }
 }
@@ -304,21 +301,14 @@ pub fn resolve_local(contact: &PeerContact) -> ResolveOutput {
     }
 }
 
+pub fn resolve_local_live(contact: &PeerContact, directory: &PeerDirectory, now: u64) -> ResolveOutput {
+    let mut result = resolve_local(contact);
+    result.candidates = running_local_row(contact, directory, now).addresses;
+    result
+}
+
 pub fn resolve(state_directory: &Path, selector: &str) -> Result<ResolveOutput, String> {
-    let local_state = state::open(state_directory).map_err(|error| error.to_string())?;
-    let directory = PeerDirectory::open(
-        state_directory,
-        local_state.identity().root_verifying_key,
-        local_state.identity().device.node_id(),
-        local_state.revocations(),
-    )
-    .map_err(|error| error.to_string())?;
-    let mut rows = peer_rows_from_directory(&directory, &local_state.identity().root_verifying_key, unix_time()?);
-    apply_tags_to_rows(state_directory, &mut rows)?;
-    let node_id = resolve_selector_from_rows(&rows, selector)?;
-    let mut result = resolve_from_directory(&directory, node_id, unix_time()?)?;
-    apply_tags_to_resolve(state_directory, &mut result)?;
-    Ok(result)
+    resolve_read_only(state_directory, selector)
 }
 
 pub fn resolve_from_directory(directory: &PeerDirectory, node_id: NodeId, now: u64) -> Result<ResolveOutput, String> {
@@ -557,13 +547,6 @@ pub fn apply_tags_to_resolve(state_directory: &Path, result: &mut ResolveOutput)
     Ok(())
 }
 
-fn stopped_local_row(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
-    let node_id = local_state.identity().device.node_id();
-    let name = profile::load_or_create(state_directory, node_id).map_err(|error| error.to_string())?;
-    let services = profile::services(state_directory).map_err(|error| error.to_string())?;
-    Ok(stopped_local_row_with_name(local_state, &name, &services))
-}
-
 fn stopped_local_row_read_only(state_directory: &Path, local_state: &state::LocalState) -> Result<PeerRow, String> {
     let name = profile::load(state_directory).map_err(|error| error.to_string())?;
     let services = profile::services(state_directory).map_err(|error| error.to_string())?;
@@ -576,11 +559,6 @@ fn stopped_local_row_with_name(
     services: &[crate::record::ServiceAdvert],
 ) -> PeerRow {
     let node_id = local_state.identity().device.node_id();
-    let candidates = EndpointConfig::automatic(crate::endpoint_config::DEFAULT_PORT)
-        .map(|config| candidates_from_config(&config))
-        .unwrap_or_default();
-    let local_networks = crate::network::interface_networks().unwrap_or_default();
-    let preferred_index = self_preferred_index(&candidates, &local_networks);
     PeerRow {
         name: name.to_string(),
         name_source: "local-profile".to_owned(),
@@ -588,28 +566,15 @@ fn stopped_local_row_with_name(
         fingerprint: short_fingerprint(node_id),
         node_id: node_id.to_string(),
         connected: None,
+        connection: None,
         status: "stopped".to_owned(),
         generation: local_state.generation(),
         sequence: local_state.sequence(),
         expires_at: 0,
-        candidate_count: candidates.len(),
-        addresses: resolved_with_preference(&candidates, preferred_index, "local-interface", &local_networks),
+        candidate_count: 0,
+        addresses: Vec::new(),
         services: services.iter().map(Into::into).collect(),
     }
-}
-
-fn candidates_from_config(config: &EndpointConfig) -> Vec<EndpointCandidate> {
-    config
-        .local()
-        .iter()
-        .filter_map(|address| EndpointCandidate::new(CandidateKind::Local, CandidateTransport::QuicV1, *address).ok())
-        .chain(config.direct().iter().filter_map(|address| {
-            EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, *address).ok()
-        }))
-        .chain(config.mapped().iter().filter_map(|address| {
-            EndpointCandidate::new(CandidateKind::Mapped, CandidateTransport::QuicV1, *address).ok()
-        }))
-        .collect()
 }
 
 fn self_preferred_index(candidates: &[EndpointCandidate], local_networks: &[InterfaceNetwork]) -> Option<usize> {

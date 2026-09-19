@@ -66,7 +66,7 @@ impl EndpointConfig {
         if port == 0 {
             return Err("automatic endpoint port must not be zero".to_owned());
         }
-        let networks = crate::network::interface_networks().map_err(|error| error.to_string())?;
+        let networks = crate::network::automatic_interface_networks().map_err(|error| error.to_string())?;
         let mut local = BTreeSet::new();
         let mut direct = BTreeSet::new();
         for network in networks {

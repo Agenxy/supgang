@@ -297,7 +297,8 @@ fn resolve_data(state_directory: &Path, selector: &str) -> Result<cli_peer::Reso
     let node_id = if let Ok(node_id) = NodeId::from_str(selector) {
         node_id
     } else {
-        let fleet = fleet_data(state_directory)?;
+        let mut fleet = fleet_data(state_directory)?;
+        fleet.peers.extend(fleet.this_computer.take());
         cli_peer::resolve_selector_from_rows(&fleet.peers, selector)?
     };
     let mut resolution = match control::request(state_directory, ControlRequest::Resolve(node_id)) {

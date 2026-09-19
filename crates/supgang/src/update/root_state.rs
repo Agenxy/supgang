@@ -8,12 +8,13 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tough::schema::{Role, Root, Signed};
+use tough::schema::{Role, RoleType, Root, Signed};
 
 use super::{MAX_METADATA_BYTES, TRUSTED_ROOT_FILE, UpdateError, artifact, create_new_owner_file};
 
 const ROOT_STATE_FILE: &str = "root-state.json";
-const ROOT_STATE_SCHEMA: &str = "supgang.tuf-root-state/v1";
+const ROOT_STATE_SCHEMA: &str = "supgang.tuf-root-state/v2";
+const LEGACY_ROOT_STATE_SCHEMA: &str = "supgang.tuf-root-state/v1";
 const MAX_ROOT_STATE_BYTES: u64 = MAX_METADATA_BYTES * 2 + 4 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -23,12 +24,56 @@ pub(super) struct RootState {
     bootstrap_sha256: String,
     current: Signed<Root>,
     previous: Option<Signed<Root>>,
+    #[serde(default)]
+    role_reset_version: u64,
 }
 
 impl RootState {
+    pub(super) const fn role_reset_version(&self) -> u64 {
+        self.role_reset_version
+    }
+    pub(super) const fn root(&self) -> &Signed<Root> {
+        &self.current
+    }
     pub(super) fn current_bytes(&self) -> Result<Vec<u8>, UpdateError> {
         serialize_root(&self.current)
     }
+}
+
+/// Root authority advances independently of target or later-role success.
+/// Each step uses the dependency's threshold verifier on both sides of the
+/// transition and is crash-atomically durable before the next step is read.
+pub(super) fn advance(updates: &Path, metadata: &Path) -> Result<RootState, UpdateError> {
+    let mut state = load(updates)?;
+    for step in 0..=super::MAX_ROOT_UPDATES {
+        let version = state
+            .current
+            .signed
+            .version
+            .get()
+            .checked_add(1)
+            .ok_or(UpdateError::Tuf)?;
+        let path = metadata.join(format!("{version}.root.json"));
+        match path.symlink_metadata() {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(state),
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
+        }
+        if step == super::MAX_ROOT_UPDATES {
+            return Err(UpdateError::Capacity);
+        }
+        let bytes = super::artifact_like_read(&path, MAX_METADATA_BYTES, 0o600)?;
+        let next: Signed<Root> = serde_json::from_slice(&bytes).map_err(|_| UpdateError::Tuf)?;
+        if next.signed.version.get() != version {
+            return Err(UpdateError::Tuf);
+        }
+        state.current.signed.verify_role(&next).map_err(|_| UpdateError::Tuf)?;
+        next.signed.verify_role(&next).map_err(|_| UpdateError::Tuf)?;
+        promote(updates, state, &next)?;
+        state = load(updates)?;
+    }
+    // Hitting the fixed work bound does not restore any retired authority.
+    Err(UpdateError::Capacity)
 }
 
 pub(super) fn pin(updates: &Path, bootstrap: &[u8], root: &Signed<Root>) -> Result<(), UpdateError> {
@@ -43,12 +88,13 @@ pub(super) fn pin(updates: &Path, bootstrap: &[u8], root: &Signed<Root>) -> Resu
         bootstrap_sha256: digest(bootstrap),
         current: root.clone(),
         previous: None,
+        role_reset_version: root.signed.version.get(),
     };
     let state_path = updates.join(ROOT_STATE_FILE);
     match fs::symlink_metadata(&state_path) {
         Ok(_) => {
             let existing = read_state(&state_path)?;
-            if existing.schema != expected.schema
+            if !matches!(existing.schema.as_str(), ROOT_STATE_SCHEMA | LEGACY_ROOT_STATE_SCHEMA)
                 || existing.bootstrap_sha256 != expected.bootstrap_sha256
                 || existing.previous.is_some()
                 || !same_root(&existing.current, &expected.current)?
@@ -94,11 +140,25 @@ pub(super) fn promote(updates: &Path, state: RootState, current: &Signed<Root>) 
         }
         return Ok(());
     }
+    if old_version.checked_add(1) != Some(new_version) {
+        return Err(UpdateError::InvalidTrustRoot);
+    }
+    state
+        .current
+        .signed
+        .verify_role(current)
+        .map_err(|_| UpdateError::InvalidTrustRoot)?;
+    let role_reset_version = if role_keys_changed(&state.current.signed, &current.signed) {
+        new_version
+    } else {
+        state.role_reset_version
+    };
     let promoted = RootState {
         schema: ROOT_STATE_SCHEMA.to_owned(),
         bootstrap_sha256: state.bootstrap_sha256,
         current: current.clone(),
         previous: Some(state.current),
+        role_reset_version,
     };
     let bootstrap = read_bootstrap(updates)?;
     let bootstrap_root = parse_root(&bootstrap)?;
@@ -132,13 +192,15 @@ fn read_state(path: &Path) -> Result<RootState, UpdateError> {
 }
 
 fn validate_state(state: &RootState, bootstrap: &[u8], bootstrap_root: &Signed<Root>) -> Result<(), UpdateError> {
-    if state.schema != ROOT_STATE_SCHEMA || state.bootstrap_sha256 != digest(bootstrap) {
+    if !matches!(state.schema.as_str(), ROOT_STATE_SCHEMA | LEGACY_ROOT_STATE_SCHEMA)
+        || state.bootstrap_sha256 != digest(bootstrap)
+    {
         return Err(UpdateError::InvalidTrustRoot);
     }
     validate_root(&state.current)?;
     let bootstrap_version = bootstrap_root.signed.version.get();
     let current_version = state.current.signed.version.get();
-    if current_version < bootstrap_version {
+    if current_version < bootstrap_version || state.role_reset_version > current_version {
         return Err(UpdateError::InvalidTrustRoot);
     }
     if current_version == bootstrap_version && !same_root(&state.current, bootstrap_root)? {
@@ -155,6 +217,12 @@ fn validate_state(state: &RootState, bootstrap: &[u8], bootstrap_root: &Signed<R
         None => {}
     }
     Ok(())
+}
+
+pub(super) fn role_keys_changed(old: &Root, new: &Root) -> bool {
+    [RoleType::Timestamp, RoleType::Snapshot]
+        .into_iter()
+        .any(|role| old.keys(role).ne(new.keys(role)))
 }
 
 fn parse_root(bytes: &[u8]) -> Result<Signed<Root>, UpdateError> {

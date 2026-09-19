@@ -58,11 +58,12 @@ use live_session::{
     LiveSessionState, SessionTaskResult, finish_ready_sessions, schedule_remembered_peer, schedule_rendezvous_offers,
 };
 use local_control::{
-    ControlView, PeerEventState, import_received, import_received_reachability, merge_received_revocations,
-    poll_control, process_peer_events, publish_gossip_if, revocation_listener, shutdown_receiver, stop_if_requested,
+    ControlActivity, ControlView, PeerEventState, import_received, import_received_reachability,
+    merge_received_revocations, poll_control_or_incoming, process_peer_events, publish_gossip_if, revocation_listener,
+    shutdown_receiver, stop_if_requested,
 };
 use peer_actor::{PeerActorRegistry, PeerUpdateContext, reap_ready_tasks, register_connection};
-use retry_schedule::{aligned_retry_delay, next_service_wait, retry_epoch};
+use retry_schedule::{aligned_retry_delay, next_service_wait, retry_epoch, should_attempt_peer};
 use update_delivery::UpdateDeliveryQueue;
 
 #[cfg(test)]
@@ -94,8 +95,6 @@ pub const MAX_PENDING_PRIORITY_INBOUND_SESSIONS: usize = 2;
 pub const MAX_PENDING_OUTBOUND_SESSIONS: usize = 8;
 /// Stagger between ranked connection candidates in one bounded race.
 pub const CANDIDATE_RACE_DELAY_MILLIS: u64 = 125;
-/// Retry rounds between secondary-direction recovery probes.
-pub const SECONDARY_RECOVERY_CADENCE: usize = 4;
 /// Interval for detecting automatic local interface changes without polling a public service.
 pub const AUTOMATIC_INTERFACE_REFRESH_SECONDS: u64 = 5;
 
@@ -447,6 +446,15 @@ async fn service_loop(
             (now, unix_time()?),
             candidate_refresh.interfaces_changed,
         )?;
+        if candidate_refresh.interfaces_changed {
+            live_session::reset_network_recovery(
+                &mut active,
+                &mut noncanonical_outbound,
+                [&mut outbound_tasks, &mut inbound_tasks, &mut priority_inbound_tasks],
+                &mut outbound_in_flight,
+            )
+            .await;
+        }
         publish_gossip_if(
             directory_changed,
             &page_sender,
@@ -570,7 +578,6 @@ async fn service_loop(
                 && let Some(scheduled) = schedule_remembered_peer(
                     &endpoint,
                     &mut dial_cursor,
-                    retry_round,
                     &network_identity,
                     &mut outbound_tasks,
                     &LiveSessionState {
@@ -604,27 +611,29 @@ async fn service_loop(
             next_refresh,
             config.automatic_interface_refresh.then_some(next_interface_refresh),
         );
-        let incoming = tokio::select! {
-            control_changed = poll_control(
-                control_listener,
-                wait,
-                local_state,
-                directory,
-                &mut active,
-                ControlView {
-                    instance_id: &instance_id,
-                    restart_requested: &mut restart_requested,
-                    state_directory: &update_context.state_directory,
-                    update_delivery: &mut update_delivery,
-                    listen: config.listen,
-                    local_contact: &local_contact,
-                    router_mapping: router_mapping
-                        .as_ref()
-                        .map_or(RouterMappingStatus::Disabled, RouterMapping::status),
-                    anchor_mode,
-                },
-            ) => {
-                let control_changed = control_changed?;
+        let activity = poll_control_or_incoming(
+            control_listener,
+            endpoint.accept(),
+            wait,
+            local_state,
+            directory,
+            &mut active,
+            ControlView {
+                instance_id: &instance_id,
+                restart_requested: &mut restart_requested,
+                state_directory: &update_context.state_directory,
+                update_delivery: &mut update_delivery,
+                listen: config.listen,
+                local_contact: &local_contact,
+                router_mapping: router_mapping
+                    .as_ref()
+                    .map_or(RouterMappingStatus::Disabled, RouterMapping::status),
+                anchor_mode,
+            },
+        )
+        .await?;
+        let incoming = match activity {
+            ControlActivity::Control(control_changed) => {
                 publish_gossip_if(
                     control_changed,
                     &page_sender,
@@ -635,7 +644,7 @@ async fn service_loop(
                 )?;
                 None
             }
-            incoming = endpoint.accept() => incoming,
+            ControlActivity::Incoming(incoming) => incoming,
         };
         if let Some(incoming) = incoming {
             admission::schedule_admitted_incoming(
@@ -674,16 +683,6 @@ async fn service_loop(
 enum ConnectionOrigin {
     Inbound,
     Outbound,
-}
-
-fn should_attempt_peer(
-    active: &BTreeMap<NodeId, ActiveConnection>,
-    local: NodeId,
-    peer: NodeId,
-    retry_round: usize,
-) -> bool {
-    !active.contains_key(&peer)
-        && (local < peer || retry_round % SECONDARY_RECOVERY_CADENCE == SECONDARY_RECOVERY_CADENCE - 1)
 }
 
 fn unix_time() -> Result<u64, ServiceError> {

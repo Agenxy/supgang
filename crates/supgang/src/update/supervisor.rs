@@ -8,6 +8,8 @@ use crate::{control, transport};
 
 #[path = "attempts.rs"]
 mod attempts;
+#[path = "health.rs"]
+mod health;
 
 pub(super) fn reset_attempts(updates: &Path) -> Result<(), UpdateError> {
     attempts::reset(updates)
@@ -91,8 +93,9 @@ async fn run_loop(state_directory: &Path, options: SupervisorOptions<'_>) -> Res
             continue;
         }
         super::executable::validate_compatible_identity(&active.executable, &selected.executable)?;
-        let mut child = spawn_payload(state_directory, options, selected)?;
-        if !wait_until_ready(state_directory, &mut child, START_TIMEOUT).await? {
+        let probe = health::ExpectedPayload::new(state_directory, &selected.version)?;
+        let mut child = spawn_payload(state_directory, options, selected, &probe)?;
+        if !wait_until_ready(state_directory, &mut child, START_TIMEOUT, &probe).await? {
             stop_child(&mut child).await;
             if pending.is_some() {
                 lifecycle::discard_pending(state_directory)?;
@@ -101,7 +104,7 @@ async fn run_loop(state_directory: &Path, options: SupervisorOptions<'_>) -> Res
             return Err(SupervisorError::ActiveUnhealthy);
         }
         if let Some(candidate) = pending.as_ref() {
-            if !probation(state_directory, &mut child).await? {
+            if !probation(state_directory, &mut child, &probe).await? {
                 stop_child(&mut child).await;
                 lifecycle::discard_pending(state_directory)?;
                 continue;
@@ -144,11 +147,13 @@ fn spawn_payload(
     state_directory: &Path,
     options: SupervisorOptions<'_>,
     selected: &lifecycle::SlotRecord,
+    probe: &health::ExpectedPayload,
 ) -> Result<Child, SupervisorError> {
     let mut command = Command::new(&selected.executable);
     command
         .env_clear()
         .env(SUPERVISED_ENVIRONMENT, "1")
+        .env(control::STARTUP_ID_ENV, &probe.startup_id)
         .arg("--json")
         .arg("--state-dir")
         .arg(state_directory)
@@ -170,13 +175,14 @@ async fn wait_until_ready(
     state_directory: &Path,
     child: &mut Child,
     timeout: Duration,
+    probe: &health::ExpectedPayload,
 ) -> Result<bool, SupervisorError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if child.try_wait()?.is_some() {
             return Ok(false);
         }
-        if control::request(state_directory, control::ControlRequest::Status).is_ok_and(|reply| reply.is_some()) {
+        if healthy(state_directory, child, probe) {
             return Ok(true);
         }
         if tokio::time::Instant::now() >= deadline {
@@ -186,17 +192,24 @@ async fn wait_until_ready(
     }
 }
 
-async fn probation(state_directory: &Path, child: &mut Child) -> Result<bool, SupervisorError> {
+async fn probation(
+    state_directory: &Path,
+    child: &mut Child,
+    probe: &health::ExpectedPayload,
+) -> Result<bool, SupervisorError> {
     let deadline = tokio::time::Instant::now() + PROBATION;
     while tokio::time::Instant::now() < deadline {
-        if child.try_wait()?.is_some()
-            || !control::request(state_directory, control::ControlRequest::Status).is_ok_and(|reply| reply.is_some())
-        {
+        if child.try_wait()?.is_some() || !healthy(state_directory, child, probe) {
             return Ok(false);
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     Ok(true)
+}
+
+fn healthy(state_directory: &Path, child: &Child, probe: &health::ExpectedPayload) -> bool {
+    control::request(state_directory, control::ControlRequest::Status)
+        .is_ok_and(|reply| probe.matches(reply.as_ref(), child.id()))
 }
 
 async fn stop_child(child: &mut Child) {

@@ -33,7 +33,6 @@ pub(super) struct PeerActorRegistry<'a> {
     pub(super) tasks: &'a mut tokio::task::JoinSet<()>,
     pub(super) interval: Duration,
     pub(super) max_active_peers: usize,
-    pub(super) anchor_mode: bool,
     pub(super) update: Option<PeerUpdateContext>,
 }
 
@@ -78,7 +77,7 @@ pub(super) fn register_connection(
     origin: ConnectionOrigin,
     registry: &mut PeerActorRegistry<'_>,
 ) {
-    let offered = offered_connection(registry.local, peer, origin, registry.anchor_mode);
+    let offered = offered_connection(registry.local, peer, origin);
     let preferred = offered == OfferedConnection::Preferred;
     let current = if !registry.active.contains_key(&peer) {
         CurrentConnection::None
@@ -160,12 +159,12 @@ const fn connection_admission(
     }
 }
 
-fn offered_connection(local: NodeId, peer: NodeId, origin: ConnectionOrigin, anchor_mode: bool) -> OfferedConnection {
-    let preferred = if anchor_mode {
-        matches!(origin, ConnectionOrigin::Inbound)
-    } else {
-        matches!(origin, ConnectionOrigin::Outbound) == (local < peer)
-    };
+fn offered_connection(local: NodeId, peer: NodeId, origin: ConnectionOrigin) -> OfferedConnection {
+    // Both ends must rank the same connection identically. A role-local
+    // preference for inbound connections makes an anchor replace a connection
+    // its peer considers preferred; that peer then rejects the replacement.
+    // Anchor capacity is configured separately and cannot affect this ordering.
+    let preferred = matches!(origin, ConnectionOrigin::Outbound) == (local < peer);
     if preferred {
         OfferedConnection::Preferred
     } else {
@@ -342,19 +341,19 @@ mod tests {
         let lower = NodeId::from_bytes([1; 32]);
         let higher = NodeId::from_bytes([2; 32]);
         assert_eq!(
-            offered_connection(lower, higher, ConnectionOrigin::Outbound, false),
+            offered_connection(lower, higher, ConnectionOrigin::Outbound),
             OfferedConnection::Preferred
         );
         assert_eq!(
-            offered_connection(higher, lower, ConnectionOrigin::Inbound, false),
+            offered_connection(higher, lower, ConnectionOrigin::Inbound),
             OfferedConnection::Preferred
         );
         assert_eq!(
-            offered_connection(higher, lower, ConnectionOrigin::Outbound, false),
+            offered_connection(higher, lower, ConnectionOrigin::Outbound),
             OfferedConnection::Fallback
         );
         assert_eq!(
-            offered_connection(lower, higher, ConnectionOrigin::Inbound, false),
+            offered_connection(lower, higher, ConnectionOrigin::Inbound),
             OfferedConnection::Fallback
         );
         assert_eq!(
@@ -364,16 +363,30 @@ mod tests {
     }
 
     #[test]
-    fn anchor_connections_prefer_inbound_and_allow_outbound_fallback() {
+    fn connection_preference_is_symmetric_and_independent_of_roles() {
+        let lower = NodeId::from_bytes([1; 32]);
+        let higher = NodeId::from_bytes([2; 32]);
+        assert_eq!(
+            offered_connection(lower, higher, ConnectionOrigin::Outbound),
+            offered_connection(higher, lower, ConnectionOrigin::Inbound),
+        );
+        assert_eq!(
+            offered_connection(lower, higher, ConnectionOrigin::Inbound),
+            offered_connection(higher, lower, ConnectionOrigin::Outbound),
+        );
+    }
+
+    #[test]
+    fn capacity_is_enforced_without_changing_connection_preference() {
         let local = NodeId::from_bytes([1; 32]);
         let peer = NodeId::from_bytes([2; 32]);
         assert_eq!(
-            offered_connection(local, peer, ConnectionOrigin::Inbound, true),
-            OfferedConnection::Preferred
+            offered_connection(local, peer, ConnectionOrigin::Inbound),
+            OfferedConnection::Fallback
         );
         assert_eq!(
-            offered_connection(local, peer, ConnectionOrigin::Outbound, true),
-            OfferedConnection::Fallback
+            offered_connection(local, peer, ConnectionOrigin::Outbound),
+            OfferedConnection::Preferred
         );
         assert_eq!(
             connection_admission(OfferedConnection::Fallback, CurrentConnection::None, true),
@@ -443,7 +456,6 @@ mod tests {
                     tasks: &mut lower_tasks,
                     interval: Duration::from_secs(30),
                     max_active_peers: 8,
-                    anchor_mode: false,
                     update: None,
                 },
             );
@@ -462,7 +474,6 @@ mod tests {
                     tasks: &mut higher_tasks,
                     interval: Duration::from_secs(30),
                     max_active_peers: 8,
-                    anchor_mode: false,
                     update: None,
                 },
             );

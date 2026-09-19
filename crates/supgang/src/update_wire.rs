@@ -247,17 +247,16 @@ async fn receive_authorized_body(
     authorization: &UpdateAuthorization,
 ) -> Result<[u8; 32], UpdateWireError> {
     let mut length = [0_u8; 8];
-    receive
-        .read_exact(&mut length)
+    tokio::time::timeout(PREFACE_TIMEOUT, receive.read_exact(&mut length))
         .await
+        .map_err(|_| UpdateWireError::RetryLater)?
         .map_err(|_| UpdateWireError::Failed)?;
     let length = u64::from_be_bytes(length);
     if !(1..=MAX_UPDATE_BUNDLE_BYTES).contains(&length) || length != authorization.bundle_length {
         return Err(UpdateWireError::Rejected);
     }
     let incoming = incoming_bundle(context.state_directory).map_err(|error| map_update_error(&error))?;
-    let path = incoming.path.clone();
-    let mut destination = tokio::fs::File::from_std(incoming.file);
+    let mut destination = tokio::fs::File::from_std(incoming.file.try_clone().map_err(|_| UpdateWireError::Failed)?);
     let mut remaining = length;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
@@ -294,24 +293,18 @@ async fn receive_authorized_body(
     .await
     .map_err(|_| UpdateWireError::RetryLater)?;
     drop(destination);
-    if let Err(error) = transfer {
-        let _removed = tokio::fs::remove_file(&path).await;
-        return Err(error);
-    }
+    transfer?;
     if hasher.finalize().as_slice() != authorization.bundle_digest {
-        let _removed = tokio::fs::remove_file(&path).await;
         return Err(UpdateWireError::Rejected);
     }
     let digest = authorization.bundle_digest;
     let verify_now = current_time().map_err(|_| UpdateWireError::RetryLater)?;
     if !context.authorization.is_current(verify_now) {
-        let _removed = tokio::fs::remove_file(&path).await;
         return Err(UpdateWireError::Rejected);
     }
     let update_lock =
         crate::update::UpdateLock::acquire(context.state_directory).map_err(|error| map_update_error(&error))?;
-    let verified = crate::update::verify_and_stage_locked(context.state_directory, &path, update_lock).await;
-    let _removed = tokio::fs::remove_file(&path).await;
+    let verified = crate::update::verify_incoming(context.state_directory, incoming, update_lock).await;
     verified.map_err(|error| map_update_error(&error))?;
     Ok(digest)
 }
@@ -437,6 +430,15 @@ mod tests {
 
     #[test]
     fn stalled_authorization_preface_never_holds_update_admission() -> Result<(), Box<dyn std::error::Error>> {
+        stalled_receiver(false)
+    }
+
+    #[test]
+    fn authorized_missing_length_releases_admission_and_update_lock() -> Result<(), Box<dyn std::error::Error>> {
+        stalled_receiver(true)
+    }
+
+    fn stalled_receiver(authorized: bool) -> Result<(), Box<dyn std::error::Error>> {
         crate::transport::build_runtime()?.block_on(async {
             let temporary = tempfile::tempdir()?;
             let state = temporary.path().join("state");
@@ -467,8 +469,24 @@ mod tests {
                 )?
                 .await?;
             let server_connection = accepted.await??;
-            let (_client_send, mut client_receive) =
+            let (mut client_send, mut client_receive) =
                 crate::peer_stream::open(&client_connection, crate::peer_stream::StreamKind::Update).await?;
+            if authorized {
+                let grant = crate::update::UpdateAuthorization::sign(
+                    &root,
+                    issuer,
+                    target,
+                    [9; 32],
+                    1,
+                    super::current_time()?,
+                )?;
+                let bytes = crate::update::encode_authorization(&grant)?;
+                client_send
+                    .write_all(&u16::try_from(bytes.len())?.to_be_bytes())
+                    .await?;
+                client_send.write_all(&bytes).await?;
+                // Keep the stream open without the next eight-byte length field.
+            }
             let (kind, send, receive) = crate::peer_stream::accept(&server_connection).await?;
             assert_eq!(kind, crate::peer_stream::StreamKind::Update);
             let session =
@@ -493,16 +511,32 @@ mod tests {
                 )
                 .await
             });
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let permit = admission.try_acquire()?;
-            drop(permit);
+            if authorized {
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while admission.available_permits() != 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?;
+            } else {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let permit = admission.try_acquire()?;
+                drop(permit);
+            }
             let mut reply = [0_u8; 1];
             tokio::time::timeout(Duration::from_secs(3), client_receive.read_exact(&mut reply)).await??;
             assert_eq!(reply[0], super::REPLY_RETRY_LATER);
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(1), receiver).await??,
-                Err(UpdateWireError::InvalidPreface)
+                Err(if authorized {
+                    UpdateWireError::RetryLater
+                } else {
+                    UpdateWireError::InvalidPreface
+                })
             );
+            let _permit = admission.try_acquire()?;
+            let _lock = crate::update::UpdateLock::acquire(&state)?;
+            assert!(!state.join("updates/inbox").exists());
             server.close(0_u8.into(), b"test complete");
             client.close(0_u8.into(), b"test complete");
             Ok::<(), Box<dyn std::error::Error>>(())

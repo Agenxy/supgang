@@ -24,6 +24,8 @@ impl PeerDirectory {
             reachability: self.reachability.clone(),
             history_address_limit: self.history_address_limit,
             journal: None,
+            // This preview only validates contact merges; it never dials.
+            routes: super::route_history::RouteHistory::empty(self.history_address_limit),
         };
         let mut accepted = Vec::new();
         for contact in candidates {

@@ -29,6 +29,7 @@ pub const PEER_COMPACTION_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 
 mod import_batch;
 mod reachability;
+mod route_history;
 
 /// Result of attempting to merge a verified peer contact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +106,7 @@ pub struct PeerDirectory {
     entries: BTreeMap<NodeId, PeerEntry>,
     revocations: SignedRevocationList,
     reachability: BTreeMap<(NodeId, SocketAddr, NodeId), ReachabilityClaim>,
+    routes: route_history::RouteHistory,
     history_address_limit: usize,
     journal: Option<Journal>,
 }
@@ -124,6 +126,7 @@ impl core::fmt::Debug for PeerDirectory {
                 &self.entries.values().filter(|entry| entry.is_conflicted()).count(),
             )
             .field("journal", &"<protected>")
+            .field("routes", &"<protected>")
             .finish()
     }
 }
@@ -173,6 +176,9 @@ pub enum PeerDirectoryError {
     /// The requested historical-address budget is outside fixed safety bounds.
     #[error("peer address history must be from 8 through 64")]
     InvalidHistoryLimit,
+    /// A locally signed historical route failed integrity or context validation.
+    #[error("successful route history failed validation")]
+    InvalidRouteHistory,
 }
 
 impl PeerDirectory {
@@ -221,6 +227,7 @@ impl PeerDirectory {
             reachability: BTreeMap::new(),
             history_address_limit,
             journal: Some(journal),
+            routes: route_history::RouteHistory::open(&directory, local_node, history_address_limit, false)?,
         };
         let replayed_frame_count = frames.len();
         for frame in frames {
@@ -285,6 +292,7 @@ impl PeerDirectory {
             reachability: BTreeMap::new(),
             history_address_limit,
             journal: None,
+            routes: route_history::RouteHistory::open(&directory, local_node, history_address_limit, true)?,
         };
         for frame in frames {
             let contact = decode_contact(&frame)?;
@@ -359,6 +367,7 @@ impl PeerDirectory {
     #[must_use]
     pub fn dial_hints(&self, now: u64) -> Vec<PeerDialHint<'_>> {
         let mut contacts = Vec::new();
+        let networks = crate::network::interface_networks().unwrap_or_default();
         for entry in self.entries.values() {
             if entry.is_conflicted() || self.revocations.contains(&entry.current.endpoint.record.node_id) {
                 continue;
@@ -366,7 +375,17 @@ impl PeerDirectory {
             let mut seen = BTreeSet::<SocketAddr>::new();
             let mut current_addresses =
                 self.reachability_addresses(entry.current.endpoint.record.node_id, now, &mut seen);
-            current_addresses.extend(unique_addresses(entry.current(), &mut seen, usize::MAX));
+            current_addresses.extend(unique_addresses(entry.current(), &mut seen, usize::MAX, true));
+            current_addresses.extend(
+                self.routes
+                    .addresses(
+                        entry.current.endpoint.record.node_id,
+                        entry.current.endpoint.record.transport_key_id,
+                        &networks,
+                    )
+                    .into_iter()
+                    .filter(|address| seen.insert(*address)),
+            );
             if !current_addresses.is_empty() {
                 contacts.push(PeerDialHint {
                     contact: entry.current(),
@@ -379,7 +398,18 @@ impl PeerDirectory {
                 if remaining == 0 {
                     break;
                 }
-                let addresses = unique_addresses(historical, &mut seen, remaining);
+                let mut addresses = unique_addresses(historical, &mut seen, remaining, false);
+                addresses.extend(
+                    self.routes
+                        .addresses(
+                            historical.endpoint.record.node_id,
+                            historical.endpoint.record.transport_key_id,
+                            &networks,
+                        )
+                        .into_iter()
+                        .filter(|address| seen.insert(*address))
+                        .take(remaining.saturating_sub(addresses.len())),
+                );
                 if addresses.is_empty() {
                     continue;
                 }
@@ -620,17 +650,24 @@ fn trim_history(entry: &mut PeerEntry, address_limit: usize) {
         if remaining == 0 {
             return false;
         }
-        !unique_addresses(contact, &mut retained_addresses, remaining).is_empty()
+        !unique_addresses(contact, &mut retained_addresses, remaining, false).is_empty()
     });
 }
 
-fn unique_addresses(contact: &PeerContact, seen: &mut BTreeSet<SocketAddr>, limit: usize) -> Vec<SocketAddr> {
+fn unique_addresses(
+    contact: &PeerContact,
+    seen: &mut BTreeSet<SocketAddr>,
+    limit: usize,
+    current: bool,
+) -> Vec<SocketAddr> {
     contact
         .endpoint
         .record
         .candidates
         .iter()
-        .filter(|candidate| !matches!(candidate.kind(), CandidateKind::Local | CandidateKind::Reflexive))
+        .filter(|candidate| {
+            candidate.kind() != CandidateKind::Reflexive && (current || candidate.kind() != CandidateKind::Local)
+        })
         .map(crate::candidate::EndpointCandidate::address)
         .filter(|address| seen.insert(*address))
         .take(limit)

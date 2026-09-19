@@ -31,6 +31,7 @@ struct RepositoryArea {
 pub(super) struct ProtectedFilesystemTransport {
     metadata: RepositoryArea,
     targets: RepositoryArea,
+    checkpoint: Option<(PathBuf, PathBuf)>,
 }
 
 impl ProtectedFilesystemTransport {
@@ -46,7 +47,16 @@ impl ProtectedFilesystemTransport {
         crate::storage::validate_trusted_owner_directory(targets_directory)?;
         let metadata = RepositoryArea::new(metadata_url, metadata_directory, maximum_metadata_bytes)?;
         let targets = RepositoryArea::new(targets_url, targets_directory, maximum_target_bytes)?;
-        Ok(Self { metadata, targets })
+        Ok(Self {
+            metadata,
+            targets,
+            checkpoint: None,
+        })
+    }
+
+    pub(super) fn with_checkpoint(mut self, updates: &Path, datastore: &Path) -> Self {
+        self.checkpoint = Some((updates.to_path_buf(), datastore.to_path_buf()));
+        self
     }
 
     fn resolve<'transport, 'url>(
@@ -88,6 +98,12 @@ impl RepositoryArea {
 impl Transport for ProtectedFilesystemTransport {
     async fn fetch(&self, url: Url) -> Result<TransportStream, TransportError> {
         let (area, name) = self.resolve(&url)?;
+        // tough writes only validated roles to its private working datastore.
+        // Persist those roles before fetching the next role or target, using
+        // our atomic writer instead of treating its temporary files as durable.
+        if let Some((updates, datastore)) = &self.checkpoint {
+            super::tuf_state::commit(updates, datastore).map_err(|error| transport_cause(&url, error))?;
+        }
         let path = area.directory.join(name);
         let file = OpenOptions::new()
             .read(true)

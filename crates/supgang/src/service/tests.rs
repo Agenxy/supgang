@@ -1,13 +1,14 @@
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
-use super::live_session::dial_hint_index;
 use super::local_control::connection_event_is_current;
 use super::{
     CANDIDATE_RACE_DELAY_MILLIS, MAX_PENDING_INBOUND_SESSIONS, MAX_PENDING_OUTBOUND_SESSIONS,
-    MAX_PENDING_PRIORITY_INBOUND_SESSIONS, MAX_PENDING_SESSIONS, SECONDARY_RECOVERY_CADENCE, ServiceConfig,
-    ServiceError, candidate_race_delay, replace_interface_candidates, should_attempt_peer,
+    MAX_PENDING_PRIORITY_INBOUND_SESSIONS, MAX_PENDING_SESSIONS, ServiceConfig, ServiceError, candidate_race_delay,
+    replace_interface_candidates, should_attempt_peer,
 };
 use crate::{candidate::CandidateKind, ids::NodeId};
+
+mod production;
 
 const _: () = {
     assert!(MAX_PENDING_INBOUND_SESSIONS > 0);
@@ -131,26 +132,17 @@ fn either_node_order_may_make_a_bounded_recovery_attempt() {
     let active = BTreeMap::new();
     let lower = NodeId::from_bytes([1; 32]);
     let higher = NodeId::from_bytes([255; 32]);
-    assert!(should_attempt_peer(&active, lower, higher, 0));
-    assert!(!should_attempt_peer(&active, higher, lower, 0));
-    assert!(should_attempt_peer(
-        &active,
-        higher,
-        lower,
-        SECONDARY_RECOVERY_CADENCE - 1
-    ));
+    assert!(should_attempt_peer(&active, higher));
+    assert!(should_attempt_peer(&active, lower));
 }
 
 #[test]
-fn current_contact_is_retried_three_times_before_each_historical_hint() {
-    assert_eq!(dial_hint_index(0, 4), 0);
-    assert_eq!(dial_hint_index(1, 4), 0);
-    assert_eq!(dial_hint_index(2, 4), 0);
-    assert_eq!(dial_hint_index(3, 4), 1);
-    assert_eq!(dial_hint_index(7, 4), 2);
-    assert_eq!(dial_hint_index(11, 4), 3);
-    assert_eq!(dial_hint_index(15, 4), 1);
-    assert_eq!(dial_hint_index(3, 1), 0);
+fn both_disconnected_devices_attempt_every_shared_recovery_window() {
+    let active = BTreeMap::new();
+    let lower = NodeId::from_bytes([1; 32]);
+    let higher = NodeId::from_bytes([255; 32]);
+    assert!(should_attempt_peer(&active, higher));
+    assert!(should_attempt_peer(&active, lower));
 }
 
 #[test]

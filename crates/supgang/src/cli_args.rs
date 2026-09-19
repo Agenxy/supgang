@@ -154,7 +154,7 @@ pub enum Command {
     /// Remove one exact local peer nickname.
     Untag {
         /// Existing local nickname to remove.
-        #[arg(value_name = "TAG")]
+        #[arg(value_name = "TAG", value_parser = PeerTag::existing)]
         tag: PeerTag,
     },
     /// Serve read-only fleet tools over bounded MCP standard I/O.

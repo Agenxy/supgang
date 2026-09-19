@@ -30,8 +30,11 @@ use super::{
 
 const TUF_SPEC: &str = "1.0.0";
 
-struct SignedRepository {
-    metadata: tempfile::TempDir,
+mod trust_failures;
+mod trust_recovery;
+
+pub(super) struct SignedRepository {
+    pub(super) metadata: tempfile::TempDir,
     targets: tempfile::TempDir,
     _trust: Option<tempfile::TempDir>,
     root: std::path::PathBuf,
@@ -116,7 +119,7 @@ fn metadata_description(bytes: &[u8]) -> Result<Metafile, Box<dyn std::error::Er
     })
 }
 
-fn signed_repository() -> Result<SignedRepository, Box<dyn std::error::Error>> {
+pub(super) fn signed_repository() -> Result<SignedRepository, Box<dyn std::error::Error>> {
     let metadata = tempfile::tempdir()?;
     let targets_directory = tempfile::tempdir()?;
     let target_name = format!("supgang-9999.0.0-{}-{}", std::env::consts::OS, std::env::consts::ARCH);

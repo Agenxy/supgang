@@ -13,8 +13,8 @@ mutually authenticated QUIC.
 
 Strict mode has no public DHT, DNS publisher, STUN server, hosted control plane, account, telemetry,
 or vendor relay. Automatic mode may ask the attached local gateway for a UDP mapping through PCP or
-NAT-PMP. Any authenticated member can coordinate a direct-path attempt between two other
-connected members, and an explicit anchor mode lets one user-owned instance retain more such
+NAT-PMP. An authenticated member with root-granted `INTRODUCER` authority can coordinate a direct-path
+attempt between two other connected members. Explicit anchor mode lets one user-owned instance retain more such
 connections. A future control relay must also be owned and operated by the user. Losing every
 communication edge remains an unrecoverable partition until some edge returns.
 
@@ -128,11 +128,11 @@ together; M1 has no external monotonic witness or generation-recovery command.
 - The transport permits four bidirectional streams and two unidirectional control streams per
   connection, with 64 KiB stream and 256 KiB connection receive windows.
 - At most eight authenticated neighbors in device mode or 64 in explicit anchor mode, eight pending
-  inbound and eight separately reserved outbound session tasks, 16 short-lived peer-recovery
+  general inbound, two priority inbound, and eight separately reserved outbound session tasks, 16 short-lived peer-recovery
   intents, and 32 pending peer events are retained. Native IPv6 sources share a `/64` admission
   budget; IPv4 sources, including mapped aliases, share a single-address budget.
-- For each node pair, the lower `NodeId` is the canonical dialer and retries every round. The other
-  side makes one recovery probe per four rounds. Retry boundaries are derived from the hive and wall
+- For each node pair, the lower `NodeId` determines canonical session preference. Both disconnected
+  sides attempt recovery every shared window. Retry boundaries are derived from the hive and wall
   clock so two members can transmit in the same NAT binding window. Up to four ranked addresses are
   raced with 125 ms spacing. Both endpoints retain a reverse-direction connection as a temporary
   fallback; a preferred connection replaces it deterministically. The same rule lets devices hold

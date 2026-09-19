@@ -1,5 +1,27 @@
 use super::{reachability_check, run};
 
+#[test]
+fn every_command_name_is_reserved_against_new_tags() {
+    use clap::CommandFactory;
+    let mut command = super::Cli::command();
+    command.build();
+    for subcommand in command.get_subcommands() {
+        assert!(
+            crate::peer_tag::PeerTag::new(subcommand.get_name()).is_err(),
+            "unreserved command {}",
+            subcommand.get_name()
+        );
+    }
+}
+
+#[test]
+fn mapping_failure_never_implies_a_local_only_network() {
+    let live = ("unavailable".to_owned(), "unknown".to_owned(), 1);
+    let check = reachability_check(Some(&live));
+    assert!(check.detail.contains("1 computer(s) connected now"));
+    assert!(!check.detail.contains("only on its local network"));
+}
+
 fn write_endpoints(path: &std::path::Path, listen: &str, kind: &str) -> Result<(), Box<dyn std::error::Error>> {
     let document = serde_json::json!({
         "listen": listen,
@@ -408,7 +430,8 @@ fn assert_human_fleet_output(founder_state: &str) -> Result<(), Box<dyn std::err
     let human = String::from_utf8(human)?;
     assert!(human.contains("this computer"));
     assert!(human.contains("HomeServer (home) ["));
-    assert!(human.contains("no address can be tried from this network"));
+    assert!(human.contains("127.0.0.1:4433"));
+    assert!(human.contains("connection unknown"));
     assert!(!human.contains("device-signed"));
     assert!(human.contains("supgang --help"));
     assert!(human_error.is_empty());
@@ -424,7 +447,7 @@ fn assert_human_fleet_output(founder_state: &str) -> Result<(), Box<dyn std::err
     );
     let detailed = String::from_utf8(detailed)?;
     assert!(detailed.contains("127.0.0.1:4433"));
-    assert!(detailed.contains("unavailable from this network"));
+    assert!(detailed.contains("preferred"));
     assert!(detailed.contains("device-signed"));
     Ok(())
 }

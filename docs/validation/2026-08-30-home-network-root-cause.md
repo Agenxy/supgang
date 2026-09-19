@@ -64,6 +64,11 @@ negative test re-signs a valid Mach-O with a different identity and confirms rej
 same-identity copy remains accepted. TUF trust promotion was moved after this platform check so an
 identity failure cannot advance the locally committed repository state.
 
+**Superseded on 2026-09-17:** that trust-ordering change was incorrect. Authenticated TUF root and
+role advancement must survive a later platform, signature, target, or staging failure. Current
+source commits trust at the TUF protocol boundaries while still refusing an ineligible executable.
+The original observation above is historical, not the current security rule.
+
 The review also found that signing the command path alone could leave an older protected supervisor
 and slot running. A dedicated `service refresh` operation now replaces those bytes and restarts the
 service without rewriting its endpoint, anchor, or router-mapping policy. The running process path,

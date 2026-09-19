@@ -1,0 +1,3 @@
+# Local operator authorization is not part of the portable test deck.
+*.sig7
+results/

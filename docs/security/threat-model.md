@@ -122,7 +122,8 @@ Trust boundaries:
    re-encoding differences before trusted state import.
 8. Every current collection and channel has a fixed ceiling. The personal hive is capped at 256
    members, active neighbors at eight or 64 in explicit anchor mode, unauthenticated inbound and
-   recovery outbound sessions at separate eight-task ceilings, pending transport handshakes at 64
+   recovery outbound sessions at separate eight-task ceilings plus two priority-inbound slots
+   (18 pending session tasks total), pending transport handshakes at 64
    and 1 MiB total, pending traversal intents at 16, queued peer events at 32, contact pages at eight,
    endpoint candidates at eight, and control replies at 64 KiB.
 9. The state directory, persisted service executable, service definition, endpoint policy, and
@@ -134,14 +135,18 @@ Trust boundaries:
     revocation, and durable lookup remain keyed by the full stable node ID.
 12. Automatic interface discovery enumerates the local kernel table. Automatic router mapping sends
     only PCP or NAT-PMP traffic to the attached gateway; UPnP is disabled. Only a globally routed
-    mapping result can enter the current signed record, with mapping changes limited to four signed
-    updates per five minutes and labeled unverified until independently observed through an
+    mapping result can become a short-lived gateway claim, with mapping changes limited to four signed
+    updates per five minutes, stable leases renewed in claims every five minutes, and the latest
+    change retained until the budget permits publication. Claims are labeled unverified until observed through an
     authenticated session. An interface change removes the old mapping and peer observations before
     the replacement set is signed. Four candidate slots remain available for the most recent
-    authenticated public-address observations. Known tunnel, container, peer-to-peer, and virtual
-    bridge interfaces are not automatically published.
-13. Historical recovery uses only previously device-signed contacts, retains at most the configured
-    8 through 64 unique old addresses per peer, and never presents them as current output.
+    authenticated public-address observations. Known tunnel, container and peer-to-peer interfaces
+    are not automatically published; bridges may be real uplinks.
+13. Recovery uses previously device-signed contacts and a separate locally signed successful-route
+    journal. Each history retains at most the configured 8 through 64 addresses per peer and is
+    hidden from current advertised-address output. Saved routes require the same transport pin;
+    private routes also require the same local interface address. This is a context heuristic,
+    not network authentication. Every reused route must complete fresh peer authentication.
 14. MCP exposes exactly three read-only tools. Requests, responses, and structured values have
     separate fixed ceilings, unknown arguments fail closed, standard output carries protocol only,
     and offline snapshots never create or repair durable state.
@@ -155,7 +160,8 @@ Trust boundaries:
     create or replace that trust root. TUF metadata and targets have fixed byte and entry ceilings;
     expiry, role signatures, thresholds, sequential root updates, metadata rollback, exact target
     length and SHA-256, operating system, architecture, semantic-version advance, and native binary
-    format all fail closed.
+    magic all fail closed. OS/architecture are bound by the signed target name; this is not a full
+    native-header parser. macOS additionally verifies code signature and identity.
 17. Peer-carried updates use a typed post-authentication QUIC stream. The root authorization is
     verified before a large body is accepted, transfer length and digest are exact, trailing bytes
     are rejected, and one shared admission permit plus a cross-process filesystem lock permits only
@@ -163,11 +169,12 @@ Trust boundaries:
     trust root.
 18. The installed supervisor remains at a fixed protected path while payloads occupy
     content-addressed slots. A candidate must answer through the owner-only control socket for the
-    full probation window. Candidate failure clears its activation record, removes its unused slot,
+    full probation window, matching its expected hive, node, version, child PID and startup nonce.
+    Candidate failure clears its activation record, removes its unused slot,
     and returns to the last known-good payload. Supervisor and candidate update state cannot race.
-16. A traversal offer never enters a signed record or peer history. It can only start a bounded
+19. A raw traversal offer never enters signed endpoint authority or durable route history. It can only start a bounded
     attempt using the target's independently verified membership, stable identity, and transport
-    key pin.
+    key pin. A resulting authenticated route can then become a locally signed recovery hint.
 
 ## Threat analysis
 
@@ -241,6 +248,12 @@ sequence. Self-claimed reflexive observations are rejected. Duplicate or over-ca
 cannot mutate durable state. Every later connection still requires the expected device,
 membership, certificate pin, and TLS exporter proof.
 
+The 16-entry observation cache reserves the local gateway observation and caps each remote
+reporter at four entries. At capacity a reporter replaces its own entries first; a new reporter may
+take an excess entry, not another reporter's only one. Echoed local claims cannot resurrect a
+withdrawn local mapping. This limits monopolization, not delivery loss or unlimited fleet retention;
+claims can still be refused at capacity and durable authenticated recovery sources remain separate.
+
 **Residual risk.** M1 does not require a witness quorum. A malicious authorized reporter can waste
 bounded dial attempts or suppress an observation, but cannot forge the subject's signature, make
 the report durable, or impersonate the target.
@@ -276,7 +289,7 @@ have not run. The QUIC stack and crypto provider remain substantial attack surfa
 
 **Controls.** Either peer may make a bounded recovery attempt when the pair has no active session,
 which avoids making reconnection depend on node-ID ordering. The preferred lower-ID outbound
-direction retries every round. The secondary direction probes once per four rounds. Every member of
+direction determines duplicate-session preference only. Both directions retry every shared window. Every member of
 one hive derives the same retry boundary, with a hive-specific phase to spread unrelated fleets.
 Each attempt races at most four ranked candidates with 125 ms spacing. Stateless QUIC retry is used
 before application admission. Four-second connect and twelve-second session deadlines, eight active
@@ -445,7 +458,7 @@ delivers a malicious or old binary, or a peer signs a false claim that it runs t
 uses `tough` 0.24.0 with file-only transport, safe expiry enforcement, fixed metadata limits,
 persistent rollback state, and sequential root rotation. Target naming binds semantic version,
 operating system, and architecture; TUF binds exact length and SHA-256. Verified bytes stream into a
-new owner-only content-addressed slot and are parsed as the expected native executable before an A/B
+new owner-only content-addressed slot and checked for native executable magic before an A/B
 supervisor may launch them. A peer-carried bundle additionally needs a short-lived hive-root
 authorization bound to the authenticated issuer, exact receiver, digest, byte length, and a durably
 single-use nonce. Receipt verifies and stages only; only a separate local owner command writes the
@@ -516,8 +529,9 @@ currently authenticated, and copies sockets from the introducer's QUIC connectio
 Receivers still treat every offer as untrusted. The receiver
 must have independently selected that stable target for recovery within 30 seconds, and the first
 accepted offer consumes the intent. Private, loopback, and link-local sockets are rejected. At most
-16 intents and 16 session tasks exist. The offered socket is never persisted and the resulting QUIC path must match the signed transport key,
-root-authorized member, channel-bound device proof, and non-revoked stable identity. Anchor mode
+16 intents and 18 session tasks exist. A raw offer is not persisted; the resulting QUIC path must match the signed transport key,
+root-authorized member, channel-bound device proof, and non-revoked stable identity before a local
+successful-route attestation may be saved. Anchor mode
 accepts at most 64 authenticated members, participates in the same bounded recovery dial schedule,
 and never relays general application traffic.
 

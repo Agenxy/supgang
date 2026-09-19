@@ -20,6 +20,7 @@ use super::{
     dial_observed_peer, dial_peer, gossip_page, import_received, import_received_reachability, inbound_session,
     merge_received_revocations, register_connection,
     rendezvous::RendezvousOfferEvent,
+    retry_schedule::candidate_batch,
     should_attempt_peer, unix_time,
 };
 
@@ -87,6 +88,12 @@ impl LiveSessionState<'_> {
             return Ok(());
         };
         let connection_id = connection.stable_id();
+        let route = (connection.remote_address(), connection.local_ip());
+        let authenticated_contact = exchange
+            .contacts
+            .last()
+            .filter(|contact| contact.endpoint.record.node_id == exchange.peer)
+            .cloned();
         register_connection(
             connection,
             authorization,
@@ -102,7 +109,6 @@ impl LiveSessionState<'_> {
                 tasks: self.actor_tasks,
                 interval: self.config.retry_interval,
                 max_active_peers: self.config.max_active_peers,
-                anchor_mode: self.config.max_active_peers > super::MAX_ACTIVE_PEERS,
                 update: self.update.cloned(),
             },
         );
@@ -121,6 +127,15 @@ impl LiveSessionState<'_> {
             return Ok(());
         }
         let _directory_changed = import_received(self.directory, exchange.contacts, now)?;
+        if let Some(contact) = authenticated_contact {
+            self.directory.remember_authenticated_route(
+                &self.local_state.identity().device,
+                &contact,
+                route.0,
+                route.1,
+                now,
+            )?;
+        }
         let mut reachability = exchange.reachability;
         reachability.push(exchange.local_reachability);
         let _claims_changed = import_received_reachability(self.directory, reachability, now);
@@ -156,7 +171,6 @@ pub(super) fn finish_ready_sessions(
 pub(super) fn schedule_remembered_peer(
     endpoint: &Endpoint,
     dial_cursor: &mut usize,
-    retry_round: usize,
     device: &Arc<DeviceIdentity>,
     tasks: &mut tokio::task::JoinSet<SessionTaskResult>,
     live: &LiveSessionState<'_>,
@@ -164,7 +178,7 @@ pub(super) fn schedule_remembered_peer(
     let mut peers = BTreeMap::<NodeId, Vec<_>>::new();
     for hint in live.directory.dial_hints(unix_time().ok()?) {
         let peer = hint.contact().endpoint.record.node_id;
-        if should_attempt_peer(live.active, live.local_node, peer, retry_round) {
+        if should_attempt_peer(live.active, peer) {
             peers.entry(peer).or_default().push(hint);
         }
     }
@@ -172,21 +186,15 @@ pub(super) fn schedule_remembered_peer(
     let peer_count = peers.len();
     let (target, hints) = peers.iter().nth(round % peer_count.max(1))?;
     let peer_cycle = round / peer_count.max(1);
-    let hint = hints.get(dial_hint_index(peer_cycle, hints.len()))?;
-    let ordered_addresses = ordered_hint_addresses(hint);
-    if ordered_addresses.is_empty() {
-        *dial_cursor = dial_cursor.wrapping_add(1);
+    let networks = network::interface_networks().unwrap_or_default();
+    let candidates = recovery_candidates(hints, &networks, peer_cycle);
+    *dial_cursor = dial_cursor.wrapping_add(1);
+    if candidates.is_empty() {
         return Some(RememberedPeerSchedule {
             target: *target,
             direct_started: false,
         });
     }
-    *dial_cursor = dial_cursor.wrapping_add(1);
-    let expected = hint.contact().clone();
-    let addresses = ordered_addresses
-        .into_iter()
-        .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
-        .collect::<Vec<_>>();
     let endpoint = endpoint.clone();
     let snapshot = live.snapshot(device);
     tasks.spawn(async move {
@@ -199,8 +207,7 @@ pub(super) fn schedule_remembered_peer(
                 revocations: &snapshot.revocations,
                 page: &snapshot.page,
             },
-            &expected,
-            &addresses,
+            &candidates,
         )
         .await;
         SessionTaskResult {
@@ -215,30 +222,84 @@ pub(super) fn schedule_remembered_peer(
     })
 }
 
-pub(super) const fn dial_hint_index(peer_cycle: usize, hint_count: usize) -> usize {
-    if hint_count > 1 && peer_cycle % 4 == 3 {
-        1 + ((peer_cycle / 4) % hint_count.saturating_sub(1))
-    } else {
-        0
-    }
-}
-
-fn ordered_hint_addresses(hint: &crate::peer_directory::PeerDialHint<'_>) -> Vec<SocketAddr> {
-    let networks = network::interface_networks().unwrap_or_default();
-    hint.addresses()
+fn recovery_candidates(
+    hints: &[crate::peer_directory::PeerDialHint<'_>],
+    networks: &[network::InterfaceNetwork],
+    cycle: usize,
+) -> Vec<(PeerContact, SocketAddr)> {
+    let eligible = eligible_hints(hints, networks);
+    let mut addresses = eligible
         .iter()
-        .copied()
-        .filter(|address| route_compatible_address(*address, &networks))
+        .flat_map(|(_, addresses)| addresses.iter().copied())
+        .collect::<Vec<_>>();
+    addresses.sort_by_key(|address| {
+        if networks.iter().any(|network| network.contains(address.ip())) {
+            0
+        } else if crate::candidate::EndpointCandidate::new(
+            crate::candidate::CandidateKind::Local,
+            crate::candidate::CandidateTransport::QuicV1,
+            *address,
+        )
+        .is_ok()
+        {
+            2
+        } else {
+            1
+        }
+    });
+    // Race families across record boundaries, retaining the signed authority
+    // associated with each address. History cannot replace the latest preferred
+    // path, but neither can IPv6-heavy records starve the only IPv4 alternative.
+    candidate_batch(&addresses, cycle)
+        .into_iter()
+        .filter_map(|address| {
+            eligible
+                .iter()
+                .find(|(_, addresses)| addresses.contains(&address))
+                .map(|(hint, _)| (hint.contact().clone(), address))
+        })
         .collect()
 }
 
-fn route_compatible_address(address: SocketAddr, networks: &[network::InterfaceNetwork]) -> bool {
-    let transport = crate::candidate::CandidateTransport::QuicV1;
-    crate::candidate::EndpointCandidate::new(crate::candidate::CandidateKind::Local, transport, address)
-        .or_else(|_| {
-            crate::candidate::EndpointCandidate::new(crate::candidate::CandidateKind::Reflexive, transport, address)
+fn eligible_hints<'a>(
+    hints: &'a [crate::peer_directory::PeerDialHint<'a>],
+    networks: &[network::InterfaceNetwork],
+) -> Vec<(&'a crate::peer_directory::PeerDialHint<'a>, Vec<SocketAddr>)> {
+    // Do not spend retry windows on records with no possible route. In
+    // particular, IPv6-only history must not delay older IPv4 recovery hints.
+    hints
+        .iter()
+        .filter_map(|hint| {
+            let addresses = hint
+                .addresses()
+                .iter()
+                .copied()
+                .filter(|address| network::address_is_route_compatible(*address, networks))
+                .collect::<Vec<_>>();
+            (!addresses.is_empty()).then_some((hint, addresses))
         })
-        .is_ok_and(|candidate| network::candidate_is_route_compatible(&candidate, networks))
+        .collect()
+}
+
+#[cfg(test)]
+mod recovery_tests;
+
+pub(super) async fn reset_network_recovery(
+    active: &mut BTreeMap<NodeId, ActiveConnection>,
+    noncanonical: &mut BTreeSet<NodeId>,
+    pending: [&mut tokio::task::JoinSet<SessionTaskResult>; 3],
+    outbound_in_flight: &mut bool,
+) {
+    // In-flight attempts captured the old local contact and route selection.
+    // Drain cancellation results before the ordinary join loop can see them.
+    for tasks in pending {
+        tasks.shutdown().await;
+    }
+    *outbound_in_flight = false;
+    if let Ok(networks) = network::interface_networks() {
+        super::active::retire_unroutable(active, &networks);
+        noncanonical.retain(|peer| active.contains_key(peer));
+    }
 }
 
 pub(super) fn schedule_incoming_peer(
@@ -351,6 +412,34 @@ mod tests {
         sync::SyncPage,
         transport::{self, TransportIdentity},
     };
+
+    #[test]
+    fn network_change_drains_obsolete_handshakes_in_every_lane() -> Result<(), Box<dyn std::error::Error>> {
+        transport::build_runtime()?.block_on(async {
+            let mut tasks = tokio::task::JoinSet::new();
+            tasks.spawn(std::future::pending::<super::SessionTaskResult>());
+            let mut inbound = tokio::task::JoinSet::new();
+            inbound.spawn(std::future::pending::<super::SessionTaskResult>());
+            let mut priority = tokio::task::JoinSet::new();
+            priority.spawn(std::future::pending::<super::SessionTaskResult>());
+            let mut active = BTreeMap::new();
+            let mut noncanonical = BTreeSet::new();
+            let mut in_flight = true;
+            super::reset_network_recovery(
+                &mut active,
+                &mut noncanonical,
+                [&mut tasks, &mut inbound, &mut priority],
+                &mut in_flight,
+            )
+            .await;
+            assert!(!in_flight);
+            assert!(tasks.is_empty());
+            assert!(tasks.try_join_next().is_none());
+            assert!(inbound.try_join_next().is_none());
+            assert!(priority.try_join_next().is_none());
+        });
+        Ok(())
+    }
 
     async fn connection_pair(
         server: &Endpoint,

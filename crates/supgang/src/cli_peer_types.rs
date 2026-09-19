@@ -16,6 +16,9 @@ pub struct PeerRow {
     /// Live authenticated session state, or absent when read offline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connected: Option<bool>,
+    /// Owner-only live transport diagnostics, not an advertised or durable address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<PeerConnection>,
     pub status: String,
     pub generation: u64,
     pub sequence: u64,
@@ -25,6 +28,19 @@ pub struct PeerRow {
     /// Services the computer advertises in its signed record, at its addresses.
     #[serde(default)]
     pub services: Vec<ServiceRow>,
+}
+
+/// The actual socket used by an authenticated connection at the time of the read.
+/// Counters describe transport activity, not application-level delivery receipts.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PeerConnection {
+    /// Canonical remote socket, distinct from the peer's advertised candidates.
+    pub remote_address: String,
+    /// Number of UDP datagrams received on this connection.
+    pub received_datagrams: u64,
+    /// Number of UDP datagrams sent on this connection.
+    pub sent_datagrams: u64,
 }
 
 /// One service a computer says it offers, signed by that computer's device.
@@ -69,8 +85,8 @@ pub struct ResolvedCandidate {
     /// Expiry of a short-lived report, when distinct from the endpoint record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_expires_at: Option<u64>,
-    /// Whether this computer currently has a compatible physical-network route.
-    /// This does not claim that a router or firewall will admit the connection.
+    /// Whether this computer has a compatible address family for an attempt.
+    /// This is not a route-table lookup or proof of firewall/router permission.
     #[serde(default)]
     pub route_compatible: bool,
     pub preferred: bool,

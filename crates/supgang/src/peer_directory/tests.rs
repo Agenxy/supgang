@@ -22,6 +22,30 @@ fn contact(
     contact_with_ports(founder, device, sequence, &[port])
 }
 
+#[test]
+fn current_local_contact_is_a_dial_hint_before_any_connection() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("state");
+    let mut founder = state::initialize(&path)?;
+    let peer = DeviceIdentity::generate()?;
+    let contact = contact(&mut founder, &peer, 1, 4_433)?;
+    let root = founder.identity().root_verifying_key;
+    let local = founder.identity().device.node_id();
+    let mut directory = PeerDirectory::open(&path, root, local, founder.revocations())?;
+    directory.import(contact, 50)?;
+    assert_eq!(
+        directory.dial_hints(50).first().ok_or("no hints")?.addresses(),
+        &["127.0.0.1:4433".parse()?]
+    );
+    drop(directory);
+    let reopened = PeerDirectory::open(&path, root, local, founder.revocations())?;
+    assert_eq!(
+        reopened.dial_hints(50).first().ok_or("no hints")?.addresses(),
+        &["127.0.0.1:4433".parse()?]
+    );
+    Ok(())
+}
+
 fn contact_with_ports(
     founder: &mut state::LocalState,
     device: &DeviceIdentity,
@@ -534,91 +558,4 @@ fn historical_records_retry_only_addresses_missing_from_newer_records() -> Resul
     Ok(())
 }
 
-#[test]
-fn reporter_bound_reachability_is_ephemeral_and_revocation_aware() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    let state_path = temporary.path().join("state");
-    let mut founder = state::initialize(&state_path)?;
-    let subject = DeviceIdentity::generate()?;
-    let reporter = DeviceIdentity::generate()?;
-    let subject_contact = contact(&mut founder, &subject, 1, 4_433)?;
-    let reporter_membership = founder.issue_membership(
-        &reporter.verifying_key(),
-        crate::membership::MembershipRoles::DEVICE,
-        [70; 32],
-        10,
-        1_000,
-    )?;
-    let claim = ReachabilityClaim::sign(
-        reporter_membership,
-        &reporter,
-        subject.node_id(),
-        SocketAddr::from(([8, 8, 8, 8], 44_330)),
-        ReachabilitySource::PeerObserved,
-        50,
-    )?;
-    let mut directory = PeerDirectory::open(
-        &state_path,
-        founder.identity().root_verifying_key,
-        founder.identity().device.node_id(),
-        founder.revocations(),
-    )?;
-    directory.import(subject_contact, 50)?;
-    assert!(directory.import_reachability(claim.clone(), 50)?);
-    assert!(!directory.import_reachability(claim.clone(), 50)?);
-    assert_eq!(
-        directory.dial_hints(50).first().map(PeerDialHint::addresses),
-        Some([claim.address].as_slice())
-    );
-    assert!(directory.dial_hints(claim.expires_at.saturating_add(1)).is_empty());
-
-    drop(directory);
-    let mut reopened = PeerDirectory::open(
-        &state_path,
-        founder.identity().root_verifying_key,
-        founder.identity().device.node_id(),
-        founder.revocations(),
-    )?;
-    assert!(reopened.dial_hints(50).is_empty());
-    assert!(reopened.import_reachability(claim, 50)?);
-    let revocations = founder.revoke(reporter.node_id(), founder.revocations().list.issued_at)?;
-    reopened.set_revocations(&revocations)?;
-    assert!(reopened.dial_hints(50).is_empty());
-    Ok(())
-}
-
-#[test]
-fn gateway_report_replaces_only_ephemeral_local_provenance() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
-    let state_path = temporary.path().join("state");
-    let founder = state::initialize(&state_path)?;
-    let membership = founder.local_membership().ok_or("local membership missing")?.clone();
-    let first = ReachabilityClaim::sign(
-        membership.clone(),
-        &founder.identity().device,
-        founder.identity().device.node_id(),
-        SocketAddr::from(([8, 8, 8, 8], 44_330)),
-        ReachabilitySource::Gateway,
-        50,
-    )?;
-    let second = ReachabilityClaim::sign(
-        membership,
-        &founder.identity().device,
-        founder.identity().device.node_id(),
-        SocketAddr::from(([9, 9, 9, 9], 44_330)),
-        ReachabilitySource::Gateway,
-        51,
-    )?;
-    let mut directory = PeerDirectory::open(
-        &state_path,
-        founder.identity().root_verifying_key,
-        founder.identity().device.node_id(),
-        founder.revocations(),
-    )?;
-    assert!(directory.replace_local_gateway_reachability(Some(first), 50)?);
-    assert!(directory.replace_local_gateway_reachability(Some(second.clone()), 51)?);
-    assert_eq!(directory.reachability_claims(51), [second]);
-    assert!(directory.replace_local_gateway_reachability(None, 51)?);
-    assert!(directory.reachability_claims(51).is_empty());
-    Ok(())
-}
+mod reachability;

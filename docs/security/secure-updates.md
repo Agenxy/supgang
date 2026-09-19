@@ -1,9 +1,9 @@
 # Sovereign update and peer-report security design
 
-Status: client and peer-carriage mechanism implemented; physical macOS cross-host delivery and
-rollback accepted; production signing ceremony and cross-platform acceptance pending
+Status: client and stage-only peer carriage implemented; September hardening requires renewed
+installed-artifact acceptance. Earlier physical tests do not certify this corrected build.
 
-Date: 2026-08-25
+Updated: 2026-09-17
 
 ## Decision
 
@@ -42,8 +42,9 @@ enters the repository, CI, shell history, command arguments, or a peer message.
 Production root metadata will use consistent snapshots. Clients retain the highest trusted version
 of every role, process root rotations one version at a time, enforce threshold signatures and
 expiry, and reject rollback, freeze, fast-forward, and mix-and-match states according to the TUF
-client workflow. After a root rotation succeeds, Supgang atomically promotes the verified root as
-the next loader trust anchor before it examines or stages a target. The immutable bootstrap root
+client workflow. Each dual-threshold-verified root step is atomically promoted before attempting
+the next root or any later role. Authenticated timestamp and snapshot progress is also checkpointed
+before later fetches and after the loader returns, including failures. The immutable bootstrap root
 remains recovery material rather than active authority. The protected root-state record retains
 one previous generation, and missing, corrupt, non-monotonic, or ambiguous current-root state
 fails closed without falling back to the bootstrap. Metadata and target downloads have fixed byte
@@ -58,8 +59,10 @@ supgang-VERSION-OS-ARCH
 ```
 
 TUF metadata binds its exact byte length and SHA-256. The client rejects a non-advancing semantic
-version, a different operating system or architecture, and a target that is not a native Mach-O on
-macOS or ELF on Linux. Production target custom metadata is planned to include:
+version and a target name for another operating system or architecture. It checks native Mach-O or
+ELF magic, not the complete executable header; macOS separately verifies code signatures and
+identity. The signed target name must correctly describe the release bytes. Production target
+custom metadata is planned to include:
 
 - Supgang version and wire compatibility range;
 - operating system, architecture, and executable format;
@@ -97,20 +100,28 @@ The verifier:
 
 1. Starts from the atomically promoted current root, which initially equals the root explicitly
    pinned on that computer, and the highest locally trusted metadata.
-2. Applies sequential, threshold-authorized root rotations.
-3. Verifies timestamp, snapshot, and targets roles, expiry, versions, hashes, and byte bounds.
+2. Applies sequential, threshold-authorized root rotations, durably committing every accepted step.
+3. Verifies timestamp, snapshot, and targets roles, expiry, versions, hashes, and byte bounds;
+   checkpoints authenticated rollback progress even when a later role or target fails.
 4. Selects only the exact local operating-system and architecture target.
 5. Streams the target into a new owner-only file while enforcing its signed length and TUF hash.
-6. Parses the native executable header and verifies the completed file again before publication.
+6. Checks native executable magic and applicable macOS code identity before publication.
 7. Synchronizes and atomically publishes the candidate in a content-addressed slot.
-8. Atomically persists the newest verified root before target selection, then commits the complete
-   current TUF rollback state as one canonical checksummed owner-only document. Semantic rollback
+8. Retains the already committed root and role trust state independently of target success. Semantic rollback
    uses the compiled, active, previous, staged, and pending slot records rather than a separate
    high-water write that could poison recovery after a failed candidate.
-9. Marks a candidate for a fixed installed supervisor, which launches it with a cleared environment
+9. On a separate local owner activation, marks a candidate for a fixed installed supervisor, which launches it with a cleared environment
    and retains the prior known-good slot.
-10. Requires the candidate to answer on the protected local control socket throughout a 30-second
-    probation window; failure returns immediately to the prior payload.
+10. Requires typed status matching the expected hive, node, version, child process, and random
+    startup identifier throughout a 30-second probation window. Errors and unrelated replies fail;
+    a peer need not be online. Failure returns to the prior payload.
+
+Root and role persistence now use explicit v2 state records. The new reader accepts valid v1 state
+and migrates it on the next write; older readers fail closed on v2 instead of ignoring the stronger
+rollback contract. Refresh the owner-signed command, protected supervisor, and active payload
+together on each device. Do not erase trust records to downgrade. The stronger readiness exchange
+also requires a compatible supervisor and payload; historical rollback tests with older binaries
+are not acceptance of this version.
 
 Before step 9, `update apply` verifies without mutation that the service definition, protected
 executable, owner state, manager domain, and process-ownership boundary are ready for a restart. A
@@ -141,6 +152,8 @@ One update operation is admitted per computer at a time. Metadata is capped at 2
 target at 128 MiB, a complete bundle at 160 MiB, root advancement at 32 versions per load, and a
 bundle at 64 entries. Inboxes, prepared outboxes, temporary verification directories, network
 tasks, and retained slots are also bounded and recover stale partial work after interruption.
+The blocking verifier owns its lock and temporary input until it actually exits, even when its
+async caller is canceled. Slot pruning runs around every staging transaction, including failures.
 
 For peer delivery, the sending computer must hold the hive root. It signs a five-minute canonical
 authorization containing the hive, authenticated issuer, exact receiver, bundle SHA-256, exact byte
@@ -151,7 +164,8 @@ durably queued for up to 24 hours when the receiver is offline. The sender retai
 exact prepared bundles, retries temporary transport or receiver-storage failures after an authenticated reconnection, and creates
 the five-minute authorization only when an actual send begins. A temporary not-ready response keeps
 the durable queue entry; acceptance or a permanent authorization or verification rejection removes
-it. Authorization preflight has a short deadline before fair update admission, and the three-minute
+it. Authorization preflight and the post-admission length field each have a two-second deadline,
+admission waits at most ten seconds, and the three-minute
 body transfer holds neither the cross-process update lock nor the receiver's durable state owner.
 Remote receipt stops after verification and staging. A local owner must run `supgang update apply`
 before the stable supervisor can attempt the candidate.
@@ -256,10 +270,11 @@ root key after restart, fail-closed missing root state, a streamed valid target,
 rejection, semantic rollback rejection, cross-process update-lock contention, and a real loopback
 QUIC transfer in which the receiver independently verifies and stages the candidate without remote
 activation. The
-ordinary repository gate also runs the full unit, Clippy, RustSec, license, dependency, package,
-and structural checks.
+ordinary repository gate runs unit and Python tests, Clippy, rustdoc, registry-style package
+verification, and structural/dependency-identity checks. RustSec and license/source checks are
+separate required commands and CI jobs, not implicit parts of that local command.
 
-Physical macOS evidence now includes durable offline queuing, retry-later retention, authenticated
+Historical physical macOS evidence includes durable offline queuing, retry-later retention, authenticated
 IPv4 carriage, receiver-side TUF verification, successful A/B probation, and rollback from a signed
 native executable that failed readiness. Post-update firewall continuity, Linux runtime behavior,
 and production signing remain open gates.

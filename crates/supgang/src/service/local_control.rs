@@ -352,21 +352,36 @@ pub(super) struct ControlView<'a> {
     pub anchor_mode: bool,
 }
 
-pub(super) async fn poll_control(
+pub(super) enum ControlActivity<T> {
+    Control(bool),
+    Incoming(T),
+}
+
+pub(super) async fn poll_control_or_incoming<T>(
     listener: &ControlListener,
+    incoming: impl std::future::Future<Output = T>,
     wait: Duration,
     local_state: &mut LocalState,
     directory: &mut PeerDirectory,
     active: &mut BTreeMap<NodeId, ActiveConnection>,
     view: ControlView<'_>,
-) -> Result<bool, ServiceError> {
-    let Ok(accepted) = tokio::time::timeout(wait, listener.accept()).await else {
-        return Ok(false);
+) -> Result<ControlActivity<T>, ServiceError> {
+    // Only socket acceptance is cancellation-safe. Once accepted, the bounded
+    // request/reply transaction must finish even if an inbound QUIC attempt
+    // arrives. Otherwise that traffic can drop commands, including a reply to
+    // an owner mutation that has already been committed.
+    let accepted = tokio::select! {
+        accepted = tokio::time::timeout(wait, listener.accept()) => accepted,
+        value = incoming => return Ok(ControlActivity::Incoming(value)),
+    };
+    let Ok(accepted) = accepted else {
+        return Ok(ControlActivity::Control(false));
     };
     if let Ok(mut stream) = accepted {
-        handle_control(&mut stream, local_state, directory, active, view).await?;
+        let changed = handle_control(&mut stream, local_state, directory, active, view).await?;
+        return Ok(ControlActivity::Control(changed));
     }
-    Ok(true)
+    Ok(ControlActivity::Control(false))
 }
 
 async fn handle_control(
@@ -375,7 +390,7 @@ async fn handle_control(
     directory: &mut PeerDirectory,
     active: &mut BTreeMap<NodeId, ActiveConnection>,
     view: ControlView<'_>,
-) -> Result<(), ServiceError> {
+) -> Result<bool, ServiceError> {
     let ControlView {
         instance_id,
         restart_requested,
@@ -387,12 +402,15 @@ async fn handle_control(
         anchor_mode,
     } = view;
     let request = tokio::time::timeout(Duration::from_secs(2), control::read_request(stream)).await;
-    let (reply, _changed) = match request {
+    let (reply, changed) = match request {
         Ok(Ok(ControlRequest::Restart)) => {
             restart_reply(instance_id, restart_requested, is_supervised()).into_unchanged()
         }
         Ok(Ok(ControlRequest::Status)) => ControlReply::Status {
             value: ControlStatus {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                process_id: std::process::id(),
+                startup_id: crate::control::startup_id(),
                 instance_id: instance_id.to_owned(),
                 restart_supported: is_supervised(),
                 name: local_contact
@@ -428,12 +446,25 @@ async fn handle_control(
                     directory,
                     &local_state.identity().root_verifying_key,
                     now,
-                    cli_peer::running_local_row(local_contact),
+                    cli_peer::running_local_row(local_contact, directory, now),
                 );
                 for peer in &mut value.peers {
-                    peer.connected = NodeId::from_str(&peer.node_id)
+                    let connection = NodeId::from_str(&peer.node_id)
                         .ok()
-                        .map(|node_id| active.contains_key(&node_id));
+                        .and_then(|node| active.get(&node))
+                        .filter(|connection| {
+                            connection.close_reason().is_none() && connection.authorization().is_current(now)
+                        });
+                    peer.connected = Some(connection.is_some());
+                    peer.connection = connection.map(|connection| {
+                        let statistics = connection.stats();
+                        crate::cli_peer_types::PeerConnection {
+                            remote_address: crate::candidate::canonical_socket_address(connection.remote_address())
+                                .to_string(),
+                            received_datagrams: statistics.udp_rx.datagrams,
+                            sent_datagrams: statistics.udp_tx.datagrams,
+                        }
+                    });
                 }
                 ControlReply::Peers { value }
             }
@@ -456,7 +487,7 @@ async fn handle_control(
                 },
                 Ok(now) => match local_contact.verify(&local_state.identity().root_verifying_key, now) {
                     Ok(()) => ControlReply::Resolve {
-                        value: cli_peer::resolve_local(local_contact),
+                        value: cli_peer::resolve_local_live(local_contact, directory, now),
                     },
                     Err(error) => ControlReply::Error {
                         message: format!("this computer's signed record is not currently valid: {error}"),
@@ -488,7 +519,7 @@ async fn handle_control(
         .into_unchanged(),
     };
     let _write = tokio::time::timeout(Duration::from_secs(2), control::write_reply(stream, &reply)).await;
-    Ok(())
+    Ok(changed)
 }
 
 fn is_supervised() -> bool {

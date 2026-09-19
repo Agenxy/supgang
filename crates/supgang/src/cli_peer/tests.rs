@@ -21,6 +21,7 @@ fn row(name: &str, byte: u8) -> PeerRow {
         fingerprint: node_id.to_string().chars().take(8).collect(),
         node_id: node_id.to_string(),
         connected: None,
+        connection: None,
         status: "fresh".to_owned(),
         generation: 0,
         sequence: 1,
@@ -85,6 +86,30 @@ fn exact_owner_tag_outranks_another_peers_signed_name() -> Result<(), Box<dyn st
     assert_eq!(
         resolve_selector_from_rows(&[tagged.clone(), remote_name], "home")?,
         NodeId::from_str(&tagged.node_id)?
+    );
+    Ok(())
+}
+
+#[test]
+fn connection_diagnostics_are_optional_and_separate_from_advertised_addresses() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut peer = row("Workstation", 1);
+    let legacy = serde_json::to_value(&peer)?;
+    assert!(legacy.get("connection").is_none());
+    assert!(serde_json::from_value::<PeerRow>(legacy)?.connection.is_none());
+    peer.connection = Some(crate::cli_peer_types::PeerConnection {
+        remote_address: "192.0.2.1:51000".to_owned(),
+        received_datagrams: 2,
+        sent_datagrams: 3,
+    });
+    let restored: PeerRow = serde_json::from_value(serde_json::to_value(&peer)?)?;
+    assert!(restored.addresses.is_empty());
+    assert_eq!(
+        restored
+            .connection
+            .ok_or("missing transport diagnostics")?
+            .received_datagrams,
+        2
     );
     Ok(())
 }
@@ -157,6 +182,18 @@ fn this_computer_prefers_a_private_ipv4_interface() -> Result<(), Box<dyn std::e
         IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0)),
     )];
     assert_eq!(self_preferred_index(&candidates, &networks), Some(1));
+    Ok(())
+}
+
+#[test]
+fn a_stopped_computer_does_not_invent_an_advertised_port() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("state");
+    let local = crate::state::initialize(&path)?;
+    let row = super::stopped_local_row_with_name(&local, &crate::profile::PeerName::new("Stopped")?, &[]);
+    assert_eq!(row.status, "stopped");
+    assert_eq!(row.candidate_count, 0);
+    assert!(row.addresses.is_empty());
     Ok(())
 }
 
