@@ -1,6 +1,6 @@
 # ADR 0004: The threshold root protocol
 
-Status: proposed (third draft, after astra's sixth review: GO for an isolated test-key prototype, not for production authority)
+Status: proposed (fourth draft; the prototype of package 4 exists and settled eleven passages, each now stated the way the prototype does it)
 
 Date: 2026-09-20
 
@@ -37,9 +37,12 @@ confirms the same digest on screen before the first step, so the chain is
 bound to one agreed transcript, not to a library call. The founding devices
 are the first members, and the first root operation issues their memberships.
 Founding refuses `n < k + 1` unless `--accept-single-loss-failure` is given,
-and `doctor` says so thereafter. Supported parameters: `1 <= k <= n <= 16`;
-a hive founded 1-of-1 is the file-held root of today under another name, and
-`doctor` says so.
+and `doctor` says so thereafter. Supported parameters: `2 <= k <= n <= 16`:
+FROST (the pinned 3.0.0 refuses `min_signers < 2`, and rightly, since a
+1-of-1 participant would hold the whole secret) has no threshold one. A hive
+with one device is administered by the file-held root of today, which is not
+this protocol, and `doctor` says so; founding a threshold root is the step
+from one device to at least three.
 
 ## Root state: agreement before signature
 
@@ -56,13 +59,21 @@ RootStep/v1 (canonical CBOR, domain supgang/root-step/v1\0):
   epoch           u64, the root epoch this step is under
   recovery_gen    u64, the recovery generation in force
   operation       one of: issue-membership, revoke, trust-anchor, allocate-name,
-                  issue-leaf, reshare, succession, set-recovery-group
+                  issue-leaf, succession, admit-roster, set-ca-holders
+                  (no reshare: group changes are DKG plus succession; no
+                  standalone set-recovery-group: the recovery descriptor
+                  changes only inside a recovery succession; an unknown
+                  tag fails to decode)
   payload         the operation's canonical bytes
   proposed_at     seconds
   proposer        NodeId
 ```
 
-The root signature covers the whole step. A member holds the digest of the
+The root signature covers the domain and the whole canonical step; what a
+signer commits to is the step's content digest, and the signing package it
+later receives must carry a message byte-equal to the step it committed to
+(the package's own digest binds the session id and the commitment set, and
+is a separate check). A member holds the digest of the
 last step it accepted and accepts a step only if its `predecessor` is that
 digest and its `sequence` is next; a step whose predecessor it has not seen
 is held until the chain arrives, as revocation snapshots are today.
@@ -208,9 +219,10 @@ A second FROST group, `(k_r, n_r)` over the shareholders plus offline shares
 operations are a `recovery` succession and changes to *itself*. Its
 descriptor is part of the founding digest: **pinned at founding, and never
 changed by the ordinary root.** Changing the recovery group (its roster,
-threshold or key) is a `set-recovery-group` step authorized by the *existing*
-recovery group with the successor group's possession, never by a root
-quorum; so a compromised root cannot install a recovery group of its own.
+threshold or key) happens only inside a recovery succession, authorized by
+the *existing* recovery group with the successor group's possession, never
+by a root quorum and never as a standalone step; so a compromised root cannot
+install a recovery group of its own.
 Precedence is by the **recovery generation**, ordered before the root epoch:
 a member orders state by `(recovery_gen, epoch, sequence)`, only a recovery
 succession advances `recovery_gen`, and a step with a greater `recovery_gen`

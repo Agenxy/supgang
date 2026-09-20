@@ -1,6 +1,6 @@
 # ADR 0003: Hardware-held device keys and device-certified subordinate keys
 
-Status: proposed (eighth draft; package 2 implemented the certificate and manifest contract, and its harness corrected the CA confinement claim)
+Status: proposed (ninth draft; aligned with ADR 0004's fourth draft and package 4's findings)
 
 Date: 2026-09-19
 
@@ -185,7 +185,8 @@ and no device key confers it. It is issued by the hive root, once per hive:
 - **CA material** is generated separately (P-256; held as ADR 0004 states,
   sealed by every shareholder), never derived from any hive identifier or
   device key.
-- **A trust-anchor manifest**, root-signed (`supgang/trust-anchor/v1\0`):
+- **A trust-anchor manifest**, the payload of a `trust-anchor` root step
+  (ADR 0004; the step's domain is the root's one signing domain):
   the CA's SPKI, its X.509 certificate, an epoch, and validity. The
   certificate: `basicConstraints` critical `CA:TRUE, pathLen:0`; `keyUsage`
   critical `keyCertSign` only; `nameConstraints` critical with
@@ -197,9 +198,12 @@ and no device key confers it. It is issued by the hive root, once per hive:
   matches nothing" is not a thing, and 0.0.0.0/32 would permit 0.0.0.0),
   `rfc822Name` and `uniformResourceIdentifier` are not constrained by this
   profile because leaves never carry them and RFC 5280 gives no interoperable
-  way to exclude a whole name form; the harness below checks that a leaf
-  carrying one is refused by each platform, and a platform that accepts it is
-  recorded as not confining that form. Leaves carry `dNSName` SANs only, and
+  way to exclude a whole name form; the harness below records what each
+  platform does with a leaf whose only identity is such a name (rustls-webpki
+  refuses it for want of a DNS identity, which is not exclusion of the form)
+  and accepts a leaf carrying an allowed DNS name beside an unused one;
+  neither is a confinement claim about those forms. Leaves carry `dNSName`
+  SANs only, and
   the standalone instance anchor (Compass) uses the same profile with a
   single hostname permitted, which as a DNS subtree also permits names under
   it; exact-host confinement is a claim only where the harness shows the
@@ -274,7 +278,7 @@ gives, stated exactly, because the first draft of this section claimed more:
   are compromised, and *available* while at least k shares can take part.
   It therefore tolerates at most n − k unavailable devices: 2-of-2 fails on
   one lost laptop and does not meet the requirement; 2-of-3 is the least
-  configuration that does. Supgang refuses to found or reshare a root with
+  configuration that does. Supgang refuses to found or regroup a root with
   n < k + 1 unless the owner passes `--accept-single-loss-failure`, and
   `doctor` names such a hive as failing the requirement. A device that
   withholds participation counts against availability like a lost one. The
@@ -297,16 +301,12 @@ gives, stated exactly, because the first draft of this section claimed more:
   Ed448, P-256 and secp256k1. The root uses the Ed25519 suite so that verifiers
   see an ordinary Ed25519 signature and records do not change shape; the
   choice is a suite, not a limitation of FROST.
-- **Reshare does not kill an old quorum.** A reshare produces new shares over
-  the *same* public key; a retired share cannot join a current session, but k
-  retired shares that survive together can still sign, and a verifier cannot
-  tell. So reshare is for adding and removing devices under the assumption
-  that fewer than k retired shares are ever exposed together; after a period
-  as 1-of-1 (one device held the whole secret), or on any suspicion that a
-  quorum of old shares exists, the root *public key* rotates by a `planned`
-  succession. Every share carries a generation id; sessions refuse shares of
-  another generation; a restored backup that resurrects a retired share, or
-  a nonce state, is refused and the device re-enrols.
+- **There is no same-key reshare in the first version.** Adding or removing
+  a device is a fresh DKG plus a `planned` succession to the new root public
+  key (ADR 0004): retired shares cannot sign under the new key, so the
+  old-quorum question of same-key resharing does not arise. Every share
+  carries a generation id; a restored backup that resurrects a retired share
+  or nonce state is refused and the device re-enrols.
 - **A signature is not agreement.** FROST produces a signature; it does not
   decide which of two conflicting root operations happened. Two 2-of-3
   subsets sharing one member can each sign incompatible states. ADR 0004
@@ -316,7 +316,9 @@ gives, stated exactly, because the first draft of this section claimed more:
   before it signs; a member accepts a root operation only if its predecessor
   is the member's current state; two operations with the same predecessor
   and different content are root equivocation, on which administration halts
-  until the owner resolves it in person with a quorum. Any eligible
+  until a recovery succession (ADR 0004) moves the chain past it; a quorum of
+  the forked root could be the faulty one, so it cannot resolve itself. Any
+  eligible
   shareholder may coordinate a session; the coordinator can neither
   substitute the payload (each signer signs the digest it was shown and
   recorded) nor become a dependency (a session is abortable and resumable
@@ -334,8 +336,11 @@ gives, stated exactly, because the first draft of this section claimed more:
   key itself is held sealed by every shareholder and has a one-holder
   compromise threshold; ADR 0004 states that trade and its consequences, and
   supersedes any earlier mention of a threshold CA here.
-- **Succession** (`RootSuccession/v1`) is for a root that is compromised or
-  must rotate: the stable `HiveId` (the hash of the founding root public key,
+- **Succession** is a `succession` step whose payload is `RootSuccession/v1`
+  (ADR 0004), for a root that is compromised or must rotate. Its possession
+  signatures are computed over the step with every possession field zeroed,
+  so no signature is part of its own input; the authorizing signature is the
+  step's and lies outside the payload. It carries: the stable `HiveId` (the hash of the founding root public key,
   never changing), the predecessor root public key and epoch, the successor
   root public key, the next epoch, `kind` `planned` | `recovery`, an issuance
   time, the digest of the retained set (below), the recovery-group descriptor
@@ -357,16 +362,17 @@ gives, stated exactly, because the first draft of this section claimed more:
   signature cover), and members accept under the retired root only what it
   names; a later holder of the retired root can add nothing. `recovery`:
   nothing is kept; every device re-enrols, every trust anchor and name the
-  predecessor issued is withdrawn, the shareholders reshare for the new root.
-- **Epochs and rollback.** Members persist the greatest (root epoch, recovery
-  generation) seen and refuse anything older. The durable head witness
+  predecessor issued is withdrawn, the shareholders run a new DKG for the new root.
+- **Epochs and rollback.** Members order root state by (recovery
+  generation, root epoch, sequence), recovery first (ADR 0004), persist the
+  greatest seen and refuse anything older. The durable head witness
   detects a rolled-back state file, not a whole-machine restore; that
   boundary stays as the threat model states it, and a restored member is
   stale under the freshness rule until it reconciles.
 
 ADR 0004 specifies the protocol: dealerless share generation, the two-round
 signing session over the control channel with presence at each participant,
-the root-state protocol, reshare with generations, the custody modes and the
+the root-state protocol, regroup with generations, the custody modes and the
 provider capability matrix, the recovery group, and the adversarial vectors
 (a lying shareholder, a replayed session, a substituted payload, a restored
 share, two conflicting operations, a recovery racing a planned chain).
