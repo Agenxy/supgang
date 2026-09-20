@@ -1,6 +1,6 @@
 # ADR 0004: The threshold root protocol
 
-Status: proposed (second draft, after astra's fifth review)
+Status: proposed (third draft, after astra's sixth review: GO for an isolated test-key prototype, not for production authority)
 
 Date: 2026-09-20
 
@@ -72,9 +72,10 @@ halt*, not fork prevention, and the ADR's first draft claimed more. Two
 valid steps with the same predecessor and different content are a **fork**.
 Whether a fork requires a faulty signer depends on the quorums: with k of n
 signing and 2k > n, any two signing quorums share a member, so a fork means
-some member signed both, which the commit rule below makes a faulty act; with
-2k <= n (a permitted 2-of-4, say) two honest, disjoint quorums can each sign
-a different step in good faith, and a fork is not evidence of fault at all.
+some member released signature shares on two steps with one predecessor,
+which the permanent-lock rule below makes a faulty act; with 2k <= n (a
+permitted 2-of-4, say) two honest, disjoint quorums can each sign a
+different step in good faith, and a fork is not evidence of fault at all.
 Supgang states which regime a group is in (`doctor`: "quorums intersect" or
 "quorums may be disjoint") and does not pretend the second is the first. In
 either regime the behaviour on a fork is the same: the member records both
@@ -85,9 +86,11 @@ never assemble it (the first draft's circularity). The way out of a fork is
 a **recovery succession** (below): the recovery group, pinned at founding and
 independent of the chain, names the branch that stands, or none, and every
 member follows it because its authority does not derive from the forked
-chain. A fork is therefore an owner-in-person event by design, and rare by
-construction: one owner proposes steps from one device at a time, and the
-commit rule keeps an honest signer from taking part in two proposals at once.
+chain. A fork is therefore an owner-in-person event by design. On a detected fork a
+member also stops honouring, for admissions, enrolments and writes, any
+certificate or allocation issued by either branch after the fork point;
+reads continue; recovery restores authority prospectively and undoes nothing
+done before the fork was discovered.
 
 ## A signing session
 
@@ -103,14 +106,20 @@ a role, not an authority.
    the owner-only control channel), records `committed(step digest,
    session id)` durably, then generates its FROST nonces for *this session
    id*, records `nonces_issued(session id, commitment)` durably, and sends
-   its commitment. A shareholder that has committed to a step with this
-   predecessor refuses to commit to another with the same predecessor while
-   the first session is live; a session is live until it completes, or until
-   its 10-minute deadline passes, after which the lock is released and the
-   nonces are recorded `discarded` (a deadline is a local fact about this
-   signer's own lock and nonces; it does not claim the session cannot
-   complete elsewhere, which is why a signature that does appear later is
-   still a valid step, and a fork if another was signed meanwhile).
+   its commitment. **The lock on a predecessor is permanent once a signature
+   share has left this device.** A shareholder that has committed to a step
+   with predecessor P refuses to commit to any other step with predecessor P
+   until: the first step is published (then P is no longer the tip); or, if
+   it never released a signature share for it, its 10-minute deadline passes
+   (the commitment alone proves nothing and the nonces are recorded
+   `discarded`); or a recovery succession moves the chain past P. Once it
+   *has* released a share, only the same step or a recovery can move it: a
+   delayed publication can then never meet a second signature from the same
+   signer, so with intersecting quorums (2k > n) a fork does imply a signer
+   that broke this rule. The cost is stated: a step whose session died after
+   shares were released leaves its signers locked on P until that step is
+   published or a recovery runs; the CLI shows the lock and the step, and the
+   session can be resumed (below) to finish it.
 3. **Sign (round 2).** With k commitments, the coordinator sends the signing
    package (the step digest and the exact set of commitments). Each
    participant checks that the digest is byte-equal to the one it committed
@@ -169,13 +178,22 @@ The first version has no same-key reshare. Adding or removing a device, or
 changing k, is: run a fresh DKG among the new group (as at founding, over the
 control channel, with a new founding digest), then a `planned` succession
 step of the *old* root naming the new root public key, the new group
-descriptor digest, and the retained set (ADR 0003), signed by a quorum of the
-old group; members move to the new root exactly as for any planned
-succession. What that gives, stated: the old root's shares are worthless
-after the succession (the root key changed), so the old-quorum concern of
-same-key resharing does not arise; the cost is that everything issued by the
-old root is either retained by digest in the succession or reissued, which
-ADR 0003 already requires of a planned succession. Same-key refresh (FROST's
+descriptor digest (its every public output: roster, verifying shares, root
+public key; the founding digest is over these public outputs, not the
+private DKG transcript), and the retained set (ADR 0003), signed by a quorum
+of the old group; members move to the new root exactly as for any planned
+succession. The successor's first step names the succession step's digest as
+predecessor, continues the sequence, and carries the new epoch; the `HiveId`
+never changes. The DKG among the new group runs over the control channel
+under a **pending roster**: an `admit-roster` step of the old root names the
+candidate devices for exactly this DKG, and the control channel admits a
+candidate to that ceremony alone until the succession lands. What the
+transition gives, stated relative to a verifier: one that has accepted the
+succession cannot be moved by the old root's shares (the key changed); one
+that has not can still be shown old-root branches by retired shares, which
+is the stale-peer window every succession has and reconciliation closes; the
+cost is that everything issued by the old root is either retained by digest
+in the succession or reissued, which ADR 0003 already requires. Same-key refresh (FROST's
 `keys::refresh`, whose construction for a *different* participant set and
 threshold is a protocol in its own right, not a library call) is deferred to
 a later ADR with its own review; until then `doctor` has no "reshare" and the
@@ -201,9 +219,17 @@ succession names as predecessor the last step the recovery group *saw*,
 which need not be the tip of a compromised chain; members accept it
 regardless of tip, since its authority is the recovery group's, and discard
 every step after that predecessor; it resets authority as ADR 0003 requires
-(every device re-enrols, every anchor and name is withdrawn). Two recovery
-successions at one generation with different content are a fork of the
-recovery group itself: members halt and the owner re-founds in person. The
+(every device re-enrols, every anchor and name is withdrawn). The recovery
+descriptor has its own monotonic sequence and predecessor-descriptor digest,
+independent of the ordinary chain, and changes to it happen *only inside a
+recovery succession* (which carries the new descriptor and advances the
+generation), so it is never a step that must follow a possibly forked tip; a
+planned succession carries the recovery descriptor forward unchanged, by
+digest, and one that does not is refused. Stale peers learn the current
+descriptor from the latest recovery succession they hold, ordered by
+generation. Two recovery successions at one generation with different
+content are a fork of the recovery group itself: members halt and the owner
+re-founds in person. The
 owner chooses `(k_r, n_r)` so that no set of devices small enough to be
 stolen together meets `k_r`, and no set small enough to be lost together
 prevents it; the CLI asks which devices share a bag or a house, and states
@@ -227,8 +253,12 @@ threshold, not the root's k-holder threshold.** A stolen shareholder device
 whose sealed key is unsealed can issue a leaf for any name under the anchor's
 constraint without any step, and browsers do not consult the ledger. That is
 the honest trade for X.509 compatibility until a reviewed threshold-ECDSA
-scheme is worth its complexity, and the mitigations are the name constraint,
-short leaves (90 days), and `compass trust compromised`. Consequences are
+scheme is worth its complexity. Two compromises are distinguished: a *leaf*
+key's, bounded by the leaf's 90 days; and the *CA* key's, which short leaves
+do not bound at all (a thief issues leaves with any validity) and which ends
+only when every relying party has stopped trusting the anchor, which is what
+`trust-anchor` withdrawal and `compass trust compromised` are for. The name
+constraint bounds what either can be used for. Consequences are
 specified: distribution of the sealed key to a new holder is a
 `set-ca-holders` step plus an encrypted transfer over the control channel;
 removing a holder (a lost device) rotates the CA (`trust-anchor` with a new
@@ -249,7 +279,11 @@ root quorum attempting `set-recovery-group` (refused); a planned succession
 chain racing a recovery (the recovery wins by generation); a signing package
 re-sent with a different commitment set (refused; the cached share returned
 only for the byte-identical package); a control-channel proof replayed with
-another challenge or generation (refused); a step whose predecessor is unknown (held, not
+another challenge or generation (refused); the all-honest delayed-publication
+case (A and B sign X on P, B is later asked to sign Y on P: refused by the
+permanent lock; the fixture shows no fork results); a stale recovery
+descriptor replayed (refused by its sequence); a candidate device on the
+control channel outside a pending roster (refused); a step whose predecessor is unknown (held, not
 rejected, then accepted when the chain arrives); founding with `n < k + 1`
 refused without the flag; a session past 10 minutes abandoned with nonces
 gone; a peer outside the group on the control channel refused whatever it

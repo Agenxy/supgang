@@ -1,6 +1,6 @@
 # ADR 0003: Hardware-held device keys and device-certified subordinate keys
 
-Status: proposed (sixth draft, after astra's five security reviews)
+Status: proposed (seventh draft, after astra's six security reviews)
 
 Date: 2026-09-19
 
@@ -178,9 +178,9 @@ CA is a separate authorization act (below); root recovery cannot stay later
 A browser-trusted root is authority over names, wider than any one service,
 and no device key confers it. It is issued by the hive root, once per hive:
 
-- **CA material** is generated separately (P-256, held by the founder as the
-  root is, hardware where available), never derived from any hive identifier
-  or device key.
+- **CA material** is generated separately (P-256; held as ADR 0004 states,
+  sealed by every shareholder), never derived from any hive identifier or
+  device key.
 - **A trust-anchor manifest**, root-signed (`supgang/trust-anchor/v1\0`):
   the CA's SPKI, its X.509 certificate, an epoch, and validity. The
   certificate: `basicConstraints` critical `CA:TRUE, pathLen:0`; `keyUsage`
@@ -207,12 +207,19 @@ and no device key confers it. It is issued by the hive root, once per hive:
   NSS database on Linux, a disposable profile in a browser) and checks, with
   a positive control, that a leaf for an allowed name is accepted and that
   leaves for a forbidden DNS name, an IPv4 SAN, an IPv6 SAN, a mixed SAN set
-  (allowed name plus forbidden), a child of the permitted name, and a
-  subordinate CA are each refused for the trust purpose actually in use
-  (server authentication, the purpose the anchor is installed for; other
-  purposes are not claimed and not inferred), and that a leaf carrying an
-  allowed DNS name plus an unused email SAN is accepted (an irrelevant SAN is
-  not the property); the result is recorded per platform and
+  (allowed name plus forbidden) and a subordinate CA are each refused for the
+  trust purpose actually in use (server authentication, the purpose the
+  anchor is installed for; other purposes are not claimed and not inferred),
+  and that a leaf carrying an allowed DNS name plus an unused email SAN is
+  accepted (an irrelevant SAN is not the property). The harness is
+  parameterised by the claimed profile: for the hive **subtree** profile a
+  child of the permitted name must be *accepted* (children are the service
+  names the hive exists to name) and a name outside the subtree refused; for
+  Compass's **exact-host** profile a child must be refused, and since X.509
+  DNS constraints are subtrees, exact-host is claimed only where the harness
+  shows the platform enforces it by some construction the ADR of that
+  profile states; otherwise Compass describes its anchor as a subtree of its
+  hostname. The result is recorded per platform and
   browser, and an anchor is installed in the real store only where every
   refusal held. Members install the anchor
   into platform trust only when the manifest verifies under the root they
@@ -220,7 +227,8 @@ and no device key confers it. It is issued by the hive root, once per hive:
   root-signed withdrawal arrives, completing removal before the new one is
   trusted; `supgang trust install|remove|status|verify` are the verbs, owner
   presence required for install.
-- **Leaves** are issued by the founder's `supgang trust issue` for a name
+- **Leaves** are issued by an `issue-leaf` root step (ADR 0004; a quorum
+  authorizes the exact certificate body, a CA holder signs it) for a name
   under the suffix to a device-certified `transport-server` key: the leaf's
   SPKI is the certified key, validity at most 90 days, `serverAuth` only. A
   consumer serving TLS (Compass's `compassd`) presents that leaf; Remap's
@@ -235,7 +243,7 @@ and no device key confers it. It is issued by the hive root, once per hive:
   each instance's exact hostname (`compass.<hive>.gang`, or
   `compass-2.<hive>.gang`) is Remap's to resolve, and the RP ID for WebAuthn
   is that exact hostname. A consumer that had a standalone hostname before
-  the hive keeps it: the founder may allocate that exact name under the gang
+  the hive keeps it: the root may allocate that exact name under the gang
   suffix only if it already ends in the suffix, and otherwise the consumer's
   name stays what it was and the hive issues a leaf for it through a second,
   instance-specific anchor rather than renaming; renaming is a destructive
@@ -375,10 +383,12 @@ process can still do, stated once and versioned (`policy: 1`):
   for one overlap). Never `sign(bytes)`. So a same-user process cannot make
   it sign an endpoint record with the device key, and a certificate cannot
   exist outside a signed manifest.
-- Every signing domain, assigned. Root (threshold): `supgang/membership/v2`,
-  `supgang/revocation/v2`, `supgang/trust-anchor/v1`, `supgang/name/v1`,
-  `supgang/succession/v1`, `supgang/reshare/v1`. Device key:
-  `supgang/authority/v1` only. Publication key: `supgang/endpoint-record/v4`,
+- Every signing domain, assigned. Root (threshold, as ADR 0004 steps):
+  `supgang/root-step/v1`, whose payloads carry membership, revocation,
+  trust-anchor, name, succession and roster operations. Device key:
+  `supgang/authority/v1`, and `supgang/control-auth/v1` (ADR 0004's typed
+  control-channel proof; the helper exposes it as `control-auth(challenge,
+  peer, descriptor digest)` and nothing more general). Publication key: `supgang/endpoint-record/v4`,
   `supgang/session/v2`, `supgang/checkpoint/v2`, `supgang/renewal/v1`.
   Subject keys: `supgang/certified-key-possession/v1` and their own
   protocols. Nothing else signs. Stated consequence: a publication-key
