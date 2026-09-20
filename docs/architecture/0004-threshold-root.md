@@ -1,6 +1,6 @@
 # ADR 0004: The threshold root protocol
 
-Status: proposed (fourth draft; the prototype of package 4 exists and settled eleven passages, each now stated the way the prototype does it)
+Status: proposed (fifth draft; after astra's seventh review of the prototype and package 5's corrections)
 
 Date: 2026-09-20
 
@@ -281,6 +281,36 @@ key), and until every browser has the new anchor the old one is still
 trusted by them, so the withdrawal manifest is published at once and old
 leaves are not renewed; the CA key is in each holder's backup only as the
 sealed blob, never in the clear.
+
+## Two trades, decided
+
+- **A retired root can halt its successor.** A verifier that accepted a
+  planned succession keeps the old context so that it can still detect a fork
+  of the old root retrospectively; the price is that a later thief of the
+  retired quorum can sign a competing child of the old predecessor and halt
+  the successor chain (it gains no authority under the new key; it costs the
+  owner a recovery). Decided: keep retrospective detection. A halt is loud and
+  the owner's to end; a silently accepted old-root fork would not be. The
+  fixture that delivers an old-root branch to a receiver that has already
+  accepted the succession asserts the halt.
+- **A signing engine is not an authorization engine.** The session signs what
+  the policy validator (package 5) admits: predecessor at the tip, operation
+  known, succession payloads complete, root and recovery keys distinct after
+  every succession. What the validator does not yet judge, and a service
+  must before any real authority: membership issuance policy, name
+  ownership, CA issuance policy, the retained set's validity, recovery-role
+  restrictions. Those are the operations' application rules, and each is a
+  test in the package that wires the operation.
+
+## What the prototype covers, and does not
+
+Founding, sessions, forks, regroup by DKG plus succession, the recovery group
+and its generation lock, control-auth, and the policy validator, all with
+file-custody test keys and no network: covered, 47 tests. `admit-roster` and
+`set-ca-holders` are decoded and refused as unimplemented; the pending-roster
+admission ceremony, encrypted CA-key transfer, sealed custody, any provider,
+and every network path are not implemented, and nothing here claims they
+are.
 
 ## Vectors the implementation refuses (tests, one each)
 
