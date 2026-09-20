@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod artifact;
+pub mod authority;
 pub mod candidate;
 pub mod cli;
 pub(crate) mod cli_args;
@@ -45,6 +46,7 @@ pub mod storage;
 pub mod sync;
 pub mod transport;
 pub mod transport_storage;
+pub mod trust_profile;
 pub mod update;
 pub(crate) mod update_wire;
 pub mod wire;

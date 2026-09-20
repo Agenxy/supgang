@@ -25,6 +25,14 @@ The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken 
 
 ### Added
 
+- Add standalone certified-key and authority-manifest v1 library types with canonical CBOR,
+  P-256/Ed25519 possession proofs, durable revision reservation, bounded lifetime id history,
+  revocation and epoch checks, and freshness/equivocation verification against test identities.
+  This package does not connect authority to endpoint records, the CLI, the service or the network.
+- Add the ADR 0003 P-256 browser-anchor profile and isolated Rustls/WebPKI confinement probes.
+  Record the verifier's acceptance of a leaf through a subordinate CA despite anchor pathLen 0;
+  the profile is not claimed to enforce a one-level hierarchy on this verifier.
+  See `docs/architecture/authority-package-2.md` for encodings, tests and acceptance limits.
 - `supgang resolve` answers for this computer as it would for any member, from the record the
   running service signs (its expiry, addresses and advertised services included), so a Remap
   name routed to a service on this computer (`supgang://<this computer>/<service>`) reaches it
