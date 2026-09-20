@@ -1,6 +1,6 @@
 # ADR 0003: Hardware-held device keys and device-certified subordinate keys
 
-Status: proposed (seventh draft, after astra's six security reviews)
+Status: proposed (eighth draft; package 2 implemented the certificate and manifest contract, and its harness corrected the CA confinement claim)
 
 Date: 2026-09-19
 
@@ -28,13 +28,17 @@ already keeps apart (root, device, transport; docs/security/threat-model.md,
    alter it.
 
 2. **A device certifies subordinate keys by a canonical, versioned certificate.**
-   `CertifiedKey/v1`, CBOR, canonical encoding, signature domain
-   `supgang/certified-key/v1\0`, fields in this order and all present:
+   `CertifiedKey/v1`, CBOR, canonical encoding (definite lengths, fixed
+   order, minimal integers, strict decoding), fields in this order and all
+   present; the certificate carries no signature of its own, the manifest's
+   is the one:
    - `hive`: the `HiveId`, so a certificate from one hive verifies in no other.
    - `issuer`: the device's `NodeId` and its *authority epoch* (a monotonic
      counter the device advances whenever it re-founds its authority: a new
      device key, or a wholesale revocation).
-   - `id`: 16 random bytes, the certificate's identity; never reused.
+   - `id`: 16 random bytes, the certificate's identity; never reused (the
+     implementation keeps every id it has ever certified for the manifest's
+     lifetime and refuses a repeat).
    - `subject`: the key: algorithm (`p256` | `ed25519`), public key bytes,
      and `custody`: `hardware` | `file` | `synced`, self-reported and labelled
      so (a device cannot prove where another key lives; the label says what
@@ -207,11 +211,18 @@ and no device key confers it. It is issued by the hive root, once per hive:
   NSS database on Linux, a disposable profile in a browser) and checks, with
   a positive control, that a leaf for an allowed name is accepted and that
   leaves for a forbidden DNS name, an IPv4 SAN, an IPv6 SAN, a mixed SAN set
-  (allowed name plus forbidden) and a subordinate CA are each refused for the
-  trust purpose actually in use (server authentication, the purpose the
-  anchor is installed for; other purposes are not claimed and not inferred),
-  and that a leaf carrying an allowed DNS name plus an unused email SAN is
-  accepted (an irrelevant SAN is not the property). The harness is
+  (allowed name plus forbidden) are each refused for the trust purpose
+  actually in use (server authentication, the purpose the anchor is installed
+  for; other purposes are not claimed and not inferred), that a leaf carrying
+  an allowed DNS name plus an unused email SAN is accepted (an irrelevant SAN
+  is not the property), and, for a leaf issued *through a subordinate CA*
+  under the anchor, that a forbidden name is still refused: the harness
+  (package 2, 2026-09-20) showed that rustls-webpki does not enforce the
+  anchor's `pathLen: 0` against such a chain, so **what confines this anchor
+  is its name constraint, which applies through every subordinate, and not
+  its path length**; "a subordinate CA is refused" is not a claim this ADR
+  makes, and a stolen CA key that mints a sub-CA gains nothing outside the
+  constrained names. The harness is
   parameterised by the claimed profile: for the hive **subtree** profile a
   child of the permitted name must be *accepted* (children are the service
   names the hive exists to name) and a name outside the subtree refused; for
