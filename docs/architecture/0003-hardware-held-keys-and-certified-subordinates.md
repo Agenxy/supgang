@@ -1,6 +1,6 @@
 # ADR 0003: Hardware-held device keys and device-certified subordinate keys
 
-Status: proposed (fifth draft, after astra's four security reviews; the threshold root stated with its real bounds)
+Status: proposed (sixth draft, after astra's five security reviews)
 
 Date: 2026-09-19
 
@@ -114,11 +114,16 @@ new. Renewing freshness is signing a new manifest, and that needs the device
 key: the owner's presence on a hardware-held key. That is a deliberate cost:
 a touch a week on any device, since every device publishes through a
 certified publication key and so carries a manifest. Renewal requirements by
-purpose: a device whose manifest is stale still publishes addresses (the
-publication certificate is checked against the manifest that certified it,
-stale or not, until its own `not_after`), but its `attest`, `service` and
-`transport-*` keys are not honoured for new admissions, enrolments or writes
-by a consumer whose maximum status age has passed. The revocation set is
+purpose and by operation, not by key: a device whose manifest is stale may
+still have its *addresses* used as a bounded hint to reach it (the
+publication certificate checked against the manifest that certified it, until
+its own `not_after`), never overriding a known revocation, a newer authority
+epoch or a root denial, and never authenticating a network session: session
+authentication requires a publication certificate whose manifest is within
+the consumer's maximum status age; `attest` (24 hours, so a device that
+endorses enrolments renews daily, not weekly), `service` and `transport-*`
+keys are not honoured for new admissions, enrolments or writes once the age
+has passed. Epoch watermarks persist after old revocation sets are discarded. The revocation set is
 bounded: at most 64 ids and 4 KiB encoded; when either would be exceeded the
 device advances its authority epoch (an owner-approved operation that
 revokes everything certified before it) and starts an empty set, and
@@ -192,16 +197,22 @@ and no device key confers it. It is issued by the hive root, once per hive:
   carrying one is refused by each platform, and a platform that accepts it is
   recorded as not confining that form. Leaves carry `dNSName` SANs only, and
   the standalone instance anchor (Compass) uses the same profile with a
-  single exact hostname permitted. Whether a
+  single hostname permitted, which as a DNS subtree also permits names under
+  it; exact-host confinement is a claim only where the harness shows the
+  platform refuses a child name, and otherwise the anchor is described as
+  confined to the subtree. Whether a
   platform *enforces* name constraints on a user-installed anchor is not
   assumed: `supgang trust verify` builds a throwaway anchor of this exact
   profile in an isolated store (a temporary keychain on macOS, a temporary
   NSS database on Linux, a disposable profile in a browser) and checks, with
   a positive control, that a leaf for an allowed name is accepted and that
   leaves for a forbidden DNS name, an IPv4 SAN, an IPv6 SAN, a mixed SAN set
-  (allowed name plus forbidden), an email or URI SAN, and a subordinate CA
-  are each refused for the trust purpose actually in use (server
-  authentication); the result is recorded per platform and
+  (allowed name plus forbidden), a child of the permitted name, and a
+  subordinate CA are each refused for the trust purpose actually in use
+  (server authentication, the purpose the anchor is installed for; other
+  purposes are not claimed and not inferred), and that a leaf carrying an
+  allowed DNS name plus an unused email SAN is accepted (an irrelevant SAN is
+  not the property); the result is recorded per platform and
   browser, and an anchor is installed in the real store only where every
   refusal held. Members install the anchor
   into platform trust only when the manifest verifies under the root they
@@ -300,11 +311,10 @@ gives, stated exactly, because the first draft of this section claimed more:
   shareholders' own device keys and share generation, not their membership
   validity, so expired membership cannot make repair impossible.
 - **The CA is the root's, not the founder's.** Trust-anchor issuance and
-  leaf issuance are root operations like any other (a quorum signs); the CA
-  private key is itself threshold-held (the P-256 FROST suite) or, until a
-  provider exists for that, held by two shareholders under the recovery
-  threshold's custody rules, with replacement by quorum stated as the
-  availability answer: issuance may pause; it cannot be lost with one device.
+  leaf issuance are root operations like any other (a quorum signs). The CA
+  key itself is held sealed by every shareholder and has a one-holder
+  compromise threshold; ADR 0004 states that trade and its consequences, and
+  supersedes any earlier mention of a threshold CA here.
 - **Succession** (`RootSuccession/v1`) is for a root that is compromised or
   must rotate: the stable `HiveId` (the hash of the founding root public key,
   never changing), the predecessor root public key and epoch, the successor

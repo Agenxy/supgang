@@ -1,6 +1,6 @@
 # ADR 0004: The threshold root protocol
 
-Status: proposed (first draft, after astra's fourth review of ADR 0003)
+Status: proposed (second draft, after astra's fifth review)
 
 Date: 2026-09-20
 
@@ -29,9 +29,17 @@ key carrying the peer's device public key and a 256-bit capability; the
 owner compares six words on both screens). No device ever holds the whole
 root secret, not at founding, not after. The result on each device is one
 share, the group public key (the root), and every participant's verifying
-share; the founding devices are the first members, and the first root
-operation issues their memberships. Founding refuses `n < k + 1` unless
-`--accept-single-loss-failure` is given, and `doctor` says so thereafter.
+share. The **founding digest**, the chain's first predecessor, is SHA-256 over
+the complete group descriptor (hive label, every participant's device key,
+(k, n), every verifying share, the root public key) *and* the recovery
+group's descriptor (below), which is fixed at founding too; every founder
+confirms the same digest on screen before the first step, so the chain is
+bound to one agreed transcript, not to a library call. The founding devices
+are the first members, and the first root operation issues their memberships.
+Founding refuses `n < k + 1` unless `--accept-single-loss-failure` is given,
+and `doctor` says so thereafter. Supported parameters: `1 <= k <= n <= 16`;
+a hive founded 1-of-1 is the file-held root of today under another name, and
+`doctor` says so.
 
 ## Root state: agreement before signature
 
@@ -57,16 +65,29 @@ RootStep/v1 (canonical CBOR, domain supgang/root-step/v1\0):
 The root signature covers the whole step. A member holds the digest of the
 last step it accepted and accepts a step only if its `predecessor` is that
 digest and its `sequence` is next; a step whose predecessor it has not seen
-is held until the chain arrives, as revocation snapshots are today. Two
-valid steps with the same predecessor and different content are **root
-equivocation**: the member records both, stops accepting root operations,
-and reports; the owner resolves it in person by a quorum signing a step whose
-payload names which branch stands (`operation: resolve`, added to the set
-above), and a member accepts the resolution only from a quorum that includes
-at least one signer of each branch, so a lone faulty subset cannot resolve
-its own equivocation. Administration halting on conflict is the chosen
-behaviour: a hive is one owner's devices, and a halt that the owner ends by
-hand is safer than an agreement protocol that decides for them.
+is held until the chain arrives, as revocation snapshots are today.
+
+**The property, stated exactly.** This chain gives *fork detection and a
+halt*, not fork prevention, and the ADR's first draft claimed more. Two
+valid steps with the same predecessor and different content are a **fork**.
+Whether a fork requires a faulty signer depends on the quorums: with k of n
+signing and 2k > n, any two signing quorums share a member, so a fork means
+some member signed both, which the commit rule below makes a faulty act; with
+2k <= n (a permitted 2-of-4, say) two honest, disjoint quorums can each sign
+a different step in good faith, and a fork is not evidence of fault at all.
+Supgang states which regime a group is in (`doctor`: "quorums intersect" or
+"quorums may be disjoint") and does not pretend the second is the first. In
+either regime the behaviour on a fork is the same: the member records both
+branches, stops accepting root steps, and reports. There is no `resolve` or
+`abort` step under the ordinary root: a quorum that could sign one could be
+the faulty quorum, and honest signers locked on different proposals could
+never assemble it (the first draft's circularity). The way out of a fork is
+a **recovery succession** (below): the recovery group, pinned at founding and
+independent of the chain, names the branch that stands, or none, and every
+member follows it because its authority does not derive from the forked
+chain. A fork is therefore an owner-in-person event by design, and rare by
+construction: one owner proposes steps from one device at a time, and the
+commit rule keeps an honest signer from taking part in two proposals at once.
 
 ## A signing session
 
@@ -79,38 +100,53 @@ a role, not an authority.
 2. **Review and commit (round 1).** Each participating shareholder shows the
    step to the owner (operation, payload in words, predecessor sequence),
    requires presence to proceed (Touch ID, PIN, touch; on a file-held share,
-   the owner-only control channel), records the step's digest durably as
-   `committed`, then generates its FROST nonces and sends its commitment.
-   A shareholder that has committed to a step with this predecessor refuses
-   to commit to another with the same predecessor until the first is signed
-   or abandoned by a quorum-signed `abort` (an `operation` too): this is what
-   makes equivocation need a faulty signer, never an honest one who was
-   shown two proposals.
+   the owner-only control channel), records `committed(step digest,
+   session id)` durably, then generates its FROST nonces for *this session
+   id*, records `nonces_issued(session id, commitment)` durably, and sends
+   its commitment. A shareholder that has committed to a step with this
+   predecessor refuses to commit to another with the same predecessor while
+   the first session is live; a session is live until it completes, or until
+   its 10-minute deadline passes, after which the lock is released and the
+   nonces are recorded `discarded` (a deadline is a local fact about this
+   signer's own lock and nonces; it does not claim the session cannot
+   complete elsewhere, which is why a signature that does appear later is
+   still a valid step, and a fork if another was signed meanwhile).
 3. **Sign (round 2).** With k commitments, the coordinator sends the signing
-   package; each participant checks that the message is byte-equal to the
-   digest it committed to (a coordinator cannot substitute the payload) and
-   returns its signature share.
+   package (the step digest and the exact set of commitments). Each
+   participant checks that the digest is byte-equal to the one it committed
+   to and that its own commitment is among those listed, records
+   `nonces_consumed(session id, package digest)` durably **before** computing
+   its signature share, then returns the share. A participant asked to sign a
+   package for a session whose nonces are `consumed` returns the cached share
+   only if the package digest is byte-identical, and refuses otherwise; it
+   never recomputes with used nonces. A resumed session (another coordinator)
+   is a **new session id**: commitments and nonces are regenerated; the step
+   and its lock are the same.
 4. **Aggregate and publish.** The coordinator aggregates, verifies under the
    root public key, appends the step to the chain, and publishes it as
    revocation snapshots are published. Every participant verifies the
    published step against its own `committed` record.
 
-Nonces are generated fresh per session from the OS CSPRNG and used once; a
-participant that is asked to sign twice with the same commitment refuses; a
-session that does not complete within 10 minutes is abandoned and its nonces
-discarded. A session is resumable from another coordinator: the step is the
-same, the commitments are re-collected.
+Nonce secrets are never in a backup (they live in a separate file the backup
+excludes, or in the sealed store), and a restored signer reconciles its
+`committed`/`consumed` records with the chain before it may sign again.
 
 ## The control channel
 
-Sessions, reshares and recoveries run over a channel whose authentication is
-the shareholders' **device keys and share generation**, not membership: a
-device presents its `transport-client` certificate or, when its membership
-has expired or its authority is stale, its bare device key with a proof of
-possession and its share generation id; a shareholder accepts a peer into a
-session if that peer's device key is in the current group's verifying-share
-set. So expired membership cannot make repair impossible, and a device that
-is not in the group cannot take part whatever it presents.
+Sessions, group changes and recoveries run over a channel whose
+authentication is the shareholders' **device keys and share generation**, not
+membership, so expired membership cannot make repair impossible. The proof is
+a typed authority operation of the device key (added to ADR 0003's signing
+inventory as `supgang/control-auth/v1`, so the helper can produce it): a
+signature over {hive, group descriptor digest, share generation, this
+device's node id, the peer's node id, the peer's fresh 32-byte challenge, the
+TLS channel binding (exporter)}. It is replayable nowhere: another session
+has another challenge, another generation another digest, another peer
+another id. A shareholder admits a peer if the signature verifies under a
+device key in the current group's verifying-share set. The channel carries
+only session, group-change and recovery messages; admission to it confers no
+application membership, and a device outside the group is refused whatever
+it presents.
 
 ## Custody of a share, honestly
 
@@ -127,56 +163,79 @@ the P-256 device provider of ADR 0003 signs ordinary keys and implements none
 of this. `sealed` is what Apple platforms and TPMs get first. A share's
 custody is recorded in the group descriptor and shown by `doctor`.
 
-## Reshare: adding and removing devices
+## Changing the group: a new root, bound by succession
 
-`supgang root reshare --devices <n'> --threshold <k'>` is a root operation
-(a step) whose payload is the new group descriptor, signed by a quorum of the
-*current* group; the protocol is FROST's refresh (`keys::refresh`) run among
-the new members, producing shares of the **same** root public key with a new
-**share generation** id. What that gives and does not give, stated: a
-retired share cannot join a session of the new generation (sessions check the
-generation), but k retired shares that survive together can still produce a
-valid signature under the unchanged public key, and a verifier cannot tell.
-So a reshare assumes that fewer than k retired shares are ever exposed
-together. After any period at 1-of-1, or on any suspicion that a quorum of
-old shares exists, the owner rotates the root public key by a `planned`
-succession (ADR 0003), which the CLI proposes whenever the group leaves
-1-of-1. A device restored from a backup carries a share of a retired
-generation and nonce state: it is refused from sessions and re-enrols.
+The first version has no same-key reshare. Adding or removing a device, or
+changing k, is: run a fresh DKG among the new group (as at founding, over the
+control channel, with a new founding digest), then a `planned` succession
+step of the *old* root naming the new root public key, the new group
+descriptor digest, and the retained set (ADR 0003), signed by a quorum of the
+old group; members move to the new root exactly as for any planned
+succession. What that gives, stated: the old root's shares are worthless
+after the succession (the root key changed), so the old-quorum concern of
+same-key resharing does not arise; the cost is that everything issued by the
+old root is either retained by digest in the succession or reissued, which
+ADR 0003 already requires of a planned succession. Same-key refresh (FROST's
+`keys::refresh`, whose construction for a *different* participant set and
+threshold is a protocol in its own right, not a library call) is deferred to
+a later ADR with its own review; until then `doctor` has no "reshare" and the
+CLI verb is `supgang root regroup`. A device restored from a backup carries a
+share of a retired root and no nonce state: it is refused from sessions and
+re-enrols.
 
 ## The recovery group
 
 A second FROST group, `(k_r, n_r)` over the shareholders plus offline shares
-(a security key kept in a drawer, a file on media kept apart), whose only
-operation is a `recovery` succession. Its descriptor is set by a root step
-(`set-recovery-group`) and is part of what a member pins. Precedence is by
-the **recovery generation**: only a recovery succession advances it, a
-planned succession never does, a member holds `(epoch, recovery_gen)` and a
-step with a greater `recovery_gen` supersedes any chain of planned steps
-whatever their epochs. A recovery succession's step names as predecessor the
-last step the recovery group *saw*, which need not be the tip of a
-compromised chain; members accept it regardless of tip, since its authority
-is the recovery group's, not the chain's, and then discard every planned
-step after that predecessor. The owner chooses `(k_r, n_r)` so that no set of
-devices small enough to be stolen together meets `k_r`, and no set small
-enough to be lost together prevents it; the CLI asks which devices share a
-bag or a house.
+(a security key kept in a drawer, a file on media kept apart), whose
+operations are a `recovery` succession and changes to *itself*. Its
+descriptor is part of the founding digest: **pinned at founding, and never
+changed by the ordinary root.** Changing the recovery group (its roster,
+threshold or key) is a `set-recovery-group` step authorized by the *existing*
+recovery group with the successor group's possession, never by a root
+quorum; so a compromised root cannot install a recovery group of its own.
+Precedence is by the **recovery generation**, ordered before the root epoch:
+a member orders state by `(recovery_gen, epoch, sequence)`, only a recovery
+succession advances `recovery_gen`, and a step with a greater `recovery_gen`
+supersedes any chain of planned steps whatever their epochs. A recovery
+succession names as predecessor the last step the recovery group *saw*,
+which need not be the tip of a compromised chain; members accept it
+regardless of tip, since its authority is the recovery group's, and discard
+every step after that predecessor; it resets authority as ADR 0003 requires
+(every device re-enrols, every anchor and name is withdrawn). Two recovery
+successions at one generation with different content are a fork of the
+recovery group itself: members halt and the owner re-founds in person. The
+owner chooses `(k_r, n_r)` so that no set of devices small enough to be
+stolen together meets `k_r`, and no set small enough to be lost together
+prevents it; the CLI asks which devices share a bag or a house, and states
+whether the recovery quorums intersect.
 
-## The CA is the root's
+## The CA: replicated, sealed, and a one-holder threshold
 
 Trust-anchor and leaf issuance are steps (`trust-anchor`, `issue-leaf`), so a
-quorum signs them and the CA's authority is the root's. The CA *key* cannot
-be a FROST group: FROST produces Schnorr signatures, and X.509 verifiers over
-P-256 accept only ECDSA. So the CA key is a P-256 key held **sealed** by
-every shareholder (encrypted to each device's hardware key, the same bytes),
-released for a leaf issuance only after a quorum has signed the `issue-leaf`
-step, and re-generated by a quorum (`trust-anchor` with a new key) if any
-holder is lost. Availability: issuance needs one shareholder with the sealed
-key and a quorum-signed step; loss of any device does not lose the key.
-Exposure: a compromised shareholder device exposes the CA key, which is why
-the anchor is name-constrained and why `compass trust compromised` exists;
-this is the honest trade until an X.509-compatible threshold ECDSA is worth
-its complexity, and the ADR says so rather than hiding it.
+quorum authorizes them. The CA *key* cannot be a FROST group: FROST produces
+Schnorr signatures, and X.509 verifiers over P-256 accept only ECDSA. (ADR
+0003's mention of a P-256 FROST CA is withdrawn; this section is the one
+design.) So the CA key is a P-256 key held **sealed** by every shareholder of
+the root group (the same bytes, encrypted to each device's hardware key, or
+in an owner-only file where a device has none; the holder set is exactly the
+root group's roster and is recorded in the trust-anchor manifest). A leaf is
+issued by any one holder, after a quorum has signed the `issue-leaf` step
+that names the exact certificate body (serial, subject, SANs, SPKI,
+validity) and the CA identity; the holder signs only that body. Stated
+prominently: **browser trust in this hive has a one-holder compromise
+threshold, not the root's k-holder threshold.** A stolen shareholder device
+whose sealed key is unsealed can issue a leaf for any name under the anchor's
+constraint without any step, and browsers do not consult the ledger. That is
+the honest trade for X.509 compatibility until a reviewed threshold-ECDSA
+scheme is worth its complexity, and the mitigations are the name constraint,
+short leaves (90 days), and `compass trust compromised`. Consequences are
+specified: distribution of the sealed key to a new holder is a
+`set-ca-holders` step plus an encrypted transfer over the control channel;
+removing a holder (a lost device) rotates the CA (`trust-anchor` with a new
+key), and until every browser has the new anchor the old one is still
+trusted by them, so the withdrawal manifest is published at once and old
+leaves are not renewed; the CA key is in each holder's backup only as the
+sealed blob, never in the clear.
 
 ## Vectors the implementation refuses (tests, one each)
 
@@ -184,9 +243,13 @@ A lying shareholder (a bad round-2 share at founding; a bad signature share);
 a replayed session (old commitments presented again); a substituted payload
 (the signing package's message differs from the committed digest); a restored
 share (retired generation, or reused nonce state) presented to a session; two
-conflicting steps with one predecessor (equivocation halts; a lone subset's
-`resolve` refused); a planned succession chain racing a recovery (the
-recovery wins by generation); a step whose predecessor is unknown (held, not
+conflicting steps with one predecessor (a fork halts, in both quorum regimes,
+with the 2-of-4 honest-disjoint and 2-of-3 one-faulty cases as fixtures); a
+root quorum attempting `set-recovery-group` (refused); a planned succession
+chain racing a recovery (the recovery wins by generation); a signing package
+re-sent with a different commitment set (refused; the cached share returned
+only for the byte-identical package); a control-channel proof replayed with
+another challenge or generation (refused); a step whose predecessor is unknown (held, not
 rejected, then accepted when the chain arrives); founding with `n < k + 1`
 refused without the flag; a session past 10 minutes abandoned with nonces
 gone; a peer outside the group on the control channel refused whatever it
@@ -195,7 +258,12 @@ presents; a coordinator that vanishes mid-session (resumed elsewhere).
 ## Consequences
 
 Until this ADR's tests pass, a hive is administered by the file-held root as
-today, and `doctor` names it a single point of failure. ADR 0003's root
+today, and `doctor` names it a single point of failure. The provider
+capability matrix (platform, API, whether FROST rounds can run inside,
+presence behaviour, memory lifetime, export and backup behaviour, failure
+handling) is a deliverable before any platform is described as `sealed`, and
+a test-key prototype of founding, one session and one regroup precedes any
+real authority. ADR 0003's root
 operations (membership, revocation, trust anchors, names, successions) are
 steps of this chain from the first implementation, so that moving a hive
 from a file-held root to a threshold root is a `planned` succession and
