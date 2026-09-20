@@ -1,4 +1,8 @@
 //! Device signing identities and domain-separated signatures.
+//!
+//! The isolated threshold prototype uses `supgang/root-step/v1\0` for root
+//! operations. Its P-256 device proofs use `device_key::CONTROL_AUTH_DOMAIN`;
+//! the legacy live root and device signature domains remain separate.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use thiserror::Error;

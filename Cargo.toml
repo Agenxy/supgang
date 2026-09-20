@@ -15,6 +15,8 @@ homepage = "https://agenxy.org/projects/supgang"
 async-trait = { version = "=0.1.92", default-features = false }
 clap = { version = "=4.6.6", default-features = false, features = ["cargo", "derive", "help", "std", "usage"] }
 ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
+frost-core = { version = "=3.0.0", default-features = false, features = ["serialization"] }
+frost-ed25519 = { version = "=3.0.0", default-features = false, features = ["serialization"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.4.3", default-features = false }
 gethostname = { version = "=1.1.0", default-features = false }
@@ -23,6 +25,7 @@ jiff = { version = "=0.2.35", default-features = false, features = ["std"] }
 libc = { version = "=0.2.189", default-features = false }
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc", "std"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
+rand_chacha = { version = "=0.3.1", default-features = false }
 nix = { version = "=0.31.3", default-features = false, features = ["net", "socket", "user"] }
 portmapper = { version = "=0.19.1", default-features = false }
 plist = { version = "=1.10.0", default-features = false, features = ["serde"] }

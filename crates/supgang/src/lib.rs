@@ -44,6 +44,7 @@ pub mod state;
 pub mod state_lock;
 pub mod storage;
 pub mod sync;
+pub mod threshold;
 pub mod transport;
 pub mod transport_storage;
 pub mod trust_profile;

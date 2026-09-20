@@ -25,6 +25,13 @@ The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken 
 
 ### Added
 
+- Add the isolated ADR 0004 threshold-root library prototype with pinned FROST
+  3.0.0 DKG, canonical steps, durable signing-session locks, ordinary Ed25519
+  aggregates, planned and recovery succession, and typed device control proofs.
+  Shares are disposable file-custody test material held in memory; there is no
+  CLI, network or live-service integration. FROST 3.0.0 refuses threshold-one
+  DKG; the prototype reports that limit explicitly. See
+  `docs/architecture/threshold-package-4.md` for test evidence and ADR conflicts.
 - Add standalone certified-key and authority-manifest v1 library types with canonical CBOR,
   P-256/Ed25519 possession proofs, durable revision reservation, bounded lifetime id history,
   revocation and epoch checks, and freshness/equivocation verification against test identities.

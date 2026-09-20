@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::Zeroize;
 
+/// Typed threshold control-channel proof domain, including its terminal NUL.
+pub const CONTROL_AUTH_DOMAIN: &[u8] = b"supgang/control-auth/v1\0";
+
 /// Bytes in a compressed P-256 public key.
 pub const PUBLIC_KEY_BYTES: usize = 33;
 /// Bytes in a P-256 signature as Supgang carries it.
