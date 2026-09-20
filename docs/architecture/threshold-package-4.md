@@ -33,6 +33,27 @@ whole-secret reconstruction is used.
   only be resumed with a new id and new nonces. A changed package never reuses a
   nonce. Unsigned locks expire at exactly 600 seconds of caller-supplied local
   time; permanent locks do not expire. Clock rollback is refused for mutations.
+- Package 5 adds the typed `session::Policy` boundary before presence,
+  commitment and nonces. `ChainPolicy` checks the local tip, next sequence,
+  epoch, recovery generation, signer role, supported operation and nonempty
+  bounded application payload. Succession has a fully decoded payload with
+  descriptors and retained-set digest, old-key binding, distinct root/recovery
+  keys, and possession checks. Planned succession preserves recovery; recovery
+  rotation checks descriptor history and replacement possession. Other payloads
+  remain opaque in this prototype, not application-schema validation.
+- The committed record binds the locally reviewed tip digest and one explicit
+  role: root authorization, recovery authorization, successor possession or
+  replacement recovery possession. Consumers supply an authenticated local
+  snapshot and serialize chain changes with review/commit. A recovery signer
+  may review a deliberately selected earlier branch; the coordinator cannot
+  substitute its own predecessor for that view's tip. Custom policies are trusted
+  local validators, not callbacks supplied by an untrusted coordinator.
+- Recovery authorization locks the recovery generation to one full transition
+  digest, independently of predecessor. Consumption makes this lock permanent
+  before any share is computed, including across restart, discard and coordinator
+  replacement. Possession signing does not consume a recovery authorization.
+  This protects intersecting honest recovery quorums; **disjoint recovery
+  quorums can still sign different transitions and fork**, requiring refounding.
 - `SessionStore` specifies exclusive ownership, scope binding and durable
   compare-and-swap snapshots. `FileSessionStore` uses owner-only files,
   no-follow opens, the existing directory lock and ACL checks, fsync before
@@ -117,13 +138,49 @@ and root steps at most 16 KiB. Participant ids are contiguous from 1; duplicate
 device keys are refused. Every participant's custody is encoded as `file`.
 
 The chain retains at most 256 authenticated entries, 256 pending entries and
-256 recovery proofs; contexts are bounded by the authenticated entries plus
+256 recovery proofs, plus one reserved `Conflict` slot containing the first
+branch digest and the complete authenticated conflicting step (whose digest
+identifies the second branch). Fork checking precedes evidence capacity checks,
+so the reserved slot and `Halted` state survive a full history. `conflict()`
+exposes that slot; `evidence()` alone need not contain the overflow branch.
+Authenticated capacity exhaustion without a detected fork enters `Exhausted`;
+consumers must treat every status other than `Active` as halted. Pending-drain
+capacity errors are returned to the caller even though the valid parent remains
+accepted. Invalid held proofs are still dropped without poisoning the parent.
+Contexts are bounded by the authenticated entries plus
 the founding context. A signer retains at most 256 lifetime attempts and never
 prunes permanent locks. Store files are bounded to 5 MiB. Counters use checked
 advancement. Exhaustion fails closed, including when another recovery cannot
 fit in the evidence store. These are deliberately small prototype ceilings,
 not a production retention or compaction policy. The mutable DKG hooks are
 trusted test code simulating transport corruption; they are not input decoders.
+
+Package 5 changes the local session snapshot format to version 2. Each record
+adds an optional `[reviewed_tip:b32, role:u8]` before its reserved final field.
+The role tags are root=0, recovery=1, successor-possession=2 and
+recovery-possession=3. Review is absent on a proposal and immutable once set;
+committed/consumed/signed records require it. Old version 1 files are rejected,
+never silently upgraded or reset: they do not establish recovery authorization
+history. Reopening a version 2 store preserves the role, revision and permanent
+lock while burning incomplete nonces. Do not delete real signer history to
+bypass this refusal. These remain disposable test-key stores.
+
+## Retired-root halt
+
+A receiver that has already accepted a planned succession retains the old
+predecessor's verification context. A later thief holding a retired quorum can
+therefore sign a competing child of that predecessor and halt the successor
+chain, even after valid successor operations have landed. The competing branch
+does not become the current root or gain forward authority, but the halt is a
+denial of service. This is a deliberate trade: retrospective fork detection
+over immunity to retired-root halts. ADR 0004's next draft must decide whether
+to retain it. The fourth draft's claim that retired shares cannot move an
+updated receiver must not be read as immunity from this halt.
+
+`review_tests::retired_root_competing_branch_halts_an_already_succeeded_receiver`
+accepts succession and a successor operation first, then delivers the old-root
+branch and verifies `Halted` with the successor key still current. It passed
+before package 5 as well: it specifies existing behavior rather than a fix.
 
 ## Pinned libraries and actual APIs
 
@@ -219,7 +276,29 @@ All names below are under `threshold::tests`; each row identifies one test.
 | `boundary_tests::session_history_bound_and_file_corruption_fail_closed` | Attempt 257 is refused; malformed durable state is never silently reset. |
 | `boundary_tests::recovery_can_select_the_other_authenticated_fork_branch` | Recovery can select the second recorded branch, preserve its ancestry and discard the first branch from the active path. |
 
+## Package 5 regression tests
+
+Package 5 adds these regression fixtures under `threshold::tests`:
+
+| Module and test | Property proved |
+| --- | --- |
+| `review_tests::recovery_generation_lock_survives_restart_and_coordinator_replacement` | A+B authorize X; B reopens and a new coordinator resumes X with fresh nonces. B then refuses B+C's Y at the same recovery generation despite Y naming a different valid predecessor. |
+| `review_tests::ordinary_fork_at_evidence_limit_halts` | An authenticated ordinary conflict arriving at 256 entries halts, with both branch identities and the overflow proof retained without growing the history map. |
+| `review_tests::recovery_fork_at_evidence_limit_halts` | The same capacity boundary cannot suppress a recovery fork or its reserved proof. |
+| `review_tests::pending_capacity_failure_is_reported` | A held valid child that cannot fit returns `Bound` from the parent delivery and leaves `Exhausted`, rather than reporting success with `Active`. |
+| `review_tests::pending_fork_at_evidence_limit_halts` | Two held competing children drain after their parent; the second still halts when the first fills entry 256. |
+| `review_tests::retired_root_competing_branch_halts_an_already_succeeded_receiver` | A retired quorum can halt an already advanced successor by signing a competing historical child; it cannot replace the current successor key. |
+| `review_tests::policy_refuses_stale_tip_before_presence_commitment_or_nonces` | A stale predecessor is refused before presence, commitment or nonce issuance; a valid proposal persists the actual reviewed tip and preserves it across reopening. |
+| `review_tests::succession_cannot_merge_root_and_recovery_keys` | After planned succession, a recovery transition assigning one key to both groups is refused before nonces, and independently by the chain verifier despite valid possession signatures. |
+| `policy_tests::default_policy_checks_sequence_role_reserved_tags_and_payloads` | Valid ordinary/planned steps pass; wrong signer, wrong sequence, empty/malformed payloads, reserved operations, changed planned recovery and missing possession fail. |
+| `policy_tests::successor_possession_is_distinct_from_recovery_authorization` | Successor possession may cover two transitions at one recovery generation with different predecessors; persisted roles identify these as possession, and the successor cannot authorize recovery. |
+| `policy_tests::recovery_rotation_policy_requires_both_possessions` | A changed recovery descriptor has an explicit possession session; recovery authorization requires both successor proofs. |
+
 ## ADR contradictions, unsupported passages and resolutions
+
+The following historical list records package 4's original ADR issues. The
+fourth draft settled several of them; package 5 corrects the founding and signed
+message wording explicitly without claiming every listed issue remains open.
 
 These are implementation choices for the prototype, not silent amendments to
 the proposed ADRs. Quotations preserve the relevant text, with line wrapping
@@ -359,3 +438,65 @@ The requested commit was attempted with author
 `.git/index.lock` (`Operation not permitted`); no commit or staging change was
 made. The implementation and report remain in the working tree. No independent
 reviewer verdict is claimed by this implementation run.
+
+## Acceptance addendum: package 5 security corrections
+
+Implementation branch: `feat/mcp-server`. Base commit:
+`f8cd85f3a3615127d66dd3d3509f5019cb44f21e` (fourth-draft ADR), including
+the package 4 prototype from `5ffd132`. The corrections are an **uncommitted
+working tree**, not that base commit. `git add` returned exit 128 because
+`.git/index.lock` is read-only in the sandbox; no implementation commit exists.
+The requested author is `xaef <6741253+xaef@users.noreply.github.com>` with
+trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+
+Exact implementation commit: `TO BE FILLED BY THE REVIEWER`
+
+Exact implementation tree (`git rev-parse 'HEAD^{tree}'`):
+`TO BE FILLED BY THE REVIEWER`
+
+Record the implementation commit and tree after committing all package 5 source,
+tests, CHANGELOG and reports, before running acceptance. A later documentation-only
+commit may fill this addendum; do not substitute that commit for the tested tree.
+No outside-sandbox reviewer run or acceptance verdict is claimed here.
+
+Observed sandbox checks (2026-09-19, local date):
+
+| Exact command, run from `~/Desktop/Supgang` | Observed outcome |
+| --- | --- |
+| `cargo test --locked --package supgang-core threshold::tests::review_tests -- --test-threads=4` | Before fixes: 4 failed, 1 passed. F1, both full-store forks and pending capacity reproduced; retired-root halt already passed as intended. |
+| `cargo test --locked --package supgang-core threshold::tests::review_tests` | With only the policy hook temporarily bypassed: stale-tip, post-succession key separation and recovery lock tests failed (3 failed, 5 passed). The hook was restored before all final checks. |
+| `cargo test --locked --package supgang-core threshold::` | 47 passed, 0 failed; exit 0. Includes all original threshold tests and eleven new fixtures. |
+| `cargo test --locked --package supgang-core trust_profile:: -- --nocapture` | 5 passed, 0 failed; exit 0. Raw subordinate verdicts are in the authority report. |
+| `cargo run --locked --package supgang-quality -- all` | Exit 1: policy, fmt, check and strict Clippy passed; core tests ended 329 passed, 22 failed in 165.72 seconds. All 22 failures are socket permission errors (`Operation not permitted`). The gate stopped before doc/package acceptance; doc was run separately below. |
+| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Passed with the workspace's pedantic, nursery, cargo and no-indexing lints; exit 0. |
+| `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` | Passed; exit 0. |
+| `cargo deny --locked --offline check --deny warnings` | Exit 1: advisory-cache lock is read-only. |
+| `cargo deny --locked --offline --config /tmp/supgang-package5-deny.toml check --deny warnings` | Exit 1: existing `paste 1.0.15` advisory `RUSTSEC-2024-0436` and duplicate bans; licenses/sources pass. |
+| `make install` | Exit 2: Cargo cannot open `~/.local/.crates.toml` (`Operation not permitted`). Installed-artifact acceptance was not run. |
+
+The temporary deny config changes only `advisories.db-path` to
+`/tmp/supgang-package5-advisory-dbs`, a copy of the existing cache. Its database
+commit is `d5c17953a895cf19e8d3ce66eaa42b6fcfe1fb16`, dated 2026-09-19.
+No advisory refresh, dependency pin change, ignore, lint suppression or weakened
+gate was used. Promoting cargo-deny's duplicate warnings to errors is deliberate.
+
+Reviewer acceptance, to be run **outside the sandbox**, recording exit statuses
+against the exact implementation commit above:
+
+| Exact command | Reviewer outcome |
+| --- | --- |
+| `cd ~/Desktop/Supgang && git rev-parse HEAD && git rev-parse 'HEAD^{tree}' && git status --porcelain=v1` | TO BE FILLED BY THE REVIEWER |
+| `cargo test --locked --package supgang-core threshold::` | TO BE FILLED BY THE REVIEWER |
+| `cargo test --locked --package supgang-core trust_profile:: -- --nocapture` | TO BE FILLED BY THE REVIEWER |
+| `cargo run --locked --package supgang-quality -- all` | TO BE FILLED BY THE REVIEWER |
+| `cargo deny --locked check --deny warnings` | TO BE FILLED BY THE REVIEWER |
+| `make install` | TO BE FILLED BY THE REVIEWER |
+| `cd /tmp && command -v supgang` | TO BE FILLED BY THE REVIEWER |
+| `shasum -a 256 "$(command -v supgang)" ~/Desktop/Supgang/target/release/supgang` | TO BE FILLED BY THE REVIEWER |
+| `supgang --help` | TO BE FILLED BY THE REVIEWER |
+| `supgang --json doctor` | TO BE FILLED BY THE REVIEWER |
+
+This package has no threshold CLI or fleet protocol/runtime integration, so its
+user-facing behavior is the library fixtures and reports. No physical-peer
+deployment, native/sealed custody, browser-store acceptance or live threshold
+authority is claimed. Full milestone acceptance remains pending.

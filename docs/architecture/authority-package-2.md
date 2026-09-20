@@ -137,7 +137,7 @@ All identities and revision directories are temporary test fixtures.
 | `equivocation_cannot_erase_ids_revoked_only_in_the_conflicting_record` | A later epoch cannot reuse an id revoked only in the second equivocal manifest. |
 | `signed_equivocation_is_not_hidden_by_a_conflicting_future_timestamp` | A signed conflict at the same epoch/revision still removes both records when its timestamp is too far ahead. |
 
-The four `trust_profile` tests prove:
+The five `trust_profile` tests prove:
 
 | Test | What it proves |
 | --- | --- |
@@ -145,6 +145,7 @@ The four `trust_profile` tests prove:
 | `only_allowed_leaf_passes_the_seven_requested_probes` | Only the allowed leaf passes among allowed, forbidden DNS, IPv4, IPv6, mixed DNS, email-only and CA-as-leaf probes. |
 | `reports_subtree_email_and_anchor_path_length_limits` | Raw WebPKI accepts a permitted child name, allowed DNS plus email, and an allowed leaf through a subordinate CA. |
 | `labels_cannot_inject_a_second_dns_subtree` | The anchor label rejects dots, wildcards, uppercase and malformed labels. |
+| `subordinate_chains_enforce_dns_and_ip_constraints` | Matched subordinate chains accept the allowed DNS control but reject forbidden DNS, IPv4, IPv6 and mixed allowed/forbidden SANs. The mixed case is verified as the allowed identity, so hostname mismatch cannot explain its rejection. |
 
 ## Confinement results and ADR issues
 
@@ -164,6 +165,18 @@ It does not install a root, change verification policy or make platform/browser 
 | Allowed DNS plus unused email SAN | Accepted |
 | Child of the allowed apex | Accepted |
 | Allowed leaf through a subordinate CA | Accepted |
+| Forbidden DNS through a subordinate CA | `InvalidCertificate(Other(OtherError(NameConstraintViolation)))` |
+| IPv4 SAN through a subordinate CA | `InvalidCertificate(Other(OtherError(NameConstraintViolation)))` |
+| IPv6 SAN through a subordinate CA | `InvalidCertificate(Other(OtherError(NameConstraintViolation)))` |
+| Allowed plus forbidden DNS through a subordinate CA, checked as allowed | `InvalidCertificate(Other(OtherError(NameConstraintViolation)))` |
+
+Package 5 adds those four negative subordinate probes using the same subordinate
+certificate profile and issuer construction as the allowed control, with fresh
+throwaway keys per chain. DNS-only and IP probes are verified against their own
+SAN identity. These are raw Rustls/WebPKI errors observed by the harness, without
+overriding verifier decisions. They establish the tested name-constraint cases
+through a subordinate, while the allowed control still demonstrates that the
+anchor's pathLen 0 is not the mechanism enforcing confinement.
 
 rcgen expresses both excluded IP ranges natively; no custom DER extension is needed.
 The sixth draft says `"a child of the permitted name, and a subordinate CA are each
@@ -233,3 +246,60 @@ Completion requires rerunning the full gate with local socket permission, resolv
 the existing dependency-policy failure, completing normal-path
 installed checks and creating the requested commits in a writable checkout. This report
 records library evidence; it is not milestone acceptance.
+
+## Acceptance addendum: package 5 subordinate-chain probes
+
+Implementation branch: `feat/mcp-server`. Base commit:
+`f8cd85f3a3615127d66dd3d3509f5019cb44f21e`. Package 5's changes are an
+**uncommitted working tree**, not the base commit. Staging returned exit 128:
+the sandbox refuses `.git/index.lock`. The requested author is
+`xaef <6741253+xaef@users.noreply.github.com>`, with trailer
+`Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+
+Exact implementation commit: `TO BE FILLED BY THE REVIEWER`
+
+Exact implementation tree (`git rev-parse 'HEAD^{tree}'`):
+`TO BE FILLED BY THE REVIEWER`
+
+Commit all package 5 source, tests and documentation before reviewer acceptance;
+record that tested commit here in a later documentation-only commit if needed.
+No outside-sandbox reviewer execution is claimed by the following local results.
+
+Observed sandbox checks (2026-09-19, local date):
+
+| Exact command, run from `~/Desktop/Supgang` | Observed outcome |
+| --- | --- |
+| `cargo test --locked --package supgang-core trust_profile::tests::subordinate_chains_enforce_dns_and_ip_constraints` | Before adding the probes: exit 101, missing four required negative subordinate verdicts. |
+| `cargo test --locked --package supgang-core trust_profile:: -- --nocapture` | After correction: exit 0, all 5 tests pass. The four added probes each return `InvalidCertificate(Other(OtherError(NameConstraintViolation)))`; the allowed subordinate control passes. |
+| `cargo test --locked --package supgang-core threshold::` | Exit 0, all 47 threshold tests pass. |
+| `cargo run --locked --package supgang-quality -- all` | Exit 1: policy, fmt, check and strict Clippy passed; core tests ended 329 passed, 22 failed in 165.72 seconds. All 22 failures are socket permission errors (`Operation not permitted`). The gate stopped before doc/package acceptance; doc was run separately below. |
+| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Passed with existing pedantic, nursery, cargo and no-indexing policies; exit 0. |
+| `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` | Passed; exit 0. |
+| `cargo deny --locked --offline check --deny warnings` | Exit 1: read-only advisory-cache lock. |
+| `cargo deny --locked --offline --config /tmp/supgang-package5-deny.toml check --deny warnings` | Exit 1: existing unmaintained `paste 1.0.15` (`RUSTSEC-2024-0436`) and duplicate-dependency bans; licenses and sources pass. |
+| `make install` | Exit 2: cannot write `~/.local/.crates.toml`; installed-artifact checks not run. |
+
+The alternate deny config changes only `advisories.db-path`, using the copied
+cached database at `/tmp/supgang-package5-advisory-dbs`, commit
+`d5c17953a895cf19e8d3ce66eaa42b6fcfe1fb16` (2026-09-19). No network refresh,
+pin change, exception, advisory ignore or relaxed gate was used.
+
+Reviewer commands, to be run **outside the sandbox**, with results tied to the
+exact implementation commit above:
+
+| Exact command | Reviewer outcome |
+| --- | --- |
+| `cd ~/Desktop/Supgang && git rev-parse HEAD && git rev-parse 'HEAD^{tree}' && git status --porcelain=v1` | TO BE FILLED BY THE REVIEWER |
+| `cargo test --locked --package supgang-core trust_profile:: -- --nocapture` | TO BE FILLED BY THE REVIEWER |
+| `cargo test --locked --package supgang-core authority::` | TO BE FILLED BY THE REVIEWER |
+| `cargo run --locked --package supgang-quality -- all` | TO BE FILLED BY THE REVIEWER |
+| `cargo deny --locked check --deny warnings` | TO BE FILLED BY THE REVIEWER |
+| `make install` | TO BE FILLED BY THE REVIEWER |
+| `cd /tmp && command -v supgang` | TO BE FILLED BY THE REVIEWER |
+| `shasum -a 256 "$(command -v supgang)" ~/Desktop/Supgang/target/release/supgang` | TO BE FILLED BY THE REVIEWER |
+| `supgang --help` | TO BE FILLED BY THE REVIEWER |
+| `supgang --json doctor` | TO BE FILLED BY THE REVIEWER |
+
+This adds isolated Rustls/WebPKI evidence only. No browser/system root was
+installed; no physical fleet protocol or runtime changed. Live authority,
+platform trust stores and complete milestone acceptance remain unverified.

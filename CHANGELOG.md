@@ -25,6 +25,12 @@ The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken 
 
 ### Added
 
+- Correct the isolated threshold prototype after security review: durable
+  recovery-generation authorization locks, chain policy before nonce issuance,
+  persisted reviewed-tip/role bindings, key separation after succession, and
+  reserved fork evidence at capacity. Add retired-root halt and subordinate-CA
+  negative confinement fixtures. Session-store format 2 rejects old format 1
+  rather than guessing missing authorization history; protocol pins are unchanged.
 - Add the isolated ADR 0004 threshold-root library prototype with pinned FROST
   3.0.0 DKG, canonical steps, durable signing-session locks, ordinary Ed25519
   aggregates, planned and recovery succession, and typed device control proofs.

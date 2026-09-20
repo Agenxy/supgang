@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{Binding, Phase, Record, SessionStore, Snapshot};
+use super::{Binding, Phase, Record, Review, Role, SessionStore, Snapshot};
 use crate::{
     state_lock::StateLock,
     storage,
@@ -122,6 +122,7 @@ impl SessionStore for FileSessionStore {
             if old.id != new.id
                 || old.step != new.step
                 || old.step_digest != new.step_digest
+                || (old.review.is_some() && old.review != new.review)
                 || (old.permanent && !new.permanent)
                 || (old.package_digest.is_some() && old.package_digest != new.package_digest)
                 || (old.cached_share.is_some() && old.cached_share != new.cached_share)
@@ -165,7 +166,7 @@ fn encode(state: &Snapshot, binding: &Binding) -> Result<Vec<u8>, Error> {
     }
     let mut e = Encoder::new(Vec::new());
     e.array(7)?
-        .u8(1)?
+        .u8(2)?
         .bytes(binding.hive.as_bytes())?
         .bytes(&binding.group.encode()?)?;
     e.u16(binding.participant)?
@@ -178,7 +179,7 @@ fn encode(state: &Snapshot, binding: &Binding) -> Result<Vec<u8>, Error> {
         if !ids.insert(record.id) {
             return Err(Error::Invalid);
         }
-        e.array(10)?
+        e.array(11)?
             .bytes(&record.id)?
             .bytes(&record.step.encode()?)?
             .bytes(&record.step_digest)?;
@@ -194,6 +195,16 @@ fn encode(state: &Snapshot, binding: &Binding) -> Result<Vec<u8>, Error> {
         optional(&mut e, record.commitment.as_deref())?;
         optional(&mut e, record.package_digest.as_ref().map(<[u8; 32]>::as_slice))?;
         optional(&mut e, record.cached_share.as_deref())?;
+        if let Some(review) = record.review {
+            e.array(2)?.bytes(&review.tip)?.u8(match review.role {
+                Role::Root => 0,
+                Role::Recovery => 1,
+                Role::SuccessorPossession => 2,
+                Role::RecoveryPossession => 3,
+            })?;
+        } else {
+            e.null()?;
+        }
         e.u8(0)?;
     }
     let bytes = e.into_writer();
@@ -206,7 +217,7 @@ fn encode(state: &Snapshot, binding: &Binding) -> Result<Vec<u8>, Error> {
 fn decode(bytes: &[u8], binding: &Binding) -> Result<Snapshot, Error> {
     let mut d = Decoder::new(bytes);
     array(&mut d, 7)?;
-    if d.u8()? != 1
+    if d.u8()? != 2
         || d.bytes()? != binding.hive.as_bytes()
         || d.bytes()? != binding.group.encode()?
         || d.u16()? != binding.participant
@@ -218,7 +229,7 @@ fn decode(bytes: &[u8], binding: &Binding) -> Result<Snapshot, Error> {
     let size = count(&mut d, MAX_RECORDS)?;
     let mut records = Vec::with_capacity(size);
     for _ in 0..size {
-        array(&mut d, 10)?;
+        array(&mut d, 11)?;
         let id = fixed(&mut d)?;
         let step = RootStep::decode(d.bytes()?)?;
         let step_digest = fixed(&mut d)?;
@@ -238,6 +249,21 @@ fn decode(bytes: &[u8], binding: &Binding) -> Result<Snapshot, Error> {
             .map(|v| v.try_into().map_err(|_| Error::Invalid))
             .transpose()?;
         let cached_share = read_optional(&mut d, 32)?;
+        let review = if d.datatype()? == Type::Null {
+            d.null()?;
+            None
+        } else {
+            array(&mut d, 2)?;
+            let tip = fixed(&mut d)?;
+            let role = match d.u8()? {
+                0 => Role::Root,
+                1 => Role::Recovery,
+                2 => Role::SuccessorPossession,
+                3 => Role::RecoveryPossession,
+                _ => return Err(Error::Invalid),
+            };
+            Some(Review { tip, role })
+        };
         if d.u8()? != 0 {
             return Err(Error::Invalid);
         }
@@ -245,6 +271,7 @@ fn decode(bytes: &[u8], binding: &Binding) -> Result<Snapshot, Error> {
             id,
             step,
             step_digest,
+            review,
             phase,
             committed_at,
             permanent,
@@ -265,6 +292,9 @@ fn decode(bytes: &[u8], binding: &Binding) -> Result<Snapshot, Error> {
 fn validate_record(record: &Record, binding: &Binding) -> Result<(), Error> {
     if record.step.hive != binding.hive
         || record.step_digest != record.step.digest()?
+        || (record.phase == Phase::Proposed && record.review.is_some())
+        || (!matches!(record.phase, Phase::Proposed | Phase::Discarded) && record.review.is_none())
+        || (record.permanent && record.review.is_none())
         || record.permanent != record.package_digest.is_some()
         || (record.cached_share.is_some() && !record.permanent)
         || (matches!(

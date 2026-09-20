@@ -10,12 +10,15 @@ fn presence_is_required_before_commitment_or_nonce_release() -> TestResult {
     let machine = machines.values_mut().next().ok_or(Error::Invalid)?;
     let id = Session::<FileSessionStore>::new_id()?;
     machine.propose(id, step, 100)?;
-    assert!(matches!(machine.commit(id, 100, |_| false), Err(Error::Presence)));
+    assert!(matches!(
+        machine.commit(id, 100, &FixturePolicy, |_| false),
+        Err(Error::Presence)
+    ));
     assert_eq!(
         machine.snapshot().records.first().ok_or(Error::Invalid)?.phase,
         Phase::Proposed
     );
-    machine.commit(id, 100, |_| true)?;
+    machine.commit(id, 100, &FixturePolicy, |_| true)?;
     assert_eq!(
         machine.snapshot().records.first().ok_or(Error::Invalid)?.phase,
         Phase::NoncesIssued
@@ -33,13 +36,13 @@ fn another_step_is_locked_until_the_unsigned_ten_minute_deadline() -> TestResult
     let first = Session::<FileSessionStore>::new_id()?;
     let second = Session::<FileSessionStore>::new_id()?;
     machine.propose(first, step, 100)?;
-    machine.commit(first, 100, |_| true)?;
+    machine.commit(first, 100, &FixturePolicy, |_| true)?;
     machine.propose(second, proposal(&f.chain, 2)?, 101)?;
     assert!(matches!(
-        machine.commit(second, 100 + DEADLINE_SECONDS - 1, |_| true),
+        machine.commit(second, 100 + DEADLINE_SECONDS - 1, &FixturePolicy, |_| true),
         Err(Error::Locked)
     ));
-    machine.commit(second, 100 + DEADLINE_SECONDS, |_| true)?;
+    machine.commit(second, 100 + DEADLINE_SECONDS, &FixturePolicy, |_| true)?;
     assert_eq!(
         machine.snapshot().records.first().ok_or(Error::Invalid)?.phase,
         Phase::Discarded
@@ -60,9 +63,15 @@ fn delayed_publication_never_releases_the_shared_signers_lock() -> TestResult {
         .ok_or(Error::Invalid)?;
     let other = Session::<FileSessionStore>::new_id()?;
     b.propose(other, proposal(&f.chain, 2)?, 1_000_000)?;
-    assert!(matches!(b.commit(other, 1_000_000, |_| true), Err(Error::Locked)));
+    assert!(matches!(
+        b.commit(other, 1_000_000, &FixturePolicy, |_| true),
+        Err(Error::Locked)
+    ));
     b.discard(package.id, 1_000_001)?;
-    assert!(matches!(b.commit(other, 1_000_002, |_| true), Err(Error::Locked)));
+    assert!(matches!(
+        b.commit(other, 1_000_002, &FixturePolicy, |_| true),
+        Err(Error::Locked)
+    ));
     let mut chain = f.chain.clone();
     assert_eq!(chain.accept(signed)?, crate::threshold::step::Outcome::Accepted);
     assert_eq!(chain.status(), crate::threshold::step::Status::Active);

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use super::{
     Error,
     founding::{self, Group, Parameters, RecoveryDescriptor},
+    session,
     session::{Binding, FileSessionStore, Package, Session},
     step::{Chain, Operation, RootStep, SignedStep},
 };
@@ -20,11 +21,42 @@ mod boundary_tests;
 mod chain_tests;
 mod control_tests;
 mod founding_tests;
+mod policy_tests;
+mod review_tests;
 mod session_tests;
 mod storage_tests;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Machines = BTreeMap<frost::Identifier, Session<FileSessionStore>>;
+
+// Explicitly permissive ONLY for cryptographic adversarial fixtures. Production
+// callers use ChainPolicy; invalid signed steps are needed to test the verifier.
+struct FixturePolicy;
+
+impl session::Policy for FixturePolicy {
+    fn review(&self, binding: &Binding, step: &RootStep) -> Result<session::Review, Error> {
+        use super::{
+            regroup::{Kind, Succession},
+            session::Role,
+        };
+        let role = if step.operation == Operation::Succession {
+            let transition = Succession::decode(&step.payload)?;
+            if binding.group == transition.successor {
+                Role::SuccessorPossession
+            } else if transition.kind == Kind::Recovery {
+                Role::Recovery
+            } else {
+                Role::Root
+            }
+        } else {
+            Role::Root
+        };
+        Ok(session::Review {
+            tip: step.predecessor,
+            role,
+        })
+    }
+}
 
 struct Fixture {
     root: Group,
@@ -101,11 +133,21 @@ fn machines(group: &Group, step: &RootStep, ids: &[u16], directory: &std::path::
 }
 
 fn prepare(group: &Group, step: &RootStep, machines: &mut Machines, now: u64) -> Result<Package, Error> {
+    prepare_reviewed(group, step, machines, now, &FixturePolicy)
+}
+
+fn prepare_reviewed(
+    group: &Group,
+    step: &RootStep,
+    machines: &mut Machines,
+    now: u64,
+    policy: &impl session::Policy,
+) -> Result<Package, Error> {
     let id = Session::<FileSessionStore>::new_id()?;
     let mut commitments = BTreeMap::new();
     for (identifier, machine) in machines {
         machine.propose(id, step.clone(), now)?;
-        commitments.insert(*identifier, machine.commit(id, now, |_| true)?);
+        commitments.insert(*identifier, machine.commit(id, now, policy, |_| true)?);
     }
     let descriptor = group.descriptor()?;
     Ok(Package {

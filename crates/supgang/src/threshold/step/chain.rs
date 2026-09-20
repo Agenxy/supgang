@@ -18,6 +18,8 @@ pub enum Status {
     Active,
     /// Authenticated conflicting content exists; ordinary operations are refused.
     Halted,
+    /// Authenticated history exhausted; consumers must refuse administration.
+    Exhausted,
 }
 
 /// Outcome of presenting a signed step.
@@ -31,6 +33,15 @@ pub enum Outcome {
     Duplicate,
     /// Both authenticated branches retained and administration halted.
     Fork,
+}
+
+/// Reserved conflict evidence, independent of the ordinary history capacity.
+#[derive(Clone)]
+pub struct Conflict {
+    /// Digest of the previously authenticated branch.
+    pub first: Digest,
+    /// Conflicting authenticated branch, retained even when history is full.
+    pub second: SignedStep,
 }
 
 #[derive(Clone)]
@@ -60,6 +71,7 @@ pub struct Chain {
     recovery_proofs: BTreeMap<u64, (SignedStep, RecoveryDescriptor)>,
     status: Status,
     recovery_fork: bool,
+    conflict: Option<Conflict>,
 }
 
 impl Chain {
@@ -97,6 +109,7 @@ impl Chain {
             recovery_proofs: BTreeMap::new(),
             status: Status::Active,
             recovery_fork: false,
+            conflict: None,
         })
     }
 
@@ -134,6 +147,11 @@ impl Chain {
     #[must_use]
     pub const fn evidence(&self) -> &Records {
         &self.records
+    }
+    /// Reserved authenticated conflict proof; never displaced by capacity checks.
+    #[must_use]
+    pub const fn conflict(&self) -> Option<&Conflict> {
+        self.conflict.as_ref()
     }
     /// Records still standing on the selected branch after recovery truncation.
     #[must_use]
@@ -185,7 +203,7 @@ impl Chain {
         digest: Digest,
         transition: Option<&Succession>,
     ) -> Result<Outcome, Error> {
-        if self.status == Status::Halted {
+        if self.status != Status::Active {
             return Err(Error::Halted);
         }
         let step = &signed.step;
@@ -216,6 +234,7 @@ impl Chain {
                 || transition.previous_key != context.group.public_key
                 || transition.recovery != self.recovery
                 || transition.successor.public_key == context.group.public_key
+                || transition.successor.public_key == transition.recovery.group.public_key
                 || transition.successor.label != context.group.label
                 || transition.successor.generation != context.group.generation.checked_add(1).ok_or(Error::Bound)?
             {
@@ -228,18 +247,21 @@ impl Chain {
         if self.records.contains_key(&digest) {
             return Ok(Outcome::Duplicate);
         }
-        if self.records.len() >= MAX_RECORDS {
-            return Err(Error::Bound);
-        }
-        if self
+        if let Some(existing) = self
             .children
             .get(&step.predecessor)
-            .is_some_and(|existing| *existing != digest)
+            .copied()
+            .filter(|existing| *existing != digest)
         {
-            self.records.insert(digest, signed);
-            self.contexts.insert(digest, next);
-            self.status = Status::Halted;
+            self.halt(existing, signed, digest);
+            if self.records.contains_key(&digest) {
+                self.contexts.insert(digest, next);
+            }
             return Ok(Outcome::Fork);
+        }
+        if self.records.len() >= MAX_RECORDS {
+            self.status = Status::Exhausted;
+            return Err(Error::Bound);
         }
         if step.predecessor != self.tip {
             return Err(Error::Authority);
@@ -268,11 +290,7 @@ impl Chain {
             if previous.step.digest()? == digest {
                 return Ok(Outcome::Duplicate);
             }
-            if self.records.len() >= MAX_RECORDS {
-                return Err(Error::Bound);
-            }
-            self.records.insert(digest, signed);
-            self.status = Status::Halted;
+            self.halt(previous.step.digest()?, signed, digest);
             self.recovery_fork = true;
             return Ok(Outcome::Fork);
         }
@@ -282,6 +300,7 @@ impl Chain {
         signed.verify(&self.recovery.group.public_key)?;
         self.validate_recovery(step, transition, &self.recovery)?;
         if self.records.len() >= MAX_RECORDS || self.recovery_proofs.len() >= MAX_RECORDS {
+            self.status = Status::Exhausted;
             return Err(Error::Bound);
         }
         let epoch = step.epoch.checked_add(1).ok_or(Error::Bound)?;
@@ -304,6 +323,14 @@ impl Chain {
         self.tip = digest;
         self.status = Status::Active;
         Ok(Outcome::Accepted)
+    }
+
+    fn halt(&mut self, first: Digest, signed: SignedStep, digest: Digest) {
+        if self.records.len() < MAX_RECORDS {
+            self.records.insert(digest, signed.clone());
+        }
+        self.conflict = Some(Conflict { first, second: signed });
+        self.status = Status::Halted;
     }
 
     fn ancestry(&self, mut predecessor: Digest) -> Vec<Digest> {
@@ -331,6 +358,8 @@ impl Chain {
         if transition.retained != empty_retained_digest()
             || transition.successor.label != self.current.group.label
             || transition.successor.public_key == transition.previous_key
+            || transition.successor.public_key == transition.recovery.group.public_key
+            || transition.recovery.group.label != self.current.group.label
         {
             return Err(Error::Authority);
         }
@@ -358,7 +387,7 @@ impl Chain {
         // Each iteration removes at least one item. Invalid held input is
         // dropped without rolling back a legitimate newly accepted predecessor.
         for _ in 0..MAX_RECORDS {
-            if self.status == Status::Halted {
+            if self.status != Status::Active {
                 break;
             }
             let Some(digest) = self
@@ -378,7 +407,12 @@ impl Chain {
             } else {
                 None
             };
-            let _outcome = self.accept_ordinary(signed, digest, transition.as_ref());
+            if matches!(
+                self.accept_ordinary(signed, digest, transition.as_ref()),
+                Err(Error::Bound)
+            ) {
+                return Err(Error::Bound);
+            }
         }
         Ok(())
     }

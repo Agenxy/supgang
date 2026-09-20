@@ -37,12 +37,13 @@ confirms the same digest on screen before the first step, so the chain is
 bound to one agreed transcript, not to a library call. The founding devices
 are the first members, and the first root operation issues their memberships.
 Founding refuses `n < k + 1` unless `--accept-single-loss-failure` is given,
-and `doctor` says so thereafter. Supported parameters: `2 <= k <= n <= 16`:
-FROST (the pinned 3.0.0 refuses `min_signers < 2`, and rightly, since a
-1-of-1 participant would hold the whole secret) has no threshold one. A hive
-with one device is administered by the file-held root of today, which is not
-this protocol, and `doctor` says so; founding a threshold root is the step
-from one device to at least three.
+and `doctor` says so thereafter. Supported parameters: `2 <= k <= n <= 16`.
+The pinned FROST 3.0.0 implementation does not support `k = 1`: it refuses
+`min_signers < 2`. This is an implementation limit, not a claim that threshold
+one is mathematically impossible. A hive with one device is administered by
+the file-held root of today, which is not this protocol, and `doctor` says so.
+Three devices (2-of-3) is the minimum meeting single-loss tolerance; 2-of-2
+is supported only as an explicitly accepted failure of that tolerance.
 
 ## Root state: agreement before signature
 
@@ -132,9 +133,11 @@ a role, not an authority.
    published or a recovery runs; the CLI shows the lock and the step, and the
    session can be resumed (below) to finish it.
 3. **Sign (round 2).** With k commitments, the coordinator sends the signing
-   package (the step digest and the exact set of commitments). Each
-   participant checks that the digest is byte-equal to the one it committed
-   to and that its own commitment is among those listed, records
+   package (the domain plus the whole canonical step as the signed message,
+   and the exact set of commitments). Each participant checks that the message
+   is byte-equal to the domain plus the step it committed to and that its own
+   commitment is among those listed. The package digest separately binds the
+   session and commitments. The participant records
    `nonces_consumed(session id, package digest)` durably **before** computing
    its signature share, then returns the share. A participant asked to sign a
    package for a session whose nonces are `consumed` returns the cached share

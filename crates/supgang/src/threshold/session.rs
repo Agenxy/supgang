@@ -15,6 +15,8 @@ use crate::ids::HiveId;
 
 mod file_store;
 pub use file_store::FileSessionStore;
+mod policy;
+pub use policy::{ChainPolicy, Policy, Review, Role};
 
 /// Deadline after which an unsigned commitment can be discarded.
 pub const DEADLINE_SECONDS: u64 = 10 * 60;
@@ -47,6 +49,8 @@ pub struct Record {
     pub step: RootStep,
     /// Content digest committed to by the participant.
     pub step_digest: Digest,
+    /// Chain revision and role validated before committing; immutable thereafter.
+    pub review: Option<Review>,
     /// Current durable state-machine phase.
     pub phase: Phase,
     /// Local commitment time; deadlines never use the coordinator's clock.
@@ -216,6 +220,7 @@ impl<S: SessionStore> Session<S> {
             id,
             step,
             step_digest,
+            review: None,
             phase: Phase::Proposed,
             committed_at: 0,
             permanent: false,
@@ -234,15 +239,23 @@ impl<S: SessionStore> Session<S> {
         &mut self,
         id: SessionId,
         now: u64,
+        policy: &impl Policy,
         presence: impl FnOnce(&RootStep) -> bool,
     ) -> Result<SigningCommitments, Error> {
         let record = self.record(id)?.clone();
         if record.phase != Phase::Proposed {
             return Err(Error::Locked);
         }
+        let review = policy.review(self.store.binding(), &record.step)?;
         let mut next = self.next(now)?;
         for prior in &mut next.records {
-            if prior.id == id || prior.phase == Phase::Proposed || prior.step.predecessor != record.step.predecessor {
+            let same_role = prior.review.is_some_and(|r| r.role == review.role);
+            let same_scope = if review.role == Role::Recovery {
+                prior.step.recovery_gen == record.step.recovery_gen
+            } else {
+                prior.step.predecessor == record.step.predecessor
+            };
+            if prior.id == id || prior.phase == Phase::Proposed || !same_role || !same_scope {
                 continue;
             }
             let expired = now >= prior.committed_at.checked_add(DEADLINE_SECONDS).ok_or(Error::Bound)?;
@@ -259,6 +272,7 @@ impl<S: SessionStore> Session<S> {
         }
         let selected = next.records.iter_mut().find(|r| r.id == id).ok_or(Error::Invalid)?;
         selected.phase = Phase::Committed;
+        selected.review = Some(review);
         selected.committed_at = now;
         self.persist(next)?;
         let (nonces, commitment) = frost::round1::commit(self.key.signing_share(), &mut rng()?);

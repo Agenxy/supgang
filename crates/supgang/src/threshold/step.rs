@@ -8,7 +8,7 @@ use super::{Digest, Error, MAX_RECORDS, MAX_STEP_BYTES, array, canonical, fixed,
 use crate::ids::{HiveId, NodeId};
 
 mod chain;
-pub use chain::{Chain, Outcome, Status};
+pub use chain::{Chain, Conflict, Outcome, Status};
 
 /// Domain prepended to canonical step bytes for ordinary Ed25519 signing.
 pub const DOMAIN: &[u8] = b"supgang/root-step/v1\0";

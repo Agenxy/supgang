@@ -43,10 +43,13 @@ fn consumption_is_durable_before_share_computation_and_crash_keeps_lock() -> Tes
     let mut others = machines(&f.root, &step, &[2], directory.path())?;
     let id = Session::<FileSessionStore>::new_id()?;
     a.propose(id, step.clone(), 100)?;
-    let mut commitments = BTreeMap::from([(frost::Identifier::try_from(1)?, a.commit(id, 100, |_| true)?)]);
+    let mut commitments = BTreeMap::from([(
+        frost::Identifier::try_from(1)?,
+        a.commit(id, 100, &FixturePolicy, |_| true)?,
+    )]);
     for (identifier, machine) in &mut others {
         machine.propose(id, step.clone(), 100)?;
-        commitments.insert(*identifier, machine.commit(id, 100, |_| true)?);
+        commitments.insert(*identifier, machine.commit(id, 100, &FixturePolicy, |_| true)?);
     }
     let package = Package {
         id,
@@ -71,10 +74,13 @@ fn consumption_is_durable_before_share_computation_and_crash_keeps_lock() -> Tes
     assert!(recovered.sign(&package, 1000).is_err());
     let other = Session::<FileSessionStore>::new_id()?;
     recovered.propose(other, proposal(&f.chain, 2)?, 1000)?;
-    assert!(matches!(recovered.commit(other, 1000, |_| true), Err(Error::Locked)));
+    assert!(matches!(
+        recovered.commit(other, 1000, &FixturePolicy, |_| true),
+        Err(Error::Locked)
+    ));
     let resumed = Session::<FileSessionStore>::new_id()?;
     recovered.propose(resumed, step, 1000)?;
-    recovered.commit(resumed, 1000, |_| true)?;
+    recovered.commit(resumed, 1000, &FixturePolicy, |_| true)?;
     Ok(())
 }
 
@@ -101,7 +107,7 @@ fn failed_consumption_write_releases_no_share_and_poisons_the_session() -> TestR
     )?;
     let id = Session::<FileSessionStore>::new_id()?;
     machine.propose(id, step.clone(), 100)?;
-    let own = machine.commit(id, 100, |_| true)?;
+    let own = machine.commit(id, 100, &FixturePolicy, |_| true)?;
     let second = f.root.outputs.get(1).ok_or(Error::Invalid)?;
     let (_, second_commitment) = frost::round1::commit(second.key.signing_share(), &mut crate::threshold::rng()?);
     let package = Package {
@@ -140,7 +146,10 @@ fn restart_returns_cached_share_and_preserves_permanent_predecessor_lock() -> Te
     for machine in restored.values_mut() {
         let id = Session::<FileSessionStore>::new_id()?;
         machine.propose(id, proposal(&f.chain, 2)?, 1001)?;
-        assert!(matches!(machine.commit(id, 1001, |_| true), Err(Error::Locked)));
+        assert!(matches!(
+            machine.commit(id, 1001, &FixturePolicy, |_| true),
+            Err(Error::Locked)
+        ));
     }
     Ok(())
 }
