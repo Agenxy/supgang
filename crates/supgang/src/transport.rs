@@ -69,9 +69,15 @@ impl TransportIdentity {
     /// Returns an error if the selected audited cryptographic provider cannot
     /// generate or serialize the certificate key.
     pub fn generate() -> Result<Self, TransportError> {
-        let certified = rcgen::generate_simple_self_signed(["supgang.invalid".to_owned()])
+        let mut parameters = rcgen::CertificateParams::new(vec!["supgang.invalid".to_owned()])
             .map_err(|_| TransportError::Certificate)?;
-        Self::from_der(certified.cert.der().to_vec(), certified.signing_key.serialize_der())
+        parameters.distinguished_name = rcgen::DistinguishedName::new();
+        parameters
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Supgang peer transport");
+        let key = rcgen::KeyPair::generate().map_err(|_| TransportError::Certificate)?;
+        let certificate = parameters.self_signed(&key).map_err(|_| TransportError::Certificate)?;
+        Self::from_der(certificate.der().to_vec(), key.serialize_der())
     }
 
     /// Restores a certificate and private key from protected storage.
@@ -189,6 +195,7 @@ pub fn bind(address: SocketAddr) -> Result<(Endpoint, TransportIdentity), Transp
 /// Returns an error when the operating system cannot initialize the runtime.
 pub fn build_runtime() -> Result<tokio::runtime::Runtime, TransportError> {
     tokio::runtime::Builder::new_current_thread()
+        .thread_name("supgang-io")
         .enable_all()
         .build()
         .map_err(TransportError::Runtime)
@@ -304,6 +311,26 @@ mod tests {
         assert!(INCOMING_BUFFER_BYTES == 64 * 1024);
         assert!(TOTAL_INCOMING_BUFFER_BYTES == 1024 * 1024);
     };
+
+    #[test]
+    fn transport_subject_is_product_named_without_machine_information() -> Result<(), Box<dyn std::error::Error>> {
+        let identity = TransportIdentity::generate()?;
+        let der = identity.certificate_der();
+        let name = b"Supgang peer transport";
+        assert_eq!(der.windows(name.len()).filter(|value| *value == name).count(), 2);
+        assert!(!der.windows(5).any(|value| value == b"rcgen"));
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_workers_are_identifiable_as_supgang() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = build_runtime()?;
+        let name = runtime.block_on(async {
+            tokio::task::spawn_blocking(|| std::thread::current().name().map(str::to_owned)).await
+        })?;
+        assert_eq!(name.as_deref(), Some("supgang-io"));
+        Ok(())
+    }
 
     #[test]
     fn pending_handshake_memory_has_a_fleet_sized_ceiling() -> Result<(), Box<dyn std::error::Error>> {

@@ -513,9 +513,13 @@ codex mcp add supgang -- supgang mcp
 codex mcp get supgang
 ```
 
-The server implements exactly MCP 2025-11-25 and 2026-07-28. Legacy clients use
-`initialize` followed by `notifications/initialized`. Modern clients use `server/discover` and
-self-contained request metadata. Tool lists use JSON Schema 2020-12 and advertise explicit
+The server supports MCP 2026-07-28 statelessly and 2025-11-25 through `initialize` followed by
+`notifications/initialized`. These entry paths are not interchangeable: `initialize` selects
+legacy semantics and rejects every other revision with `UnsupportedProtocolVersionError`
+(`-32022`), listing only `2025-11-25` as supported. Modern clients use `server/discover` and
+self-contained per-request `_meta`; discovery reports both supported revisions. A modern
+`tools/call` needs no preceding `initialize` or discovery request.
+Tool lists use JSON Schema 2020-12 and advertise explicit
 read-only, non-destructive, idempotent, closed-world annotations.
 
 `supgang mcp` opens no network listener and makes no public request. Each process serves one client

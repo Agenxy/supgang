@@ -376,7 +376,10 @@ impl CertifiedKey {
     ///
     /// # Errors
     /// Rejects mismatched keys, invalid fields, or provider failure.
-    pub fn prove_p256(claims: CertifiedKeyClaims, subject: &impl DeviceSigner) -> Result<Self, AuthorityError> {
+    pub fn prove_p256(
+        claims: CertifiedKeyClaims,
+        subject: &(impl DeviceSigner + ?Sized),
+    ) -> Result<Self, AuthorityError> {
         if claims.subject != SubjectKey::P256(subject.public_key()) {
             return Err(AuthorityError::Possession);
         }

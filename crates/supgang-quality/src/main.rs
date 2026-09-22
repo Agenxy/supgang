@@ -199,6 +199,14 @@ fn policy(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Directory names that hold build output rather than source, and are therefore not
+/// scanned. One entry per toolchain, because Supgang is built for more than one
+/// platform and each brings its own builder: `target` is Cargo's, `.build` is
+/// `SwiftPM`'s, `__pycache__` is `CPython`'s, `node_modules` is npm's. `.git` is not
+/// build output but is likewise not source. A port that introduces another builder
+/// adds its directory here; nothing else in the scanner needs to know.
+const BUILD_OUTPUT: [&str; 5] = [".git", "target", ".build", "__pycache__", "node_modules"];
+
 fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
     let entries = fs::read_dir(directory)
         .map_err(|read_error| format!("could not inspect {}: {read_error}", display(root, directory)))?;
@@ -213,7 +221,11 @@ fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
             ));
         }
         if file_type.is_dir() {
-            if matches!(entry.file_name().to_str(), Some(".git" | "target")) {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| BUILD_OUTPUT.contains(&name))
+            {
                 continue;
             }
             inspect_tree(root, &path)?;

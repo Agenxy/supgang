@@ -125,6 +125,10 @@ where
 }
 
 fn missing_modern_capabilities(value: &serde_json::Value) -> Option<RequestId> {
+    // The opening method selects the era, even if initialize carries modern metadata.
+    if value.get("method").and_then(serde_json::Value::as_str) == Some("initialize") {
+        return None;
+    }
     let metadata = value.get("params")?.get("_meta")?;
     let version = metadata.get("io.modelcontextprotocol/protocolVersion")?.as_str()?;
     if version != "2026-07-28"

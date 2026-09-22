@@ -158,6 +158,9 @@ pub enum Command {
         tag: PeerTag,
     },
     /// Serve read-only fleet tools over bounded MCP standard I/O.
+    ///
+    /// MCP 2026-07-28 is stateless; 2025-11-25 uses initialize. These entry paths
+    /// are not interchangeable.
     Mcp,
     /// Verify, stage, activate, or deliver signed Supgang releases.
     Update {

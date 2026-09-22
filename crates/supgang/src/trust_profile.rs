@@ -237,6 +237,9 @@ fn leaf_for(anchor: &TestTrustAnchor, probe: ConfinementProbe) -> Result<TestCha
     };
     let mut params = CertificateParams::default();
     params.subject_alt_names = sans;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "Supgang confinement test leaf");
     params.is_ca = IsCa::ExplicitNoCa;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
@@ -257,7 +260,7 @@ fn leaf_for(anchor: &TestTrustAnchor, probe: ConfinementProbe) -> Result<TestCha
         let mut subordinate = CertificateParams::default();
         subordinate
             .distinguished_name
-            .push(DnType::CommonName, "Throwaway subordinate CA");
+            .push(DnType::CommonName, "Supgang confinement test subordinate");
         subordinate.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
         subordinate.key_usages = vec![KeyUsagePurpose::KeyCertSign];
         let subkey = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;

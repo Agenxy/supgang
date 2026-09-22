@@ -14,6 +14,20 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::Zeroize;
 
+pub mod custody;
+mod file;
+#[cfg(target_os = "macos")]
+mod helper;
+mod sealed;
+#[cfg(target_os = "macos")]
+pub mod secure_enclave;
+pub mod signature;
+#[cfg(target_os = "linux")]
+pub mod tpm2;
+
+#[cfg(test)]
+mod custody_tests;
+
 /// Typed threshold control-channel proof domain, including its terminal NUL.
 pub const CONTROL_AUTH_DOMAIN: &[u8] = b"supgang/control-auth/v1\0";
 
@@ -27,6 +41,9 @@ const SECRET_BYTES: usize = 32;
 /// A key or signature that is not what P-256 requires.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum DeviceKeyError {
+    /// The custody provider could not perform this operation.
+    #[error("device custody refused: {0}")]
+    CustodyRefused(custody::UnavailableReason),
     /// The public key is not a valid compressed point on the curve.
     #[error("device public key must be a 33-byte compressed point on P-256")]
     InvalidPublicKey,
@@ -161,6 +178,14 @@ pub enum Custody {
 /// elsewhere. The secret is never exposed through this trait; a provider hands
 /// out signatures, not keys.
 pub trait DeviceSigner: Send + Sync {
+    /// The provider's opaque restore record, for owner-only storage.
+    /// File custody explicitly exports an extractable scalar here.
+    ///
+    /// # Errors
+    /// Refuses signers that do not support persistent restore records.
+    fn sealed_key(&self) -> Result<custody::SealedKey, custody::CustodyError> {
+        Err(custody::CustodyError::NotExportable)
+    }
     /// The public key.
     fn public_key(&self) -> DevicePublicKey;
     /// Where the key lives, as this provider reports it.
@@ -200,10 +225,11 @@ impl FileDeviceKey {
     ///
     /// # Errors
     ///
-    /// [`DeviceKeyError::Random`] when the system has no randomness to give.
+    /// [`DeviceKeyError::Random`] when the system has no randomness to give or
+    /// 32 draws fail to produce an in-range scalar.
     pub fn generate() -> Result<Self, DeviceKeyError> {
         let mut secret = [0_u8; SECRET_BYTES];
-        loop {
+        for _ in 0..32 {
             getrandom::fill(&mut secret).map_err(|_| DeviceKeyError::Random)?;
             match Self::from_secret_bytes(&secret) {
                 Ok(key) => {
@@ -215,6 +241,8 @@ impl FileDeviceKey {
                 Err(other) => return Err(other),
             }
         }
+        secret.zeroize();
+        Err(DeviceKeyError::Random)
     }
 
     /// Restores a key from its 32-byte scalar.
@@ -242,6 +270,12 @@ impl FileDeviceKey {
 }
 
 impl DeviceSigner for FileDeviceKey {
+    fn sealed_key(&self) -> Result<custody::SealedKey, custody::CustodyError> {
+        Ok(custody::SealedKey {
+            kind: custody::CustodyKind::File,
+            bytes: self.secret.to_vec(),
+        })
+    }
     fn public_key(&self) -> DevicePublicKey {
         self.public
     }

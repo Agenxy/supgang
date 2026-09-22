@@ -12,8 +12,8 @@ use rmcp::{
     handler::server::tool::schema_for_output,
     model::{
         CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverResult,
-        Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-        ServerInfo, Tool, ToolAnnotations,
+        Implementation, InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
+        ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
     },
     service::RequestContext,
 };
@@ -35,6 +35,7 @@ mod tests;
 use transport::BoundedStdio;
 
 const SUPPORTED_PROTOCOLS: &[ProtocolVersion] = &[ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25];
+const LEGACY_PROTOCOLS: &[ProtocolVersion] = &[ProtocolVersion::V_2025_11_25];
 const TOOL_LIST_TTL_MS: u64 = 60 * 60 * 1_000;
 const MAX_TOOL_VALUE_BYTES: usize = 96 * 1024;
 const INSTRUCTIONS: &str = "Supgang is a local, read-only view of a sovereign computer fleet. Call fleet first. Address claims are device-signed but are not independent reachability proof; a public address may still be blocked by a router or firewall. Use resolve only when one computer needs every current candidate. Never describe a fresh record as online. No tool writes state, contacts a third party, or starts a network service. The MCP client controls where returned addresses are sent.";
@@ -57,6 +58,7 @@ pub enum McpServeError {
 /// Returns a non-sensitive startup or transport classification.
 pub fn serve_stdio(state_directory: PathBuf) -> Result<(), McpServeError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .thread_name("supgang-mcp")
         .enable_all()
         .build()
         .map_err(|_| McpServeError::Runtime)?;
@@ -167,6 +169,24 @@ impl ServerHandler for SupgangMcp {
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(SUPPORTED_PROTOCOLS)
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        // MCP 2026-07-28 Versioning and Compatibility: initialize selects legacy semantics.
+        if !LEGACY_PROTOCOLS.contains(&request.protocol_version) {
+            return Err(ErrorData::unsupported_protocol_version(
+                request.protocol_version,
+                LEGACY_PROTOCOLS,
+            ));
+        }
+        let mut info = self.get_info();
+        info.protocol_version = request.protocol_version.clone();
+        context.peer.set_peer_info(request);
+        Ok(info)
     }
 
     async fn discover(&self, _context: RequestContext<RoleServer>) -> Result<DiscoverResult, ErrorData> {

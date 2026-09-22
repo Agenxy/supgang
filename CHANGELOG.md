@@ -7,6 +7,8 @@ All notable project changes are recorded here.
 The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken for the published
 `0.1.0` build that failed physical WAN acceptance.
 
+- Restrict MCP `initialize` to 2025-11-25; reject modern revisions with the legacy-only
+  supported list while preserving stateless 2026-07-28 requests and dual-era discovery.
 - Keep anchor-mode peers in synchronized outbound recovery instead of making them receive-only.
   This preserves the relay-free chance of crossing compatible NAT and firewall topologies.
 - Allow macOS installs to apply an explicitly selected owner-controlled code-signing identity.
@@ -24,6 +26,12 @@ The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken 
   after a failed restart, and reject or clear stale slots so an install cannot roll backward later.
 
 ### Added
+
+- Embed Supgang product metadata in the macOS command, explicitly name blocking
+  worker threads and Linux service metadata, and test the built executable's identity.
+  Replace default-named transport certificates once while preserving membership
+  keys and settings. This development cutover changes certificate pins and the
+  transport storage format; see `docs/product-identity.md` before fleet deployment.
 
 - Correct the isolated threshold prototype after security review: durable
   recovery-generation authorization locks, chain policy before nonce issuance,

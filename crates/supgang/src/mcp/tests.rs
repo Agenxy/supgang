@@ -20,6 +20,73 @@ use super::{SupgangMcp, transport::BoundedStdio};
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::test]
+async fn mcp_2026_versioning_and_compatibility_initialize_selects_only_legacy() -> Result<(), Box<dyn Error>> {
+    // MCP 2026-07-28, Versioning and Compatibility:
+    // "Backward Compatibility with Initialization-Based Versions" makes initialize
+    // the legacy door. UnsupportedProtocolVersionError lists that door's versions.
+    let directory = tempfile::tempdir()?;
+    for requested in ["2026-07-28", "2099-01-01"] {
+        for metadata in [
+            None,
+            Some(json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"})),
+        ] {
+            let mut request = initialize_request(requested);
+            if let Some(metadata) = metadata {
+                request
+                    .get_mut("params")
+                    .and_then(Value::as_object_mut)
+                    .ok_or("initialize params must be an object")?
+                    .insert("_meta".to_owned(), metadata);
+            }
+            let responses = exchange_tolerating_shutdown(directory.path(), &[request]).await?;
+            let response = response_with_id(&responses, 1)?;
+            assert_eq!(
+                response.get("error"),
+                Some(&json!({
+                    "code": -32022,
+                    "message": "Unsupported protocol version",
+                    "data": {"requested": requested, "supported": ["2025-11-25"]}
+                }))
+            );
+            assert!(response.get("result").is_none());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_initialize_is_not_subject_to_modern_metadata_requirements() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut request = initialize_request("2025-11-25");
+    request
+        .get_mut("params")
+        .and_then(Value::as_object_mut)
+        .ok_or("initialize params must be an object")?
+        .insert(
+            "_meta".to_owned(),
+            json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"}),
+        );
+    let responses = exchange(
+        directory.path(),
+        &[
+            request,
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        ],
+    )
+    .await?;
+    assert_eq!(
+        response_with_id(&responses, 1)?.pointer("/result/protocolVersion"),
+        Some(&json!("2025-11-25"))
+    );
+    let list = response_with_id(&responses, 2)?;
+    assert!(list.pointer("/result/resultType").is_none());
+    assert!(list.pointer("/result/ttlMs").is_none());
+    assert_tool_contract(list)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn legacy_2025_lifecycle_lists_a_strict_read_only_surface() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let responses = exchange(
@@ -89,7 +156,7 @@ async fn modern_2026_discovery_is_self_contained_and_cacheable() -> Result<(), B
 }
 
 #[tokio::test]
-async fn official_sdk_clients_use_both_supported_protocol_eras() -> Result<(), Box<dyn Error>> {
+async fn official_sdk_clients_use_legacy_initialize_and_modern_discover() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
 
     let (client_transport, server_transport) = tokio::io::duplex(super::transport::MAX_MCP_RESPONSE_BYTES * 4);
@@ -132,7 +199,8 @@ async fn official_sdk_clients_use_both_supported_protocol_eras() -> Result<(), B
 }
 
 #[tokio::test]
-async fn tool_calls_are_strict_and_return_structured_local_state() -> Result<(), Box<dyn Error>> {
+async fn modern_tool_calls_without_initialize_are_strict_and_return_structured_local_state()
+-> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
     let local = crate::state::initialize(directory.path())?;
@@ -214,27 +282,12 @@ async fn offline_tools_never_create_or_repair_state() -> Result<(), Box<dyn Erro
 #[tokio::test]
 async fn unsupported_protocol_and_oversized_input_fail_closed() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
-    let unsupported = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "supgang-test", "version": "1"}
-        }
-    });
-    let responses = exchange(
-        directory.path(),
-        &[
-            unsupported,
-            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        ],
-    )
-    .await?;
+    let responses = exchange_tolerating_shutdown(directory.path(), &[initialize_request("2025-06-18")]).await?;
+    let unsupported = response_with_id(&responses, 1)?;
+    assert_eq!(unsupported.pointer("/error/code"), Some(&json!(-32022)));
     assert_eq!(
-        response_with_id(&responses, 1)?.pointer("/result/protocolVersion"),
-        Some(&json!("2025-11-25"))
+        unsupported.pointer("/error/data"),
+        Some(&json!({"requested": "2025-06-18", "supported": ["2025-11-25"]}))
     );
 
     let unsupported_modern = json!({
@@ -273,6 +326,17 @@ async fn unsupported_protocol_and_oversized_input_fail_closed() -> Result<(), Bo
     let raw = exchange_bytes(directory.path(), &oversized, true).await?;
     assert!(raw.is_empty());
     Ok(())
+}
+
+fn initialize_request(version: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": version,
+            "capabilities": {},
+            "clientInfo": {"name": "supgang-test", "version": "1"}
+        }
+    })
 }
 
 fn request_2026(id: u64, method: &str, parameters: &Value) -> Value {

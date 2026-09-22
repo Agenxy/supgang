@@ -41,7 +41,10 @@ async fn run_transaction(
     let state_directory = state_directory.to_path_buf();
     let bundle = bundle.to_path_buf();
     run_owned(lock, incoming, move || {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .thread_name("supgang-update")
+            .enable_all()
+            .build()?;
         runtime.block_on(transaction(&state_directory, &bundle))
     })
     .await

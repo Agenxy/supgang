@@ -87,8 +87,8 @@ pub fn publish(
     }
     let now = unix_time()?;
     let expires_at = now.saturating_add(u64::from(lifetime_hours) * 60 * 60);
-    let transport = transport_storage::load_or_create(state_directory).map_err(|error| error.to_string())?;
     let mut local_state = state::open(state_directory).map_err(|error| error.to_string())?;
+    let transport = transport_storage::load_or_create(state_directory).map_err(|error| error.to_string())?;
     let display_name = profile::load_or_create(state_directory, local_state.identity().device.node_id())
         .map_err(|error| error.to_string())?;
     let membership = local_state

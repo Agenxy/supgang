@@ -1,8 +1,8 @@
 # ADR 0003: Hardware-held device keys and device-certified subordinate keys
 
-Status: proposed (ninth draft; aligned with ADR 0004's fourth draft and package 4's findings)
+Status: proposed (tenth draft; portable custody boundary and CryptoKit sealed-blob decision, package 8)
 
-Date: 2026-09-19
+Date: 2026-09-21
 
 ## Decision
 
@@ -14,9 +14,11 @@ already keeps apart (root, device, transport; docs/security/threat-model.md,
    The *device key* (ECDSA P-256) is the device's identity: it is what the root
    certifies membership of, it derives `NodeId`, and it signs only *authority*:
    certificates for subordinate keys, revocations of them, and the publication
-   key below. It lives in the Secure Enclave on Apple platforms or a TPM 2.0
-   elsewhere, or a security key, generated inside and never leaving; the
-   owner-only file provider remains the fallback with its `doctor` warning.
+   key below. The portable custody boundary names the Secure Enclave, TPM 2.0,
+   security keys and owner-only files. Package 8 implements the macOS Secure
+   Enclave provider; Linux TPM 2.0 and security keys are explicitly `NotBuilt`.
+   File custody requires an explicit owner choice and keeps its `doctor`
+   warning. A failed hardware request never selects it.
    Signing with the device key requires the owner's presence where the
    hardware can ask (Touch ID, PIN, touch). The *publication key* (P-256, may
    be file-held) signs endpoint records: addresses, candidates, capabilities,
@@ -474,10 +476,108 @@ with a `transport-client` key when mutual admission is wanted. Dibs's hub key
 becomes a `service` certificate. None keeps a key hierarchy of its own, and
 each states its maximum status age.
 
-Not decided here: the Secure Enclave helper's exact Swift surface and the
-iOS member (its own ADR, after a real-device test of user-installed roots
-for WebAuthn); TPM; whether a hive may require hardware custody of its
-members.
+Not decided here: the iOS member (its own ADR, after a real-device test of
+user-installed roots for WebAuthn), TPM authorization and device access,
+security-key selection, and whether a hive may require hardware custody.
+
+## Package 8: portable custody, then the Secure Enclave
+
+Every Agenxy project supports macOS and Linux at minimum and leaves room for
+further platforms in the same codebase. The generic part is named first:
+`CustodyProvider` creates or restores a `DeviceSigner`, with a presence policy,
+provider kind and typed availability. `DeviceSigner::sealed_key` returns the
+opaque restore record when supported. Possession and threshold control proofs
+accept trait objects; neither consumer knows a platform API.
+
+`capabilities()` always lists Secure Enclave, TPM 2.0, security key and file,
+once each, in that order. On Linux, Secure Enclave is `WrongPlatform`, TPM 2.0
+is `NotBuilt`, security key is `NotBuilt`, and file is ready. On macOS TPM 2.0
+is `WrongPlatform`; the enclave probe distinguishes no hardware from a missing
+helper or a native refusal. `NotBuilt` is a first-class visible answer.
+Owner cancellation, timeout, malformed helper output and concurrent helper
+use also remain distinct refusals. No refusal is a fallback decision.
+
+`SealedKey` is canonical CBOR `[1, kind, bytes]`, with a 4096-byte provider
+payload bound and explicit version and kind checks. The provider alone
+interprets the bytes. The restore record is written once as mode 0600
+`device-custody.cbor` beside the identity, with the existing owner, ACL,
+ancestor and no-follow checks. Debug output excludes its bytes. File custody
+uses an extractable scalar in that same container and cannot enforce presence.
+Writing a record does not enroll or migrate a live identity.
+
+### Why the keychain path is rejected
+
+The owner measured these results on this Mac before this package. These are
+the decision's evidence, not fresh measurements claimed by this implementation:
+
+| Attempt | Measured result |
+| --- | --- |
+| Unsigned `SecKeyCreateRandomKey`, Secure Enclave key in the keychain | `errSecMissingEntitlement` (-34018) |
+| Ad-hoc signed, no entitlements | -34018 |
+| Ad-hoc signed with `com.apple.security.cs.allow-jit` | Launches, then -34018 from the keychain |
+| Ad-hoc signed with `keychain-access-groups` and `com.apple.application-identifier` | SIGKILL at launch |
+| Unsigned `CryptoKit.SecureEnclave.P256.Signing.PrivateKey`, no entitlement | Generates, restores and signs successfully |
+
+The control with the non-restricted entitlement shows that an ad-hoc
+signature can launch. AMFI accepts the restricted keychain entitlements only
+under an Apple-issued provisioning profile. A self-signed certificate cannot
+authorize them: that check is rooted at Apple. Requiring the Apple Developer
+Program for custody violates the sovereignty invariant, so this path is
+rejected. It is not a signing problem left for packaging to solve.
+
+CryptoKit's `dataRepresentation` instead returns a SEP-wrapped blob. The
+private key never leaves the enclave and only that Mac can unwrap it. The
+owner measured 284 bytes without presence and 427 with presence, a restored
+key signing successfully, a 33-byte compressed public key, and a 64-byte
+raw `r || s` signature. Those blob lengths are observations, not a portable
+format promise. `[.privateKeyUsage, .userPresence]` gates signing with owner
+presence. Rust normalizes `s` with `p256::ecdsa::Signature::normalize_s`
+before constructing `DeviceSignature`; CryptoKit does not promise low-s.
+
+### The native boundary and its limits
+
+`platforms/macos` follows Remap's SwiftPM `Sources/<target>` layout. The
+optional executable is `supgang-secure-enclave`, located beside Supgang's
+own executable. Cargo never builds Swift; the explicit Python/uv build helper
+does. No entitlement, developer account, certificate or keychain is required.
+This process boundary is deliberate: custody uses safe Rust, without adding
+FFI to the workspace. The existing ACL crate's separate unsafe exception is
+recorded in the [coupling audit](macos-coupling-package-8.md).
+
+`supgang/custody/v1` is one ASCII line and EOF in each direction. All blobs,
+keys, digests and signatures are lowercase hex. `generate --presence` or
+`--no-presence`, `public --sealed <hex>`, `sign --sealed <hex> <digest-hex>`,
+and `probe` are protocol requests on stdin, never command-line arguments.
+Probe names the product. Rust bounds each direction to 16384 bytes and one
+child, without a wait queue; deadlines are two seconds for probe, five for
+public-key restore and one minute for creation or signing. A hanging child
+is killed and reaped. There is no shell and no payload logging.
+
+`Custody::Hardware` means what the owner enrolled the key as, not an
+attestation. A device cannot prove to anyone else where its key lives.
+Replacing a helper with owner-run software illustrates that limit; a peer
+cannot infer hardware residence from a signature or a probe string.
+
+The declared Linux provider is `device_key/tpm2.rs`. Implementing it needs
+`tss-esapi` (absent from the offline cache), the native TSS stack, a reviewed
+owner-access policy for `/dev/tpmrm0`, primary-key parameters plus a wrapped
+child inside `SealedKey::bytes`, and an explicit TPM PIN/presence policy.
+Adding provider operations changes that one source file and no interface;
+dependency and native packaging declarations will of course also be needed.
+There is no Linux hardware claim before real-host validation.
+
+This package supplies the custody primitive, not the completed signer policy
+above. The digest-signing helper does not validate an authority manifest,
+display its changes, reserve revisions, or publish state atomically. Presence
+on a key gates use, not approval of a particular displayed transaction.
+Those typed authority operations must precede connecting this provider to
+live authority administration. The live Ed25519 identity remains file-held;
+doctor reports that actual provider separately from the P-256 capability
+matrix, as an additive `custody` field in `supgang.doctor/v1`. A missing or
+invalid live identity reports a null provider, not an assumed fallback.
+No migration, FROST share sealing, TPM or security-key implementation,
+platform attestation, iOS membership, or whole-machine rollback protection
+is supplied by package 8.
 
 ## Review
 

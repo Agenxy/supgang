@@ -24,7 +24,7 @@ bounds and what consumers must pin. Corrections from astra's review
 | Backup recovery | vendor accounts for restore | recovery recipients with their own encryption keys; threshold escrow across members, designed apart from root succession | own ADR (Compass backups want this) |
 | Mail and messaging keys | public keyservers, WKD | member certificates for S/MIME or OpenPGP, a device-keyed directory | later |
 | Overlay network | Tailscale-style coordination servers | WireGuard keys certified by the device, peer config from records (ADR 0001 is most of it) | later |
-| Owner-verified hardware custody | vendor attestation services | `custody: hardware`, verified once by the owner in person, labelled owner-verified never attested | ADR 0003 |
+| Owner-verified hardware custody | vendor attestation services | portable `CustodyProvider` and versioned `SealedKey`; macOS CryptoKit sealed-blob helper; owner-enrolled label, never attestation | Package 8 primitive; Linux TPM 2.0 and security keys `NotBuilt`; live identity remains file-held; typed authority integration pending (ADR 0003, tenth draft) |
 | Firmware and boot trust | vendor Secure Boot roots | stays partly external; said so | out of scope |
 
 Order: the ADR 0003 primitive and ADR 0004 (threshold root) first; then the

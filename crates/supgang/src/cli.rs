@@ -52,6 +52,7 @@ struct DoctorOutput {
     strict_mode: bool,
     public_dependencies: u8,
     checks: Vec<DoctorCheck>,
+    custody: doctor::CustodyOutput,
 }
 
 #[derive(Debug, Serialize)]
@@ -603,8 +604,12 @@ fn doctor(state_directory: &PathBuf, json: bool, output: &mut dyn Write, error: 
     checks.push(DoctorCheck {
         id: "key-provider",
         status: "warning",
-        detail: "identity uses an owner-only file; hardware-backed platform storage is not enabled in this build"
-            .to_owned(),
+        detail: if identity_result.is_ok() {
+            "the live Ed25519 identity uses an owner-only file; optional P-256 providers do not migrate it"
+        } else {
+            "the live identity could not be loaded; its custody is unknown"
+        }
+        .to_owned(),
     });
     let failed = identity_result.is_err() || !state_ok || checks.iter().any(|check| check.status == "error");
     let result = DoctorOutput {
@@ -614,6 +619,7 @@ fn doctor(state_directory: &PathBuf, json: bool, output: &mut dyn Write, error: 
         strict_mode: true,
         public_dependencies: 0,
         checks,
+        custody: doctor::CustodyOutput::current(identity_result.is_ok()),
     };
     let rendered = if json {
         render_json(&result, output, error)
@@ -637,6 +643,9 @@ fn render_doctor_human(result: &DoctorOutput, output: &mut dyn Write) -> ExitCod
         if writeln!(output, "[{}] {}: {}", check.status, check.id, check.detail).is_err() {
             return ExitCode::from(EXIT_FAILURE);
         }
+    }
+    if doctor::render_custody(&result.custody, output).is_err() {
+        return ExitCode::from(EXIT_FAILURE);
     }
     ExitCode::SUCCESS
 }

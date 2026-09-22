@@ -81,7 +81,7 @@ pub(super) fn render_systemd(
     let mapping_argument = if router_mapping { " --router-mapping" } else { "" };
     let policy_arguments = format!("{anchor_argument}{mapping_argument}{endpoint_arguments}");
     Ok(format!(
-        "[Unit]\nDescription=Supgang sovereign peer discovery\n\n[Service]\nType=simple\nExecStart={executable} --json --state-dir {command_state} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={state_directory}\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Supgang peer address discovery\nDocumentation=https://agenxy.org/projects/supgang/\n\n[Service]\nType=simple\nSyslogIdentifier=supgang\nExecStart={executable} --json --state-dir {command_state} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={state_directory}\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=default.target\n"
     ))
 }
 
@@ -135,6 +135,9 @@ mod tests {
             "ExecStart=\"/home/a b/sup%%gang\" --json --state-dir \"/home/a b/state\" supervise --endpoints \"/home/a b/endpoints.json\""
         ));
         assert!(unit.contains("ProtectSystem=strict"));
+        assert!(unit.contains("Description=Supgang peer address discovery\n"));
+        assert!(unit.contains("Documentation=https://agenxy.org/projects/supgang/\n"));
+        assert!(unit.contains("SyslogIdentifier=supgang\n"));
         assert!(unit.contains("NoNewPrivileges=true"));
         assert!(unit.contains("StandardOutput=null"));
         assert!(unit.contains("CapabilityBoundingSet=\n"));

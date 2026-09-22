@@ -6,3 +6,5 @@
 *.tmp
 *.profraw
 __pycache__/
+# SwiftPM, when the macOS helper is built in place rather than through build.py
+.build/

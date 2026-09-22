@@ -59,7 +59,7 @@ impl Proof {
     ///
     /// # Errors
     /// Refuses another self id or device-signing failure.
-    pub fn sign(challenge: &Challenge, signer: &impl DeviceSigner) -> Result<Self, Error> {
+    pub fn sign(challenge: &Challenge, signer: &(impl DeviceSigner + ?Sized)) -> Result<Self, Error> {
         if challenge.self_node != device_node_id(signer.public_key()) {
             return Err(Error::Authority);
         }

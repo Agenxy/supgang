@@ -147,6 +147,14 @@ fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::
     let doctor: serde_json::Value = serde_json::from_slice(&output)?;
     assert_eq!(doctor.get("schema"), Some(&serde_json::json!("supgang.doctor/v1")));
     assert_eq!(doctor.get("public_dependencies"), Some(&serde_json::json!(0)));
+    assert_eq!(doctor.pointer("/custody/provider"), Some(&serde_json::json!("file")));
+    assert_eq!(
+        doctor
+            .pointer("/custody/capabilities")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(4)
+    );
 
     output.clear();
     let code = run(
