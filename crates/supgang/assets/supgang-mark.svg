@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Supgang">
+  <title>Supgang</title>
+  <desc>Five peers holding a network between them; one of them, in vermilion, is this computer.</desc>
+  <g fill="none" stroke="#21293a" stroke-width="2.1" stroke-linecap="round">
+    <path d="M22.1 23.6 L40.8 17.4" />
+    <path d="M40.8 17.4 L49.4 30.9" />
+    <path d="M22.1 23.6 L16.4 43.5" />
+    <path d="M22.1 23.6 L39.4 44.8" />
+    <path d="M16.4 43.5 L39.4 44.8" />
+    <path d="M39.4 44.8 L49.4 30.9" />
+  </g>
+  <g fill="#21293a">
+    <circle cx="40.8" cy="17.4" r="4.1" />
+    <circle cx="22.1" cy="23.6" r="4.1" />
+    <circle cx="16.4" cy="43.5" r="4.1" />
+    <circle cx="39.4" cy="44.8" r="4.1" />
+  </g>
+  <circle cx="49.4" cy="30.9" r="4.1" fill="#a82b1f" />
+</svg>

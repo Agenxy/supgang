@@ -11,7 +11,7 @@ use rmcp::{
     ErrorData, RoleServer, ServerHandler, ServiceExt,
     handler::server::tool::schema_for_output,
     model::{
-        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverResult,
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverResult, Icon,
         Implementation, InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
         ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
     },
@@ -155,12 +155,52 @@ impl SupgangMcp {
     }
 }
 
+/// Supgang's mark, as a client can render it without fetching anything.
+///
+/// The bytes are the crate's vector master, included at build time, so the icon a
+/// client shows and the mark on disk cannot drift. It lives inside this crate, not in
+/// the repository's brand directory: `cargo package` carries only what is under the
+/// crate root, and a published crate whose `include_str!` reached outside it would not
+/// build for anyone who installed it. It is percent-encoded
+/// rather than base64: the same bytes, no dependency, and still legible in a log.
+const MARK: &str = include_str!("../assets/supgang-mark.svg");
+
+/// One hexadecimal digit, upper case. Total over a nibble, so there is nothing to
+/// index and nothing to unwrap.
+fn hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => char::from(b'0' + nibble),
+        _ => char::from(b'A' + nibble - 10),
+    }
+}
+
+fn mark_data_uri() -> String {
+    let mut out = String::from("data:image/svg+xml,");
+    for byte in MARK.bytes() {
+        // Unreserved characters (RFC 3986) pass through; everything else is escaped,
+        // including the `#` of a colour, which would otherwise end the URI.
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(hex_digit(byte >> 4));
+            out.push(hex_digit(byte & 0x0f));
+        }
+    }
+    out
+}
+
 impl ServerHandler for SupgangMcp {
     fn get_info(&self) -> ServerInfo {
         let implementation = Implementation::new("org.agenxy.supgang", VERSION)
             .with_title("Supgang")
             .with_description("Sovereign peer address discovery")
-            .with_website_url("https://agenxy.org/projects/supgang");
+            .with_website_url("https://agenxy.org/projects/supgang")
+            .with_icons(vec![
+                Icon::new(mark_data_uri())
+                    .with_mime_type("image/svg+xml")
+                    .with_sizes(vec!["any".to_owned()]),
+            ]);
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(implementation)
