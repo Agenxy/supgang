@@ -3113,6 +3113,9 @@ dependencies = [
 [[package]]
 name = "supgang-quality"
 version = "0.2.0-alpha.10"
+dependencies = [
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "syn"

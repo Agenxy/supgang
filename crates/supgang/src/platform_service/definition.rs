@@ -17,7 +17,7 @@ pub(super) fn validated_endpoints(path: Option<&Path>) -> Result<Option<PathBuf>
     .transpose()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn render_launchd(
     executable: &Path,
     state_directory: &Path,
@@ -25,6 +25,7 @@ pub(super) fn render_launchd(
     anchor: bool,
     router_mapping: bool,
 ) -> Result<String, ServiceError> {
+    validate_policy(endpoints, router_mapping)?;
     let executable = xml_text(executable)?;
     let state_directory = xml_text(state_directory)?;
     let endpoint_arguments = if let Some(path) = endpoints {
@@ -47,12 +48,9 @@ pub(super) fn render_launchd(
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn xml_text(path: &Path) -> Result<String, ServiceError> {
-    let text = path.to_str().ok_or(ServiceError::UnsafeDefinition)?;
-    if text.chars().any(char::is_control) {
-        return Err(ServiceError::UnsafeDefinition);
-    }
+    let text = path_text(path)?;
     Ok(text
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -69,6 +67,7 @@ pub(super) fn render_systemd(
     anchor: bool,
     router_mapping: bool,
 ) -> Result<String, ServiceError> {
+    validate_policy(endpoints, router_mapping)?;
     let executable = systemd_argument(executable)?.replace('$', "$$");
     let command_state = systemd_argument(state_directory)?.replace('$', "$$");
     let state_directory = systemd_argument(state_directory)?;
@@ -87,14 +86,30 @@ pub(super) fn render_systemd(
 
 #[cfg(any(target_os = "linux", test))]
 fn systemd_argument(path: &Path) -> Result<String, ServiceError> {
-    let text = path.to_str().ok_or(ServiceError::UnsafeDefinition)?;
-    if text.chars().any(char::is_control) {
-        return Err(ServiceError::UnsafeDefinition);
-    }
+    let text = path_text(path)?;
     Ok(format!(
         "\"{}\"",
         text.replace('%', "%%").replace('\\', "\\\\").replace('"', "\\\"")
     ))
+}
+
+fn path_text(path: &Path) -> Result<&str, ServiceError> {
+    let text = path.to_str().ok_or(ServiceError::UnsafeDefinition)?;
+    if !path.is_absolute()
+        || text
+            .chars()
+            .any(|value| value.is_control() || matches!(value, '\u{fffe}' | '\u{ffff}'))
+    {
+        return Err(ServiceError::UnsafeDefinition);
+    }
+    Ok(text)
+}
+
+pub(super) const fn validate_policy(endpoints: Option<&Path>, router_mapping: bool) -> Result<(), ServiceError> {
+    if endpoints.is_some() && router_mapping {
+        return Err(ServiceError::InvalidEndpoints);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -172,7 +187,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn launchd_definition_escapes_paths_and_suppresses_logs() -> Result<(), Box<dyn std::error::Error>> {
         let plist = super::render_launchd(

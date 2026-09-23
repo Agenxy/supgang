@@ -315,6 +315,15 @@ supgang service install
 supgang service status
 ```
 
+The installer copies the command to protected application storage using a fresh inode.
+On macOS it refuses guarded paths for service state and endpoint files. Service status
+reports manager enablement, manager and socket PIDs, and running/client versions separately.
+An owner-disabled launchd job is refused without changing the owner's setting. On Linux,
+installation starts the user unit but leaves login enablement and lingering unchanged.
+To opt into login startup, run `systemctl --user enable supgang.service` explicitly.
+See the [installation conformance record](docs/architecture/supgang-installation-conformance.md)
+for the remaining verification limits.
+
 On macOS, a normal user installation starts when that account signs in to the desktop.
 An always-on home computer needs startup before login. For a default-state macOS installation,
 review [the owner setup script](tools/setup_macos.py), then run it from the checkout:

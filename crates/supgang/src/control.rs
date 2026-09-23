@@ -187,7 +187,9 @@ pub enum ControlError {
     #[error("local control request is invalid")]
     InvalidRequest,
     /// A response exceeded its fixed bound or failed decoding.
-    #[error("local control response is invalid")]
+    #[error(
+        "local control response is invalid or incompatible with this client; check `supgang service status` and run `supgang service refresh` for an older service"
+    )]
     InvalidResponse,
 }
 
@@ -297,6 +299,14 @@ pub async fn write_reply(stream: &mut UnixStream, reply: &ControlReply) -> Resul
 /// Rejects unsafe socket metadata, foreign peers, malformed responses, timeouts,
 /// and I/O failures.
 pub fn request(state_directory: &Path, request: ControlRequest) -> Result<Option<ControlReply>, ControlError> {
+    request_observed(state_directory, request).map(|reply| reply.map(|(reply, _pid)| reply))
+}
+
+/// Requests status with the socket peer PID obtained from the operating system.
+pub fn request_observed(
+    state_directory: &Path,
+    request: ControlRequest,
+) -> Result<Option<(ControlReply, u32)>, ControlError> {
     let directory = storage::validate_directory(state_directory)?;
     let path = directory.join(CONTROL_SOCKET_FILE_NAME);
     let metadata = match fs::symlink_metadata(&path) {
@@ -315,11 +325,26 @@ pub fn request(state_directory: &Path, request: ControlRequest) -> Result<Option
     stream.set_read_timeout(Some(CLIENT_TIMEOUT))?;
     stream.set_write_timeout(Some(CLIENT_TIMEOUT))?;
     validate_peer_blocking(&stream)?;
+    let pid = peer_pid(&stream)?;
     let bytes = encode_request(request);
     write_blocking_frame(&mut stream, &bytes, MAX_REQUEST_BYTES)?;
     let response = read_blocking_frame(&mut stream, MAX_RESPONSE_BYTES)?;
     let reply = serde_json::from_slice(&response).map_err(|_| ControlError::InvalidResponse)?;
-    Ok(Some(reply))
+    Ok(Some((reply, pid)))
+}
+
+fn peer_pid(stream: &BlockingUnixStream) -> Result<u32, ControlError> {
+    #[cfg(target_os = "macos")]
+    let pid =
+        nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::LocalPeerPid).map_err(io::Error::other)?;
+    #[cfg(target_os = "linux")]
+    let pid = nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
+        .map_err(io::Error::other)?
+        .pid();
+    u32::try_from(pid)
+        .ok()
+        .filter(|pid| *pid != 0)
+        .ok_or(ControlError::WrongPeer)
 }
 
 fn encode_request(request: ControlRequest) -> Vec<u8> {

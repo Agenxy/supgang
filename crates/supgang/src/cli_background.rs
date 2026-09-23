@@ -21,6 +21,8 @@ struct ServiceOutput {
     installed: bool,
     running: bool,
     data_preserved: bool,
+    #[serde(flatten)]
+    observation: platform_service::observation::Observation,
 }
 
 pub fn service(
@@ -74,6 +76,7 @@ pub fn service(
         installed: report.installed,
         running: report.running,
         data_preserved: report.data_preserved,
+        observation: report.observation.clone(),
     };
     if json {
         let serialized = serde_json::to_writer(&mut *output, &value).is_ok();
@@ -91,7 +94,16 @@ pub fn service(
         ServiceCommand::Refresh => {
             "Supgang's installed program was refreshed without changing its background-service settings."
         }
-        ServiceCommand::Status if report.running => "Supgang is installed and running in the background.",
+        ServiceCommand::Status if report.state == "disabled-by-owner" => "Supgang startup is disabled by the owner.",
+        ServiceCommand::Status if report.state == "running-outside-manager" => {
+            "Supgang is running, but not as this background service."
+        }
+        ServiceCommand::Status if report.running => {
+            "Supgang is answering its control socket; manager ownership is reported below."
+        }
+        ServiceCommand::Status if report.state == "starting-or-unhealthy" => {
+            "Supgang is registered with the manager, but control readiness could not be verified."
+        }
         ServiceCommand::Status if report.installed => "Supgang is installed but is not running.",
         ServiceCommand::Status => "Supgang is not installed as a background service.",
         ServiceCommand::Start => "Supgang is running in the background.",
@@ -114,9 +126,54 @@ pub fn service(
         _ => "Startup depends on this account's operating-system session settings.",
     };
     let show_startup = matches!(command, ServiceCommand::Status | ServiceCommand::Install { .. });
-    if writeln!(output, "{message}").is_ok() && (!show_startup || writeln!(output, "{startup_note}").is_ok()) {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(EXIT_FAILURE)
+    if writeln!(output, "{message}").is_err() {
+        return ExitCode::from(EXIT_FAILURE);
     }
+    if show_startup
+        && (writeln!(output, "{startup_note}").is_err() || render_observation(&report.observation, output).is_err())
+    {
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    ExitCode::SUCCESS
+}
+
+fn render_observation(
+    observed: &platform_service::observation::Observation,
+    output: &mut dyn Write,
+) -> std::io::Result<()> {
+    let manager_pid = observed
+        .manager_pid
+        .map_or_else(|| "unknown".to_owned(), |pid| pid.to_string());
+    let socket_pid = observed
+        .socket_pid
+        .map_or_else(|| "not observed".to_owned(), |pid| pid.to_string());
+    let lingering = match observed.lingering {
+        Some(true) => "enabled",
+        Some(false) => "disabled",
+        None => "unknown or not applicable",
+    };
+    writeln!(
+        output,
+        "Manager PID: {manager_pid}; socket PID: {socket_pid}; relationship: {}.\nManager enablement: {}; lingering: {lingering}.\nService identity: {}.\nDefinition: {}.\nInstalled program: {}.\nManager program: {}.\nLogs: {}.\nClient version: {}; running version: {}.",
+        observed.process_relationship,
+        observed.manager_enablement.as_deref().unwrap_or("unknown"),
+        observed.service_identity.as_deref().unwrap_or("unknown"),
+        observed.definition_path.as_deref().unwrap_or("unknown"),
+        observed.installed_program.as_deref().unwrap_or("unknown"),
+        observed.manager_program.as_deref().unwrap_or("unknown"),
+        observed.log_destination,
+        observed.client_version,
+        observed
+            .running_version
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown"),
+    )?;
+    if let Some(note) = observed.version_note {
+        writeln!(output, "{note}")?;
+    }
+    if let Some(error) = observed.control_error {
+        writeln!(output, "{error}")?;
+    }
+    Ok(())
 }

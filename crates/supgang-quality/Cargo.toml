@@ -16,6 +16,7 @@ name = "supgang-quality"
 path = "src/main.rs"
 
 [dependencies]
+syn = { version = "=2.0.119", default-features = false, features = ["full", "parsing", "visit"] }
 
 [lints]
 workspace = true

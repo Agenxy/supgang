@@ -5,7 +5,6 @@ use std::{
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -14,8 +13,13 @@ use thiserror::Error;
 
 use crate::{control, storage};
 
+#[cfg(any(target_os = "macos", test))]
+mod boot_definition;
 mod definition;
 mod executable;
+#[cfg(any(target_os = "macos", test))]
+mod guarded;
+pub mod observation;
 #[cfg(target_os = "macos")]
 mod system_boot;
 
@@ -44,7 +48,7 @@ pub enum Action<'a> {
 }
 
 /// Stable, non-secret result of a background-service operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Report {
     pub startup: &'static str,
     pub manager: &'static str,
@@ -52,6 +56,7 @@ pub struct Report {
     pub installed: bool,
     pub running: bool,
     pub data_preserved: bool,
+    pub observation: observation::Observation,
 }
 
 /// Background-service validation or manager failure.
@@ -71,6 +76,15 @@ pub enum ServiceError {
     InvalidState,
     #[error("the current Supgang executable is not a safe owner-controlled regular file")]
     UnsafeExecutable,
+    #[error(
+        "macOS guards {0}; put the service program and data in ~/Library/Application Support/org.agenxy.supgang instead"
+    )]
+    #[cfg(any(target_os = "macos", test))]
+    GuardedDirectory(&'static str),
+    #[error(
+        "the owner disabled this service in the background manager; explicitly enable it with the manager before starting it"
+    )]
+    DisabledByOwner,
     #[error(
         "the current Supgang command is older than protected update state and cannot replace the installed supervisor"
     )]
@@ -140,7 +154,12 @@ pub fn preflight_restart(state_directory: &Path) -> Result<(), ServiceError> {
 
 fn validate_state(state_directory: &Path) -> Result<(), ServiceError> {
     storage::validate_directory(state_directory).map_err(|_| ServiceError::InvalidState)?;
-    storage::load_identity(state_directory).map_err(|_| ServiceError::InvalidState)?;
+    let state = crate::state::open_read_only(state_directory).map_err(|_| ServiceError::InvalidState)?;
+    if state.revocations().contains(&state.identity().device.node_id()) {
+        return Err(ServiceError::InvalidState);
+    }
+    crate::settings::load(state_directory).map_err(|_| ServiceError::InvalidState)?;
+    crate::profile::services(state_directory).map_err(|_| ServiceError::InvalidState)?;
     Ok(())
 }
 
@@ -222,8 +241,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ServiceError> {
         .mode(0o600)
         .custom_flags(no_follow)
         .open(&temporary)?;
-    supgang_acl::clear_inherited_acl(&file)?;
     let result = (|| -> Result<(), ServiceError> {
+        supgang_acl::clear_inherited_acl(&file)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
@@ -247,17 +267,28 @@ fn remove_definition(path: &Path) -> Result<(), ServiceError> {
 }
 
 fn manager_status(program: &Path, arguments: &[&str]) -> Result<bool, ServiceError> {
-    let status = Command::new(program)
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    Ok(status.success())
+    observation::command(program, arguments).map(|(success, _)| success)
 }
 
 fn control_is_ready(state_directory: &Path) -> Result<bool, control::ControlError> {
-    control::request(state_directory, control::ControlRequest::Status).map(|reply| reply.is_some())
+    control::request(state_directory, control::ControlRequest::Status)
+        .map(|reply| matches!(reply, Some(control::ControlReply::Status { .. })))
+}
+
+fn wait_until_gone(
+    mut present: impl FnMut() -> Result<bool, ServiceError>,
+    timeout: Duration,
+) -> Result<(), ServiceError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !present()? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(ServiceError::DidNotStop);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn wait_for_control(state_directory: &Path, expected: bool, timeout: Duration) -> Result<(), ServiceError> {
@@ -328,9 +359,12 @@ const fn report(manager: &'static str, installed: bool, active: bool, ready: boo
         installed,
         running: active && ready,
         data_preserved: true,
+        observation: observation::Observation::empty(),
     }
 }
 
+#[cfg(test)]
+mod definition_tests;
 #[cfg(test)]
 mod tests;
 
@@ -408,6 +442,14 @@ mod linux {
         }
     }
 
+    fn require_startable() -> Result<(), ServiceError> {
+        let (_, text) = super::observation::command(Path::new(SYSTEMCTL), &["--user", "is-enabled", UNIT])?;
+        if matches!(text.trim(), "masked" | "masked-runtime") {
+            return Err(ServiceError::DisabledByOwner);
+        }
+        Ok(())
+    }
+
     fn install(
         state_directory: &Path,
         service_definition: &Path,
@@ -416,6 +458,8 @@ mod linux {
         router_mapping: bool,
     ) -> Result<Report, ServiceError> {
         validate_state(state_directory)?;
+        definition::validate_policy(endpoints, router_mapping)?;
+        require_startable()?;
         let endpoints = definition::validated_endpoints(endpoints)?;
         let manager_active = active()?;
         ensure_no_unmanaged_process(state_directory, manager_active)?;
@@ -433,10 +477,11 @@ mod linux {
         )?;
         if manager_active {
             manager(&["--user", "stop", UNIT])?;
+            super::wait_until_gone(active, STOP_TIMEOUT)?;
             wait_for_control(state_directory, false, STOP_TIMEOUT)?;
         }
         manager(&["--user", "daemon-reload"])?;
-        manager(&["--user", "enable", "--now", UNIT])?;
+        manager(&["--user", "start", UNIT])?;
         wait_for_control(state_directory, true, START_TIMEOUT)?;
         status(state_directory, service_definition)
     }
@@ -455,6 +500,7 @@ mod linux {
         state_directory: &Path,
         service_definition: &Path,
     ) -> Result<(), ServiceError> {
+        require_startable()?;
         if !validate_definition(service_definition)? {
             return Err(ServiceError::NotInstalled);
         }
@@ -471,10 +517,13 @@ mod linux {
         }
         let manager_active = active()?;
         let ready = manager_active && control_is_ready(state_directory).unwrap_or(false);
-        Ok(report(MANAGER, installed, manager_active, ready))
+        let mut result = report(MANAGER, installed, manager_active, ready);
+        super::observation::observe_systemd(&mut result, state_directory, definition)?;
+        Ok(result)
     }
 
     fn start(state_directory: &Path, definition: &Path) -> Result<Report, ServiceError> {
+        require_startable()?;
         if !validate_definition(definition)? {
             return Err(ServiceError::NotInstalled);
         }
@@ -493,6 +542,7 @@ mod linux {
         let installed = validate_definition(definition)?;
         if active()? {
             manager(&["--user", "stop", UNIT])?;
+            super::wait_until_gone(active, STOP_TIMEOUT)?;
             wait_for_control(state_directory, false, STOP_TIMEOUT)?;
         }
         Ok(report(MANAGER, installed, false, false))

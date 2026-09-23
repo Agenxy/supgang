@@ -54,7 +54,13 @@ fn installed_path(create: bool) -> Result<PathBuf, ServiceError> {
             child
         };
     }
-    Ok(directory.join(INSTALLED_EXECUTABLE_NAME))
+    let path = directory.join(INSTALLED_EXECUTABLE_NAME);
+    #[cfg(target_os = "macos")]
+    super::guarded::validate(
+        &directory.canonicalize()?.join(INSTALLED_EXECUTABLE_NAME),
+        &owner_home()?,
+    )?;
+    Ok(path)
 }
 
 fn validate_source(file: &File) -> Result<(), ServiceError> {
@@ -103,15 +109,16 @@ fn copy_atomic(source: &mut File, target: &Path) -> Result<(), ServiceError> {
         .mode(0o700)
         .custom_flags(no_follow)
         .open(&temporary)?;
-    supgang_acl::clear_inherited_acl(&destination)?;
-    destination.set_permissions(fs::Permissions::from_mode(0o700))?;
-    validate_destination(&destination)?;
-    let result = copy_bounded(source, &mut destination).and_then(|()| {
+    let result = (|| {
+        supgang_acl::clear_inherited_acl(&destination)?;
+        destination.set_permissions(fs::Permissions::from_mode(0o700))?;
+        validate_destination(&destination)?;
+        copy_bounded(source, &mut destination)?;
         destination.sync_all()?;
         fs::rename(&temporary, target)?;
         File::open(parent)?.sync_all()?;
         Ok(())
-    });
+    })();
     if result.is_err() {
         let _cleanup = fs::remove_file(&temporary);
     }
@@ -161,6 +168,27 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
 
     use super::{copy_bounded, validate_installed_at};
+
+    #[test]
+    fn replacing_an_installed_binary_uses_a_fresh_inode_and_keeps_the_old_open_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::{io::Read as _, os::unix::fs::MetadataExt as _};
+        let temporary = tempfile::tempdir()?;
+        let source_path = temporary.path().join("source");
+        let target = temporary.path().join("supgang");
+        fs::write(&source_path, b"new binary")?;
+        fs::write(&target, b"old binary")?;
+        let mut old = fs::File::open(&target)?;
+        super::copy_atomic(&mut fs::File::open(source_path)?, &target)?;
+        assert_ne!(old.metadata()?.ino(), fs::metadata(&target)?.ino());
+        let mut old_bytes = Vec::new();
+        old.read_to_end(&mut old_bytes)?;
+        assert_eq!(old_bytes, b"old binary");
+        assert_eq!(fs::read(&target)?, b"new binary");
+        assert_eq!(fs::metadata(&target)?.mode() & 0o777, 0o700);
+        assert_eq!(fs::read_dir(temporary.path())?.count(), 2);
+        Ok(())
+    }
 
     #[test]
     fn installed_executable_requires_exact_owner_only_mode() -> Result<(), Box<dyn std::error::Error>> {

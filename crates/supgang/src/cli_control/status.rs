@@ -18,6 +18,8 @@ struct StatusOutput {
     schema: &'static str,
     status: &'static str,
     version: &'static str,
+    running_version: Option<String>,
+    version_note: Option<&'static str>,
     name: String,
     hive_id: String,
     node_id: String,
@@ -83,6 +85,8 @@ fn render_status(
         schema: "supgang.status/v4",
         status: "ok",
         version: VERSION,
+        running_version: runtime.map(|value| value.version.clone()),
+        version_note: runtime.and_then(|value| crate::platform_service::observation::version_note(&value.version)),
         name: name.to_owned(),
         hive_id: hive_id.to_owned(),
         node_id: node_id.to_owned(),
@@ -103,6 +107,21 @@ fn render_status(
 }
 
 fn render_status_human(result: &StatusOutput, output: &mut dyn Write) -> ExitCode {
+    if let Some(note) = result.version_note
+        && writeln!(
+            output,
+            "Client version: {}; running version: {}. {note}",
+            result.version,
+            result
+                .running_version
+                .as_deref()
+                .filter(|version| !version.is_empty())
+                .unwrap_or("unknown (older service)")
+        )
+        .is_err()
+    {
+        return ExitCode::from(EXIT_FAILURE);
+    }
     let header = writeln!(
         output,
         "Hive: {}\nThis computer: {} [{}]\nService: {}",

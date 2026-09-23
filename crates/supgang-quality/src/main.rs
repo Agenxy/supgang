@@ -14,6 +14,7 @@ const MAX_SOURCE_LINES: usize = 700;
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 
 mod acceptance;
+mod installation;
 
 fn main() -> ExitCode {
     let mut output = io::stdout().lock();
@@ -195,6 +196,7 @@ fn policy(root: &Path) -> Result<(), String> {
     inspect_duplicate_dependencies(root)?;
     inspect_dependency_policy(root)?;
     inspect_install_policy(root)?;
+    installation::inspect(root)?;
     inspect_ci(root)?;
     Ok(())
 }
@@ -246,7 +248,10 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
         return Err(format!("shell program is not allowed: {}", display(root, path)));
     }
     let extension = path.extension().and_then(OsStr::to_str);
-    if !matches!(extension, Some("rs" | "toml" | "md" | "json") | None) {
+    if !matches!(
+        extension,
+        Some("rs" | "toml" | "md" | "json" | "py" | "yml" | "yaml") | None
+    ) {
         return Ok(());
     }
     let metadata = fs::metadata(path).map_err(|read_error| read_error.to_string())?;
@@ -255,6 +260,26 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
     }
     let text =
         fs::read_to_string(path).map_err(|read_error| format!("{} is not UTF-8: {read_error}", display(root, path)))?;
+    if extension == Some("py")
+        && (!text.starts_with("#!/usr/bin/env -S uv run --script\n")
+            || !text.contains("# /// script\n")
+            || !text.contains("# dependencies ="))
+    {
+        return Err(format!(
+            "Python helper needs the uv shebang and PEP 723 metadata: {}",
+            display(root, path)
+        ));
+    }
+    for forbidden in [
+        "#!/bin/ba\x73h",
+        "#!/usr/bin/env ba\x73h",
+        "Command::new(\"ba\x73h\")",
+        "shell: ba\x73h",
+    ] {
+        if text.contains(forbidden) {
+            return Err(format!("bash executable is not allowed: {}", display(root, path)));
+        }
+    }
     for forbidden in ["TO\x44O", "FIX\x4dE", "Bea\x63on", "bea\x63on", "\u{2014}"] {
         if text.contains(forbidden) {
             return Err(format!("{} contains forbidden text {forbidden:?}", display(root, path)));
@@ -274,6 +299,7 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
         let contains_unsafe =
             text.contains(&unsafe_block) || text.contains(&unsafe_function) || text.contains(&unsafe_implementation);
         let relative = display(root, path);
+        installation::source(&relative, &text)?;
         let is_acl_boundary = relative == "crates/supgang-acl/src/lib.rs";
         if contains_unsafe && !is_acl_boundary {
             return Err(format!("portable Supgang source contains unsafe Rust: {relative}"));

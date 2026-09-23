@@ -242,8 +242,20 @@ def owner_command(owner: pwd.struct_passwd, args: list[str]) -> subprocess.Compl
 
 
 def manager_loaded(target: str) -> bool:
-    return subprocess.run([LAUNCHCTL, "print", target], stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL, timeout=10, check=False).returncode == 0
+    result = subprocess.run([LAUNCHCTL, "print", target], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=10, check=False)
+    if result.returncode not in (0, 113):
+        raise RuntimeError("launchd status failed; absence of the job was not established.")
+    return result.returncode == 0
+
+
+def bootout(target: str) -> None:
+    checked([LAUNCHCTL, "bootout", target])
+    deadline = time.monotonic() + 30
+    while manager_loaded(target):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("launchd did not remove the outgoing job within 30 seconds; refusing to bootstrap.")
+        time.sleep(0.1)
 
 
 def wait_for_stopped(owner: pwd.struct_passwd) -> None:
@@ -265,7 +277,7 @@ def write_definition(path: Path, data: bytes) -> None:
         validate_ancestor(directory, 0)
     if path.exists() or path.is_symlink():
         safe_read(path, 0, MAX_DEFINITION)
-    fd, temporary = tempfile.mkstemp(prefix=f".{LABEL}-", dir=root_support())
+    fd, temporary = tempfile.mkstemp(prefix=f".{LABEL}-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as destination:
             descriptor_acl(destination.fileno(), clear_new=True)
@@ -355,9 +367,9 @@ def apply(owner: pwd.struct_passwd, definition: dict[str, object], fingerprint: 
         for domain in ("gui", "user"):
             target = f"{domain}/{owner.pw_uid}/{LABEL}"
             if manager_loaded(target):
-                checked([LAUNCHCTL, "bootout", target])
+                bootout(target)
         if manager_loaded(system_target):
-            checked([LAUNCHCTL, "bootout", system_target])
+            bootout(system_target)
         # Stop and readiness commands execute as the approved owner, never as root.
         wait_for_stopped(owner)
         write_definition(destination, plistlib.dumps(definition, sort_keys=False))
@@ -379,7 +391,7 @@ def apply(owner: pwd.struct_passwd, definition: dict[str, object], fingerprint: 
     except Exception:
         try:
             if manager_loaded(system_target):
-                checked([LAUNCHCTL, "bootout", system_target])
+                bootout(system_target)
             if previous_system is not None:
                 write_definition(destination, previous_system)
                 checked([LAUNCHCTL, "bootstrap", "system", str(destination)])
@@ -405,7 +417,7 @@ def stop_or_remove(owner: pwd.struct_passwd, remove: bool) -> None:
         if manager_loaded(target.rsplit("/", 1)[0]):
             checked([LAUNCHCTL, "disable", target])
             if manager_loaded(target):
-                checked([LAUNCHCTL, "bootout", target])
+                bootout(target)
     if remove:
         paths = ((DAEMONS / f"{LABEL}.{owner.pw_uid}.plist", 0),
                  (Path(owner.pw_dir) / "Library/LaunchAgents" / f"{LABEL}.plist", owner.pw_uid))

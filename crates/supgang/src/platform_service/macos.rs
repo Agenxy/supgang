@@ -109,7 +109,13 @@ fn install(
         return Err(ServiceError::NoMacosUserDomain);
     }
     validate_state(state_directory)?;
+    super::guarded::validate(&state_directory.canonicalize()?, &owner_home()?)?;
+    definition::validate_policy(endpoints, router_mapping)?;
     let endpoints = definition::validated_endpoints(endpoints)?;
+    if let Some(path) = &endpoints {
+        super::guarded::validate(path, &owner_home()?)?;
+    }
+    require_enabled(&gui)?;
     let was_active = active()?;
     ensure_no_unmanaged_process(state_directory, was_active)?;
     let executable = replace_installed_executable(state_directory, false)?;
@@ -152,6 +158,7 @@ fn preflight_restart_with_definition(state_directory: &Path, service_definition:
         return Err(ServiceError::NotInstalled);
     }
     let _executable = executable::validate_installed()?;
+    require_enabled(&domain()?)?;
     validate_state(state_directory)?;
     let manager_active = active()?;
     ensure_no_unmanaged_process(state_directory, manager_active)
@@ -165,7 +172,10 @@ fn status(state_directory: &Path, definition: &Path) -> Result<Report, ServiceEr
     let manager_active = active()?;
     let ready = manager_active && control_is_ready(state_directory).unwrap_or(false);
     let mut result = report(MANAGER, installed, manager_active, ready);
-    result.startup = if domain()?.starts_with("user/") {
+    let domain = domain()?;
+    let target = loaded_target()?.unwrap_or_else(|| format!("{domain}/{LABEL}"));
+    super::observation::observe_launchd(&mut result, state_directory, definition, &target)?;
+    result.startup = if domain.starts_with("user/") {
         "manual-session-only"
     } else {
         "graphical-login"
@@ -174,6 +184,7 @@ fn status(state_directory: &Path, definition: &Path) -> Result<Report, ServiceEr
 }
 
 fn start(state_directory: &Path, definition: &Path) -> Result<Report, ServiceError> {
+    require_enabled(&domain()?)?;
     if !validate_definition(definition)? {
         return Err(ServiceError::NotInstalled);
     }
@@ -223,18 +234,25 @@ fn bootout() -> Result<(), ServiceError> {
     if !manager_status(Path::new(LAUNCHCTL), &["bootout", &target])? {
         return Err(ServiceError::Manager);
     }
-    Ok(())
+    super::wait_until_gone(
+        || manager_status(Path::new(LAUNCHCTL), &["print", &target]),
+        STOP_TIMEOUT,
+    )
 }
 
 fn bootstrap(definition: &Path) -> Result<(), ServiceError> {
     let path = definition.to_str().ok_or(ServiceError::UnsafeDefinition)?;
     require_user_domain()?;
-    let target = format!("{}/{LABEL}", domain()?);
-    if !manager_status(Path::new(LAUNCHCTL), &["enable", &target])? {
-        return Err(ServiceError::Manager);
-    }
+    require_enabled(&domain()?)?;
     if !manager_status(Path::new(LAUNCHCTL), &["bootstrap", &domain()?, path])? {
         return Err(ServiceError::Manager);
+    }
+    Ok(())
+}
+
+fn require_enabled(domain: &str) -> Result<(), ServiceError> {
+    if super::observation::launchd_disabled(domain, LABEL)? {
+        return Err(ServiceError::DisabledByOwner);
     }
     Ok(())
 }

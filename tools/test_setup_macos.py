@@ -91,14 +91,56 @@ class SetupTests(unittest.TestCase):
 
     def test_stop_disables_every_loaded_domain_without_reading_a_definition(self):
         with patch.object(setup, "manager_loaded", return_value=True), \
-             patch.object(setup, "checked") as commands, patch.object(setup, "safe_read") as reads:
+             patch.object(setup, "checked") as commands, patch.object(setup, "safe_read") as reads, \
+             patch.object(setup, "bootout") as stopped:
             setup.stop_or_remove(self.owner, False)
         reads.assert_not_called()
         calls = [call.args[0] for call in commands.call_args_list]
         for target in ("system/org.agenxy.supgang.501", "gui/501/org.agenxy.supgang",
                        "user/501/org.agenxy.supgang"):
             self.assertIn([setup.LAUNCHCTL, "disable", target], calls)
-            self.assertIn([setup.LAUNCHCTL, "bootout", target], calls)
+            stopped.assert_any_call(target)
+
+    def test_bootout_waits_for_the_job_to_disappear_before_returning(self):
+        with patch.object(setup, "checked") as command, \
+             patch.object(setup, "manager_loaded", side_effect=[True, True, False]) as loaded, \
+             patch.object(setup.time, "sleep"):
+            setup.bootout("system/org.agenxy.supgang.501")
+        self.assertEqual(loaded.call_count, 3)
+        command.assert_called_once_with([setup.LAUNCHCTL, "bootout", "system/org.agenxy.supgang.501"])
+
+    def test_a_manager_query_failure_is_not_evidence_of_job_removal(self):
+        for code, expected in ((0, True), (113, False)):
+            with patch.object(setup.subprocess, "run", return_value=subprocess.CompletedProcess([], code)):
+                self.assertEqual(setup.manager_loaded("system/org.agenxy.supgang.501"), expected)
+        with patch.object(setup.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
+            with self.assertRaisesRegex(RuntimeError, "absence.*not established"):
+                setup.manager_loaded("system/org.agenxy.supgang.501")
+
+    def test_bootout_fails_when_launchd_never_releases_the_job(self):
+        with patch.object(setup, "checked"), patch.object(setup, "manager_loaded", return_value=True), \
+             patch.object(setup.time, "monotonic", side_effect=[0, 31]):
+            with self.assertRaisesRegex(RuntimeError, "did not remove"):
+                setup.bootout("system/org.agenxy.supgang.501")
+
+    def test_definition_rename_uses_the_destination_directory_and_preserves_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "service.plist"
+            path.write_bytes(b"old")
+            with path.open("rb") as old, patch.object(setup, "DAEMONS", Path(directory)), \
+                 patch.object(setup, "validate_ancestor"), patch.object(setup, "safe_read"), \
+                 patch.object(setup, "descriptor_acl"):
+                setup.write_definition(path, b"new")
+                self.assertNotEqual(os.fstat(old.fileno()).st_ino, path.stat().st_ino)
+                self.assertEqual(old.read(), b"old")
+                self.assertEqual(path.read_bytes(), b"new")
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+                self.assertEqual(list(Path(directory).iterdir()), [path])
+                with patch.object(setup.os, "replace", side_effect=OSError("injected failure")):
+                    with self.assertRaises(OSError):
+                        setup.write_definition(path, b"failed")
+                self.assertEqual(path.read_bytes(), b"new")
+                self.assertEqual(list(Path(directory).iterdir()), [path])
 
     def test_migration_waits_until_the_outgoing_runtime_stops_answering(self):
         from subprocess import CompletedProcess
