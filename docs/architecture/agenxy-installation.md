@@ -214,6 +214,38 @@ deleting and re-cloning the directory. Verify at a path never used before, delet
 state the tool keeps outside the repository, and confirm the starting condition rather
 than assuming a fresh clone implies it.
 
+### 9. A prompt the owner cannot answer is a prompt that should not exist
+
+macOS asked:
+
+> `remap-release-xar-signer` wants to sign using key **"stdin"** in your keychain.
+> To allow this, enter the "login" keychain password.
+
+Two defects in one dialog. The key is called `stdin` because the installer identity was
+imported with `security import /dev/stdin`, and macOS labels an imported key after the
+path it was read from; the product had chosen the name `Remap Release Installer` and put
+it in the PKCS#12, and the dialog still showed none of it. And the dialog appeared at all
+during a development build, because the key's access list did not name the program that
+was asking, so a person had to authorise a step that protects nobody on the machine that
+built it.
+
+The owner is asked to weigh a request they cannot evaluate: not what is being signed, not
+which key, not on whose behalf. The only safe answer to an illegible prompt is Deny, which
+is also the answer that stops the work.
+
+**Required:** every identity, key, credential, service and process a product creates is
+named for what it is and which product it belongs to, in whatever field the platform will
+show a person: the keychain item's label, the launchd label and unit description, the
+signing identifier, the embedded plist, the process name, the log identifier. A platform
+default, an input path, a temporary file name, or an empty field where a name belongs is a
+defect, not a cosmetic one. Where a product's own name for a credential does not reach the
+system dialog, that is a bug in how it was created, and it is fixed at creation.
+
+**And:** a development path never asks for a credential at all. An authorisation that
+protects whoever installs an artifact belongs to the release path, which is also the only
+place a prompt can be legible, because there the owner is deliberately making something for
+other people. See rule 8.
+
 ## What an installer must also do
 
 - **State what is installed, and whether it is the thing that is running.** A service's
@@ -273,6 +305,11 @@ Each product's suite must contain, named so a regression names itself:
     shares the machine's package cache. Each test fails when its fix is reverted, and
     that reversion is performed rather than assumed.
 
+12. Every name the platform will show a person is asserted against the product's chosen
+    value: the keychain label of any identity the product imports, the service label and
+    description, the signing identifier, and the embedded plist name. A test that reads
+    back a platform default, an input path such as `stdin`, or an empty field fails.
+
 ## What this document does not yet require: integrity
 
 Everything above is about **reliability**: an installation that works, and that says so
@@ -312,6 +349,31 @@ So the open question is narrower than it looks: this machinery guards Supgang's 
 updates, and nothing else installs through it. What each product owes is to verify an
 artifact against a pinned role before installing it, and to refuse anything else by
 default. Until it does, its installation is not verified, whatever else is true of it.
+
+### A sibling that supplies trust is a convenience, never a dependency
+
+There is a tempting shortcut in all of this: let Supgang own identity, and have the other
+products ask it for one. That is the wrong shape, and it is worth naming because the
+sibling rule points at it. Each product mints and holds its own identity, in hardware
+where the machine has it, and every install path works on a machine that has never heard
+of any other Agenxy tool. A product that cannot sign or install without a sibling running
+has made that sibling a single point of failure, which the sovereignty invariant forbids
+whether the dependency is a company or a program of the owner's own.
+
+What a sibling legitimately adds is the owner's **presence**. Installing on a machine
+otherwise means someone standing at it to approve a trust decision, and across a gang of
+computers that does not scale. A trust broker that can vouch for the owner remotely
+removes the visit, not the sovereign path underneath it.
+
+That places the requirements on the broker rather than on the product asking. Because it
+is reached over a network, it must establish that the requester is the same owner before
+it vouches for anything, and it must hold what it vouches with in hardware that will not
+surrender it. **A convenience that can be hijacked is worse than no convenience**, since it
+converts a decision the owner would have made in person into one an attacker can make
+remotely, on every machine at once. So: the broker is optional, the product is whole
+without it, the broker authenticates the owner over the network, its own keys live in a
+Secure Enclave or TPM, and a product asking a broker for an identity is never a reason to
+hold its own key less carefully.
 
 Until that exists, this document claims reliability and says plainly that it does not
 claim provenance. A product must not describe its installation as verified on the
