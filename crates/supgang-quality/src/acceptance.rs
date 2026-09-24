@@ -46,7 +46,8 @@ fn require_python_interpreter(root: &Path, script: &Path) -> Result<(), String> 
     Err(format!(
         "no Python {floor} is installed, which {} requires. This is not a network \
          fault: the suite runs uv offline so it cannot fetch one. Install it with \
-         `uv python install {floor}` and run the gate again.",
+         `uv python install '{floor}'` and run the gate again. The quotes matter: a \
+         bare >= is a shell redirection.",
         script.display()
     ))
 }
@@ -137,6 +138,28 @@ mod tests {
             Err(refusal) if refusal.contains("declares no requires-python") => Ok(()),
             Err(refusal) => Err(format!("refusal must name the cause: {refusal}")),
         }
+    }
+
+    #[test]
+    fn the_remedy_quotes_the_specifier_because_a_bare_arrow_redirects() -> Result<(), String> {
+        let directory = scratch("quoting")?;
+        std::fs::write(
+            directory.join("check.py"),
+            concat!("# /// script\n", "# requires-python = \">=3.99\"\n", "# ///\n",),
+        )
+        .map_err(|error| error.to_string())?;
+        let outcome = super::require_python_interpreter(&directory, Path::new("check.py"));
+        remove(&directory)?;
+        let Err(refusal) = outcome else {
+            return Err("no Python >=3.99 exists, so this must be refused".to_owned());
+        };
+        if !refusal.contains("'>=3.99'") {
+            return Err(format!(
+                "the remedy must quote the specifier, or copying it redirects a \
+                 shell into a file named =3.99: {refusal}"
+            ));
+        }
+        Ok(())
     }
 
     #[test]
