@@ -9,7 +9,7 @@ exists because installation failures on this platform do not look like failures.
 look like success: the service manager reports the job running, the process exists, the
 log is empty, and nothing works.
 
-Every rule below was measured on the owner's hardware on 2026-09-21 and 2026-09-22
+Every rule below was measured on the owner's hardware from 2026-09-21 to 2026-09-23
 while installing Compass, Supgang and Remap. None is theoretical.
 
 ## Why this is one document and not one crate
@@ -139,6 +139,33 @@ expect.
 **Required:** version-sensitive client calls check what answered them, and name the
 mismatch and its remedy.
 
+### 7. A program that loses its signing identity cannot say its own name
+
+Supgang embeds its product name and network explanation, and its installer signs with
+`org.agenxy.supgang.runtime`, the identifier in its plist. Twice, a hand-copy from
+`target/release` replaced that installed signature with the linker's ad-hoc signature.
+macOS then asked the owner:
+
+> Allow "<unknown>" to find devices on local networks?
+
+Compass had no identity to preserve. Its installed daemon reported
+`Identifier=compassd-007b5d2c6695c2fd` and `Signature=adhoc`; `otool` found no
+`__TEXT,__info_plist` section. A service asking to find devices on the network could
+name neither itself nor its reason for being there.
+
+**Required:** an installed program keeps the code signature and signing identifier its
+product chose. The installer either signs what it installs or preserves an existing
+product signature, and verifies it before publication. A plain copy from a build
+directory does not preserve the installed product's signature. The embedded plist and
+the signing identifier agree; each product asserts its own identifier in a test rather
+than accepting the linker's default. A service that uses the local network embeds its
+name and a plain explanation in `NSLocalNetworkUsageDescription`.
+
+Development never requires a human. Without a signing identity, a contributor may
+install the linker's ad-hoc signed binaries; the installer says plainly that macOS
+cannot name them in a permission prompt. This exception is stated, never mistaken for
+an installation carrying the product's chosen signing identity.
+
 ## What an installer must also do
 
 - **State what is installed, and whether it is the thing that is running.** A service's
@@ -184,17 +211,32 @@ Each product's suite must contain, named so a regression names itself:
    label cannot lead to premature bootstrap or mutation of the other job.
 9. A missing declared executable prevents generation publication; an existing executable
    or symlink cannot be truncated by a staging copy.
+10. The product's plist parses with its version substituted on every platform; on macOS
+    the built executable contains that plist. Its declared identifier equals the
+    installer's signing identifier, and the product asserts the expected value. Signing
+    and strict verification precede publication; a failure leaves the prior binaries
+    intact. The development path installs without an identity and states its limitation.
 
 ## What this document does not yet require: integrity
 
 Everything above is about **reliability**: an installation that works, and that says so
 truthfully. None of it establishes **what** is being installed.
 
-As of 2026-09-22, Compass and Supgang install a binary the owner already has, by copying
-it, with no verification of its origin. Remap verifies a generation's manifest, hashes,
-modes and ownership before publishing it, which is far stronger, but the manifest is
-still one the same installer produced: it detects a damaged or incomplete image, not a
-substituted one. No product yet refuses an artifact that is intact but not the owner's.
+As of 2026-09-22 the mechanisms exist unevenly, and each product's honest answer differs.
+
+Remap's package path is the strongest and does check provenance: `install-package-macos`
+verifies a detached signature over the package and installs from root-owned staging, and
+the signing identity is one created locally and trusted by the administrator, so no issuer
+outside the owner is involved. Its source path builds from a checkout instead, where
+provenance is whatever that checkout was. Separately, every install publishes a generation
+whose declared files, hashes, modes and ownership are verified first, which catches a
+damaged or incomplete image but, being a manifest the same installer produced, not a
+substituted one.
+
+Supgang's TUF design decides this properly for Supgang's own updates, and nothing else
+installs through it.
+
+Compass copies a binary and verifies nothing about where it came from.
 
 The sovereign answer is not an Apple Developer certificate or any other issuer outside
 the owner's control, and most of it already exists. Supgang's `docs/security/secure-updates.md`
