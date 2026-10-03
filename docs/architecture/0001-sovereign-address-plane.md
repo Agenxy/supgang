@@ -134,6 +134,8 @@ State uses purpose-built append-only journals instead of the proposed redb depen
 - fail-closed behavior for corruption before the tail;
 - atomic peer-cache compaction through owner-only replacement, file sync, rename, and parent sync;
 - owner, type, permission, and symlink checks;
+- a bounded mode-0600 endpoint JSON file, keeping peer addresses out of process arguments and
+  ordinary startup output;
 - one process lock for mutable state.
 
 The local control socket uses fixed bounded requests and a 64 KiB JSON response ceiling. The kernel
@@ -160,7 +162,7 @@ hole punching, or relay. An operator must explicitly seed at least one contact p
 - canonical signed endpoint records and deterministic merge;
 - durable state, peer cache, local control, and foreground service;
 - pinned QUIC, mutual application authentication, bounded reconciliation, and direct candidates;
-- macOS live two-process validation and repository quality gate.
+- macOS live two-physical-host validation and repository quality gate.
 
 ### M2: local and changing networks
 

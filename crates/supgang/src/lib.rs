@@ -10,6 +10,7 @@ pub(crate) mod cli_peer;
 pub(crate) mod cli_service;
 pub mod contact;
 pub(crate) mod control;
+pub mod endpoint_config;
 pub mod identity;
 pub mod ids;
 pub mod invitation;

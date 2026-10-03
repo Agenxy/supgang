@@ -3,7 +3,6 @@
 use std::{
     ffi::OsString,
     io::{self, Write},
-    net::SocketAddr,
     path::PathBuf,
     process::ExitCode,
     time::SystemTime,
@@ -83,12 +82,9 @@ enum Command {
         /// New contact file to create.
         #[arg(value_name = "CONTACT_FILE")]
         output: PathBuf,
-        /// Local/LAN address to advertise; repeat for multiple interfaces.
-        #[arg(long, value_name = "IP:PORT")]
-        local: Vec<SocketAddr>,
-        /// Globally routed direct address to advertise; repeat as needed.
-        #[arg(long, value_name = "IP:PORT")]
-        direct: Vec<SocketAddr>,
+        /// Owner-only endpoint configuration file.
+        #[arg(long, value_name = "PATH")]
+        endpoints: PathBuf,
         /// Signed contact lifetime from 1 through 168 hours.
         #[arg(long, default_value_t = 24)]
         hours: u16,
@@ -115,15 +111,9 @@ enum Command {
     },
     /// Run the peer service in the foreground.
     Run {
-        /// Local UDP socket on which to accept QUIC connections.
-        #[arg(long, value_name = "IP:PORT")]
-        listen: SocketAddr,
-        /// Local/LAN address to advertise; repeat for multiple interfaces.
-        #[arg(long, value_name = "IP:PORT")]
-        local: Vec<SocketAddr>,
-        /// Globally routed direct address to advertise; repeat as needed.
-        #[arg(long, value_name = "IP:PORT")]
-        direct: Vec<SocketAddr>,
+        /// Owner-only endpoint configuration file.
+        #[arg(long, value_name = "PATH")]
+        endpoints: PathBuf,
         /// Delay between remembered-peer attempts, from 1 through 3600 seconds.
         #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..=3_600))]
         retry_seconds: u64,
@@ -225,10 +215,9 @@ where
         Command::Join { bundle } => join(&state_directory, &bundle, cli.json, output, error),
         Command::Publish {
             output: contact_file,
-            local,
-            direct,
+            endpoints,
             hours,
-        } => match cli_peer::publish(&state_directory, &contact_file, &local, &direct, hours) {
+        } => match cli_peer::publish(&state_directory, &contact_file, &endpoints, hours) {
             Ok(result) => render_publish(&result, cli.json, output, error),
             Err(message) => render_error(cli.json, &message, output, error),
         },
@@ -240,17 +229,13 @@ where
         Command::Peers => cli_control::peers(&state_directory, cli.json, output, error),
         Command::Resolve { node_id } => cli_control::resolve(&state_directory, node_id, cli.json, output, error),
         Command::Run {
-            listen,
-            local,
-            direct,
+            endpoints,
             retry_seconds,
             record_hours,
         } => match cli_service::run(
             &state_directory,
             cli_service::RunOptions {
-                listen,
-                local: &local,
-                direct: &direct,
+                endpoints: &endpoints,
                 retry_seconds,
                 record_hours,
                 json: cli.json,

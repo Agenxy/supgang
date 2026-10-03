@@ -1,32 +1,30 @@
 //! Foreground service startup and readiness rendering for the CLI.
 
-use std::{io::Write, net::SocketAddr, path::Path, time::Duration};
+use std::{io::Write, path::Path, time::Duration};
 
 use serde::Serialize;
 
-use crate::service;
+use crate::{endpoint_config::EndpointConfig, service};
 
 #[derive(Debug, Serialize)]
 struct RunOutput {
     schema: &'static str,
     status: &'static str,
-    listen: String,
     candidate_count: usize,
     strict_mode: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct RunOptions<'a> {
-    pub listen: SocketAddr,
-    pub local: &'a [SocketAddr],
-    pub direct: &'a [SocketAddr],
+    pub endpoints: &'a Path,
     pub retry_seconds: u64,
     pub record_hours: u64,
     pub json: bool,
 }
 
 pub fn run(state_directory: &Path, options: RunOptions<'_>, output: &mut dyn Write) -> Result<(), String> {
-    let config = service::ServiceConfig::new(options.listen, options.local, options.direct)
+    let endpoints = EndpointConfig::read(options.endpoints)?;
+    let config = service::ServiceConfig::new(endpoints.listen(), endpoints.local(), endpoints.direct())
         .and_then(|value| {
             value.with_intervals(
                 Duration::from_secs(options.retry_seconds),
@@ -35,9 +33,8 @@ pub fn run(state_directory: &Path, options: RunOptions<'_>, output: &mut dyn Wri
         })
         .map_err(|error| error.to_string())?;
     let ready = RunOutput {
-        schema: "supgang.run/v1",
+        schema: "supgang.run/v2",
         status: "running",
-        listen: options.listen.to_string(),
         candidate_count: config.candidates.len(),
         strict_mode: true,
     };
