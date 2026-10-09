@@ -2,6 +2,7 @@
 
 use std::{
     borrow::Cow,
+    future::{Future, ready},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -211,56 +212,60 @@ impl ServerHandler for SupgangMcp {
         Cow::Borrowed(SUPPORTED_PROTOCOLS)
     }
 
-    async fn initialize(
+    fn initialize(
         &self,
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<InitializeResult, ErrorData> {
+    ) -> impl Future<Output = Result<InitializeResult, ErrorData>> + Send {
         // MCP 2026-07-28 Versioning and Compatibility: initialize selects legacy semantics.
         if !LEGACY_PROTOCOLS.contains(&request.protocol_version) {
-            return Err(ErrorData::unsupported_protocol_version(
+            return ready(Err(ErrorData::unsupported_protocol_version(
                 request.protocol_version,
                 LEGACY_PROTOCOLS,
-            ));
+            )));
         }
         let mut info = self.get_info();
         info.protocol_version = request.protocol_version.clone();
         context.peer.set_peer_info(request);
-        Ok(info)
+        ready(Ok(info))
     }
 
-    async fn discover(&self, _context: RequestContext<RoleServer>) -> Result<DiscoverResult, ErrorData> {
-        Ok(
-            DiscoverResult::from_server_info(self.supported_protocol_versions().into_owned(), self.get_info())
-                .with_ttl_ms(TOOL_LIST_TTL_MS)
-                .with_cache_scope(CacheScope::Public),
+    fn discover(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<DiscoverResult, ErrorData>> + Send {
+        ready(Ok(DiscoverResult::from_server_info(
+            self.supported_protocol_versions().into_owned(),
+            self.get_info(),
         )
+        .with_ttl_ms(TOOL_LIST_TTL_MS)
+        .with_cache_scope(CacheScope::Public)))
     }
 
-    async fn list_tools(
+    fn list_tools(
         &self,
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send {
         if request.is_some_and(|parameters| parameters.cursor.is_some()) {
-            return Err(ErrorData::invalid_params("Supgang tools are not paginated", None));
+            return ready(Err(ErrorData::invalid_params("Supgang tools are not paginated", None)));
         }
         let result = ListToolsResult::with_all_items(Self::tools());
         if is_modern(&context) {
-            Ok(result
+            ready(Ok(result
                 .with_ttl_ms(TOOL_LIST_TTL_MS)
-                .with_cache_scope(CacheScope::Public))
+                .with_cache_scope(CacheScope::Public)))
         } else {
-            Ok(result)
+            ready(Ok(result))
         }
     }
 
-    async fn call_tool(
+    fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        self.call(request)
+    ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send {
+        ready(self.call(request))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
