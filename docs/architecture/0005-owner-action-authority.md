@@ -191,6 +191,29 @@ newer revocation exists. The lease issuer must still be the root, an approved th
 a separately root-delegated status authority with authenticated current-head evidence.
 Its availability and freshness under travel and partition need a concrete design and test.
 
+An owner-configurable, root-signed renewal policy sets **three independent count ceilings**
+for one identified renewal budget and recertification epoch: renewals without presence under
+`policy`, renewals with fresh remote `owner_presence_key` approval, and a total across both.
+Each renewal consumes one count in its mode and the total, with no unlimited fallback between
+modes. The authoritative issuer must maintain a rollback-resistant monotonic renewal ledger;
+each signed lease carries the budget identity, epoch, mode, and cumulative counts so a target
+can enforce its own durable monotonic high-water marks and reject over-budget, rollback, or
+equivocating leases. A compromised action key can request or present renewals within the
+remaining counts but cannot raise a root-signed ceiling, reset a count, or mint a new epoch.
+If a ceiling is exhausted, no further renewal in that mode is accepted; the total ceiling
+blocks all further remote renewal until **physical re-certification** creates a new
+root-authorized epoch. An independent issuer may provide the new lease only after the
+owner-approved physical recertification requirement has been met; merely switching issuers
+cannot reset the budget. The exact ceremony, ledger consistency across issuers and targets,
+and owner-chosen counts remain open design work.
+
+Stolen hardware or coerced use of an unlocked Touch ID can consume the allowed renewal
+budget. At a disconnected target, a revocation may remain ineffective through the final
+allowed lease's expiry, after which the target fails closed without physical re-certification.
+The global count ceiling bounds how many renewals can extend this exposure; the lease lifetime
+bounds the tail after the final renewal. Neither count alone gives an instantaneous revocation
+guarantee.
+
 ## Delivery and local authority
 
 A new typed, versioned, bounded peer stream carries one challenge and owner-action exchange
@@ -252,8 +275,10 @@ recovery limit rather than an accepted remote action.
    and how will each consumer validate the root-certified enrollment and exact-action proof?
    The root's local enrollment inspection is an explicit trust assumption, not attestation.
 2. What is the maximum status-lease lifetime, and which remote root, threshold, or delegated
-   status signers can issue a fresh lease while the owner is away? Define authenticated
-   current-head evidence, availability after expiry, and the bound on revoked authority.
+   status signers can issue a fresh lease while the owner is away? Set the owner-configurable
+   policy, remote-presence, and aggregate renewal counts; define authenticated current-head
+   evidence, cross-issuer ledger consistency, physical recertification, availability after
+   expiry, and the bound on revoked authority.
 3. Define the canonical target challenge, authentication, disclosure scope, nonce storage,
    prompt rendering, time, and replay rules for the chosen challenge flow.
 4. What are the exact per-grant lifetime, operation-count, request-size, concurrency, and
@@ -280,6 +305,9 @@ ship against this draft's bytes or presume the missing grant, lease, or delivery
   proved limited to the exact root-granted operation set.
 - Durable crash/restart tests proving nonce consumption precedes side effects and rollback
   cannot silently restore spent authority.
+- Renewal tests proving that policy, remote-presence, and total counts advance durably across
+  crash/restart, cannot be reset by a key or issuer switch, reject rollback/equivocation, and
+  fail closed after the final allowed lease expires without physical re-certification.
 - Consumer-verifier tests on macOS and Linux showing that a same-UID untrusted process and
   an ordinary hive member cannot request a privileged operation. K7 must prove an
   owner-approved carried-device presence policy for Supgang mode without silently weakening
