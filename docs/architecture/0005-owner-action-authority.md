@@ -136,22 +136,28 @@ assertion bytes enter command arguments, ordinary logs, URLs, or crash reports.
 
 The owner chose a target-issued challenge for presence-required actions. The target's
 consumer-owned verifier, a root helper where the operation needs one, issues a bounded
-canonical challenge containing the exact operation, target identity, canonical arguments,
-target-observed preconditions, fresh random nonce, and expiry. For Remap, the preconditions
-may contain private resolver upstream addresses. The requester authenticates the target and
+canonical challenge containing `target_node_id`, `consumer_id`, exact operation, `grant_id`,
+the grant's `required` presence mode, canonical arguments, target-observed preconditions,
+fresh random target nonce, and expiry. Its own bytes bind the grant and action independently
+of the assertion fields. For Remap, the preconditions may contain private resolver upstream
+addresses. The requester authenticates the target and
 verifies the challenge matches its intended grant and action before asking for presence.
 Only a device expressly authorized for that grant receives the challenge; no challenge
-contents enter ordinary logs. Issuing a challenge cannot change durable authority state.
+contents enter ordinary logs. The target retains each issued nonce in a bounded, one-use
+challenge table separate from the spent-assertion nonce ledger. It accepts only an unexpired
+challenge it issued and has not consumed; a restart may discard outstanding challenges and
+reject their later assertions. Issuing a challenge cannot change durable authority state.
 
 The laptop constructs its Touch ID or other presence prompt **only from parsed, validated
 structured fields**. It never renders free text supplied by the target as an approval prompt.
 The owner-presence key signs an assertion that commits to the complete canonical challenge
 through `challenge_digest`; the assertion's nonce is the target nonce and its expiry cannot
 exceed the challenge expiry. The target checks the signed challenge against its current state
-immediately before the effect, then consumes the nonce durably before acting. Target time may
+immediately before the effect, then marks the issued challenge used and consumes the nonce
+durably before acting. Concurrent requests cannot redeem one challenge twice. Target time may
 supply the assertion's time window without trusting the laptop clock. Target-side clock
-reliability, lease freshness, and replay checks remain mandatory. Exact challenge bytes,
-one-use storage, and clock semantics remain design work.
+reliability, lease freshness, and replay checks remain mandatory. The exact encoding, storage
+atomicity, and clock semantics remain design work.
 
 ## Revocation freshness
 
@@ -209,6 +215,11 @@ root, membership or signer credential, root grant, signed status lease, both rev
 canonical assertion signature, target, exact operation, digest, time, and spent nonce. It then
 applies the consumer's own policy. It refuses any missing or stale proof even if Supgang
 delivered the bytes successfully.
+
+Remap's local policy requires `required` presence for `remap.dns.activate` and
+`remap.dns.deactivate`; its verifier rejects a `policy` grant for either operation even if
+the root grant otherwise names it. Each consumer may impose this stricter rule for its own
+operations, and the remote assertion cannot relax it.
 
 The substitutable scope is an Agenxy-owned operation behind this independently verifying
 boundary: for example Remap DNS activation, K7 owner actions, or defined Supgang setup
