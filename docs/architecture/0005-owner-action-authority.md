@@ -86,7 +86,27 @@ installed as part of today's Supgang release.
 
 A consumer such as K7 that currently demands target-local touch needs an owner-approved
 remote-presence policy with equivalent exact-action checks before it can accept this mode.
-Version 1 must never require a Touch ID or Secure Enclave presence check on the target.
+Version 1 must never require a Touch ID or Secure Enclave presence check on the target for
+each remote action; initial local enablement has a separate ceremony below.
+
+## Enrollment and enablement
+
+Every consumer, including Remap, K7, and Supgang's own privileged helpers, keeps a complete
+native authentication and recovery path. Supgang mode is an optional, explicit alternative;
+installing Supgang or receiving a root grant does not enable it. Initial enablement, hive-root
+pinning, and every later re-pin occur **locally at the target** through the consumer's native
+privileged boundary. They require root authority **and** the authenticated console user with
+Touch ID or a password. The owner compares the hive fingerprint out of band against an
+already-enrolled device before accepting the pin; there is no trust on first use from a
+network peer, bundle, or assertion. The consumer stores the pinned root and its mode in
+protected durable state and rejects incomplete setup.
+
+No remote Supgang assertion, grant, peer, or tunnel can enable this mode, pin or re-pin a hive,
+change the native-auth policy, or widen its own grant or local operation allowlist. A local
+consumer policy may only narrow a root grant. The native path remains usable when Supgang is
+absent, partitioned, or broken. This target-side ceremony is separate from the root's
+owner-presence-key enrollment ceremony above; both must succeed before a remote assertion
+can authorize an action that requires presence.
 
 ## Proposed shared assertion
 
@@ -253,9 +273,7 @@ system or kernel extension approval, or FileVault pre-boot unlock. Those remain 
 require a distinct supported operating-system workflow. No product may present an unverified
 bypass as remote acceptance.
 
-Local enabling of Supgang mode and trust-anchor changes remain owner-approved through the
-consumer's existing native boundary. A missing Supgang installation does not break a tool's
-native mode. Native modes use each consumer's own keys, schema, and domain separators; K7 may
+Native modes use each consumer's own keys, schema, and domain separators; K7 may
 use its own `k7/owner-action/v1` and `k7/action-request/v1` domains. Supgang mode has no hidden
 fallback to an unauthenticated path.
 
@@ -312,6 +330,9 @@ ship against this draft's bytes or presume the missing grant, lease, or delivery
   an ordinary hive member cannot request a privileged operation. K7 must prove an
   owner-approved carried-device presence policy for Supgang mode without silently weakening
   its native owner-touch gate or requiring a touch on the target.
+- Local enrollment tests for every consumer: root and console-user authorization, out-of-band
+  hive-fingerprint comparison, protected pin storage, no trust on first use, and refusal of
+  remote enablement, re-pinning, or policy widening.
 - An off-network fault test with target Supgang stopped or wedged, proving a separate native
   recovery path can restore it without that Supgang instance or a target-local presence prompt.
 - The complete Supgang quality gate, then identical installed artifacts on each configured
