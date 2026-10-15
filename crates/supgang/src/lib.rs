@@ -40,6 +40,8 @@ pub mod router_mapping;
 pub mod service;
 pub mod session;
 pub mod settings;
+#[cfg(test)]
+pub(crate) mod simnet;
 pub mod state;
 pub mod state_lock;
 pub mod storage;

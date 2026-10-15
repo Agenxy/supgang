@@ -78,6 +78,10 @@ pub(crate) fn automatic_interface_networks() -> Result<Vec<InterfaceNetwork>, Ne
 }
 
 fn enumerate_interfaces(automatic: bool) -> Result<Vec<InterfaceNetwork>, NetworkError> {
+    #[cfg(test)]
+    if let Some(view) = simulated::current() {
+        return Ok(view.interfaces());
+    }
     let mut networks = BTreeSet::new();
     for interface in getifaddrs().map_err(|_| NetworkError::Enumeration)? {
         if !interface.flags.contains(InterfaceFlags::IFF_UP) {
@@ -177,19 +181,28 @@ pub(crate) fn candidate_dial_order(
     indices
 }
 
-/// Returns whether a compatible source address family is available.
+/// Returns whether the kernel can select a route for this candidate.
 ///
 /// Private routes need not be directly attached: VPNs and ordinary routers
 /// may carry them. Off-link private candidates rank behind public candidates,
-/// but remain eligible for bounded, pinned attempts. The OS decides routing.
+/// but remain eligible when the kernel selects a route. This sends no packet
+/// and establishes no evidence that the remote peer is reachable.
 #[must_use]
 pub(crate) fn candidate_is_route_compatible(
     candidate: &EndpointCandidate,
     local_networks: &[InterfaceNetwork],
 ) -> bool {
+    candidate_has_route(candidate, local_networks, kernel_route_exists)
+}
+
+fn candidate_has_route(
+    candidate: &EndpointCandidate,
+    local_networks: &[InterfaceNetwork],
+    route: impl FnOnce(std::net::SocketAddr) -> bool,
+) -> bool {
     let remote = candidate.address().ip();
     if remote.is_loopback() || matches!(remote, IpAddr::V6(ip) if ip.is_unicast_link_local()) {
-        return local_networks.iter().any(|network| network.contains(remote));
+        return local_networks.iter().any(|network| network.contains(remote)) && route(candidate.address());
     }
     local_networks.iter().any(|network| match (network.address(), remote) {
         (IpAddr::V4(local), IpAddr::V4(_)) => !local.is_unspecified() && !local.is_loopback() && !local.is_link_local(),
@@ -197,6 +210,22 @@ pub(crate) fn candidate_is_route_compatible(
             !local.is_unspecified() && !local.is_loopback() && !local.is_unicast_link_local()
         }
         _ => false,
+    }) && route(candidate.address())
+}
+
+fn kernel_route_exists(remote: std::net::SocketAddr) -> bool {
+    #[cfg(test)]
+    if let Some(view) = simulated::current() {
+        return view.route_exists(remote);
+    }
+    // UDP connect asks the kernel to select a route and source address. It
+    // sends no datagram and performs no DNS or application probe.
+    let bind = match remote {
+        std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+        std::net::SocketAddr::V6(_) => std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+    };
+    std::net::UdpSocket::bind(bind).is_ok_and(|socket| {
+        socket.connect(remote).is_ok() && socket.local_addr().is_ok_and(|local| !local.ip().is_unspecified())
     })
 }
 
@@ -212,6 +241,34 @@ const fn same_family(first: IpAddr, second: IpAddr) -> bool {
         (first, second),
         (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
     )
+}
+
+#[cfg(test)]
+mod route_tests;
+
+/// Lets a scenario test answer interface and route questions for the
+/// simulated computer whose service runs on the current thread. Each simulated
+/// computer runs its service on its own thread, as the real service does on
+/// its own process, so a thread-local view never leaks between computers.
+#[cfg(test)]
+pub(crate) mod simulated {
+    use std::{cell::RefCell, net::SocketAddr, sync::Arc};
+
+    use super::InterfaceNetwork;
+
+    /// What one simulated computer's operating system would report.
+    pub trait View: Send + Sync {
+        fn interfaces(&self) -> Vec<InterfaceNetwork>;
+        fn route_exists(&self, remote: SocketAddr) -> bool;
+    }
+
+    thread_local! {
+        static VIEW: RefCell<Option<Arc<dyn View>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn current() -> Option<Arc<dyn View>> {
+        VIEW.with(|slot| slot.borrow().clone())
+    }
 }
 
 #[cfg(test)]
