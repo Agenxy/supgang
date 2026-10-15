@@ -1,6 +1,27 @@
 use super::{classify, disabled_field, launchd_field, systemd_field, version_note};
 
 #[test]
+fn status_only_inventory_is_discarded_while_captured_output_stays_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    let program = std::path::Path::new("/usr/bin/head");
+    let arguments = ["-c", "131072", "/dev/zero"];
+    assert!(super::status(program, &arguments)?);
+    assert!(super::command(program, &arguments).is_err());
+    Ok(())
+}
+
+#[test]
+fn launchd_absence_requires_esrch_and_never_treats_denial_as_removal() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::process::ExitStatusExt as _;
+    let program = std::path::Path::new("/bin/launchctl");
+    let exit = std::process::ExitStatus::from_raw;
+    assert!(super::checked_status(program, &["print", "gui/501"], exit(0))?);
+    assert!(!super::checked_status(program, &["print", "gui/501"], exit(113 << 8))?);
+    assert!(super::checked_status(program, &["print", "gui/501"], exit(1 << 8)).is_err());
+    assert!(super::checked_status(program, &["print", "gui/501"], exit(9)).is_err());
+    Ok(())
+}
+
+#[test]
 fn launchd_status_reads_only_its_own_fields_not_nested_pids_or_states() {
     let text = "gui/501/org.agenxy.supgang = {\n state = running\n inherited = {\n pid = 999\n state = stopped\n }\n pid = 42\n program = /safe/supgang\n}\n";
     assert_eq!(launchd_field(text, "pid"), Some("42"));

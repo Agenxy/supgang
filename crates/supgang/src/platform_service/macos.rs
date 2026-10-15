@@ -69,16 +69,7 @@ fn loaded_target() -> Result<Option<String>, ServiceError> {
 fn domain() -> Result<String, ServiceError> {
     let path = definition_path(false)?;
     let legacy = if validate_definition(&path)? {
-        use std::io::Read as _;
-        let file = std::fs::File::open(path)?;
-        if file.metadata()?.len() > 32 * 1024 {
-            return Err(ServiceError::UnsafeDefinition);
-        }
-        let mut bytes = Vec::new();
-        file.take(32 * 1024 + 1).read_to_end(&mut bytes)?;
-        let value =
-            plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|_| ServiceError::UnsafeDefinition)?;
-        value
+        read_definition(&path)?
             .as_dictionary()
             .and_then(|dict| dict.get("LimitLoadToSessionType"))
             .and_then(plist::Value::as_string)
@@ -91,6 +82,30 @@ fn domain() -> Result<String, ServiceError> {
         if legacy { "user" } else { "gui" },
         rustix::process::getuid().as_raw()
     ))
+}
+
+fn read_definition(path: &Path) -> Result<plist::Value, ServiceError> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > 32 * 1024 {
+        return Err(ServiceError::UnsafeDefinition);
+    }
+    let mut bytes = Vec::new();
+    file.take(32 * 1024 + 1).read_to_end(&mut bytes)?;
+    plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|_| ServiceError::UnsafeDefinition)
+}
+
+/// Rewrites only a legacy scheduling class, keeping every owner setting, so
+/// the restart that follows runs the service in the class it needs.
+fn upgrade_definition(service_definition: &Path) -> Result<(), ServiceError> {
+    let Some(upgraded) = definition::upgraded_process_type(&read_definition(service_definition)?) else {
+        return Ok(());
+    };
+    let mut bytes = Vec::new();
+    upgraded
+        .to_writer_xml(&mut bytes)
+        .map_err(|_| ServiceError::UnsafeDefinition)?;
+    write_atomic(service_definition, &bytes)
 }
 
 fn active() -> Result<bool, ServiceError> {
@@ -142,6 +157,7 @@ fn install(
 fn refresh(state_directory: &Path, service_definition: &Path) -> Result<Report, ServiceError> {
     preflight_restart_with_definition(state_directory, service_definition)?;
     let _executable = replace_installed_executable(state_directory, true)?;
+    upgrade_definition(service_definition)?;
     restart(state_directory, service_definition)
 }
 

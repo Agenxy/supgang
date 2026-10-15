@@ -56,6 +56,45 @@ impl Observation {
     }
 }
 
+/// Checks a manager exit status without retaining its potentially large inventory.
+pub(super) fn status(program: &Path, arguments: &[&str]) -> Result<bool, ServiceError> {
+    let mut child = Command::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let result = (|| {
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return checked_status(program, arguments, status);
+            }
+            if Instant::now() >= deadline {
+                return Err(ServiceError::Manager);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
+        let _killed = child.kill();
+        let _waited = child.wait();
+    }
+    result
+}
+
+fn checked_status(program: &Path, arguments: &[&str], status: std::process::ExitStatus) -> Result<bool, ServiceError> {
+    // Only ESRCH is evidence that a launchd print target is absent.
+    if program == Path::new("/bin/launchctl")
+        && arguments.first() == Some(&"print")
+        && !status.success()
+        && status.code() != Some(113)
+    {
+        return Err(ServiceError::Manager);
+    }
+    Ok(status.success())
+}
+
 pub(super) fn command(program: &Path, arguments: &[&str]) -> Result<(bool, String), ServiceError> {
     let mut child = Command::new(program)
         .args(arguments)
@@ -86,16 +125,7 @@ pub(super) fn command(program: &Path, arguments: &[&str]) -> Result<(bool, Strin
             if let Some(status) = child.try_wait()?
                 && eof
             {
-                // launchctl uses ESRCH (113) for a missing target. An
-                // authorization or manager failure is not removal evidence.
-                if program == Path::new("/bin/launchctl")
-                    && arguments.first() == Some(&"print")
-                    && !status.success()
-                    && status.code() != Some(113)
-                {
-                    return Err(ServiceError::Manager);
-                }
-                return Ok(status.success());
+                return checked_status(program, arguments, status);
             }
             if Instant::now() >= deadline {
                 return Err(ServiceError::Manager);

@@ -7,6 +7,7 @@
 
 import importlib.util
 import os
+import stat
 from pathlib import Path
 import pwd
 import subprocess
@@ -210,6 +211,14 @@ class SetupTests(unittest.TestCase):
                 setup.descriptor_acl(stream.fileno())
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS lock ancestor ACL regression")
+    def test_stock_macos_run_directory_cannot_hold_the_setup_lock(self):
+        # /private/var/run ships as drwxrwxr-x root:daemon; the lock moved to the
+        # tool's own root-owned directory because this parent is refused.
+        stock = os.stat_result((stat.S_IFDIR | 0o775, 0, 0, 0, 0, 1, 0, 0, 0, 0))
+        self.assertFalse(setup.safe_ancestor(Path("/private/var/run"), stock, 0))
+        protected = os.stat_result((stat.S_IFDIR | 0o700, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        self.assertTrue(setup.safe_ancestor(Path("/Library/Application Support/x"), protected, 0))
+
     def test_setup_lock_rejects_replaceable_parent_and_retains_exclusion(self):
         with tempfile.TemporaryDirectory(prefix=".supgang-lock-test-", dir=Path.home()) as directory:
             parent = Path(directory)

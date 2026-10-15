@@ -267,7 +267,7 @@ fn remove_definition(path: &Path) -> Result<(), ServiceError> {
 }
 
 fn manager_status(program: &Path, arguments: &[&str]) -> Result<bool, ServiceError> {
-    observation::command(program, arguments).map(|(success, _)| success)
+    observation::status(program, arguments)
 }
 
 fn control_is_ready(state_directory: &Path) -> Result<bool, control::ControlError> {

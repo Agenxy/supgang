@@ -226,7 +226,7 @@ def build_definition(agent: object, owner: pwd.struct_passwd) -> dict[str, objec
         "UserName": owner.pw_name,
         "RunAtLoad": True,
         "KeepAlive": True,
-        "ProcessType": "Background",
+        "ProcessType": "Standard",
         "ThrottleInterval": 5,
         "Umask": 63,
         "StandardOutPath": "/dev/null",
@@ -480,8 +480,10 @@ def main() -> None:
             print("Administrator approval or the approved setup command did not finish on this computer. "
                   "Read macOS's message above; no automatic retry was made.", file=sys.stderr)
         raise SystemExit(result.returncode)
-    # Use the canonical system path; no unchecked /var symlink or parent ACL.
-    lock_path = Path("/private/var/run") / f"{LABEL}.setup.{uid}.lock"
+    # The lock lives in this tool's own root-owned, owner-only directory. Stock
+    # macOS leaves /private/var/run group-writable by daemon, which the ancestor
+    # check correctly refuses, so a system run directory cannot hold it.
+    lock_path = root_support() / f"setup.{uid}.lock"
     with os.fdopen(open_setup_lock(lock_path, 0), "rb+"):
         if args.stop or args.uninstall:
             stop_or_remove(owner, args.uninstall)

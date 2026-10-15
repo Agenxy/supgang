@@ -35,7 +35,10 @@ pub(super) fn validate_value(
         uid,
         (anchor, mapping, endpoints.as_deref()),
     )?;
-    if value != &expected {
+    // An administrator approved this definition before the scheduling class
+    // changed; that one field grants nothing, so it is compared as upgraded.
+    let upgraded = definition::upgraded_process_type(value);
+    if upgraded.as_ref().unwrap_or(value) != &expected {
         return Err(ServiceError::UnsafeDefinition);
     }
     Ok(())
@@ -132,6 +135,35 @@ mod tests {
             .is_err()
         );
         assert!(validate_value(&value, executable, state, home, "member", 502).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn an_approved_background_definition_stays_valid_and_no_other_class_does() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let executable = Path::new("/Users/member/bin/supgang");
+        let state = Path::new("/Users/member/state");
+        let home = Path::new("/Users/member");
+        let value = boot_definition(executable, state, home, "member", 501, (false, false, None))?;
+        assert_eq!(
+            value
+                .as_dictionary()
+                .and_then(|dict| dict.get("ProcessType"))
+                .and_then(plist::Value::as_string),
+            Some("Standard")
+        );
+        for (class, accepted) in [("Background", true), ("Interactive", false), ("Adaptive", false)] {
+            let mut approved = value.clone();
+            approved
+                .as_dictionary_mut()
+                .ok_or("not a dictionary")?
+                .insert("ProcessType".to_owned(), plist::Value::String(class.to_owned()));
+            assert_eq!(
+                validate_value(&approved, executable, state, home, "member", 501).is_ok(),
+                accepted,
+                "{class}"
+            );
+        }
         Ok(())
     }
 }
