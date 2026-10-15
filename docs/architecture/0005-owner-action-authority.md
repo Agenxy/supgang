@@ -14,6 +14,13 @@ requiring a separate in-person approval at every tool. Remap's proposed ADR-0022
 root-owned DNS reactivation; K7's owner-approval path is another consumer. Supgang
 authorization can only narrow the consumer's own operation policy.
 
+The owner's travel use case includes administering K7 and Supgang itself from another computer
+while Solis is unattended. A design that requires Touch ID or another presence prompt **on the
+target** would leave the owner stuck. The owner's presence, where a consumer requires it, must
+be established on a device the owner carries and bound to the exact remote action. Supgang
+cannot satisfy an operating-system prompt reserved for a person at the target; the product's
+remote path must avoid that prompt rather than claim to answer it.
+
 Today Supgang authenticates **devices**, not people. A current hive membership proves that a
 device key belongs to the hive; it does not prove a human approved a particular action. ADR 0001
 leaves delegated administration unimplemented. The device-certified keys in ADR 0003 prove
@@ -60,7 +67,10 @@ that device key; user presence needs a separate policy and provider capability. 
 requiring fresh presence for an operation, such as K7's owner-touch policy, must verify that
 the named signer/provider enforced presence for this exact target and operation. Until such
 evidence has a defined, verified encoding, a Supgang assertion cannot replace that touch;
-the consumer's native policy still applies.
+the consumer's native policy still applies. Version 1 must not require the target's Touch ID
+or Secure Enclave user-presence check. A consumer that currently demands target-local touch
+needs an owner-approved remote-presence policy with equivalent exact-action checks before it
+can accept this mode; a device signature alone does not create that equivalence.
 
 ## Proposed shared assertion
 
@@ -162,8 +172,8 @@ depends on a stable Supgang signing identity; Linux may use `SO_PEERCRED` and a 
 Supgang service account. The consumer-owned verifier independently checks the pinned hive
 root, membership or signer credential, root grant, signed status lease, both revocation sets,
 canonical assertion signature, target, exact operation, digest, time, and spent nonce. It then
-applies the consumer's own policy. It refuses any missing or stale
-proof even if Supgang delivered the bytes successfully.
+applies the consumer's own policy. It refuses any missing or stale proof even if Supgang
+delivered the bytes successfully.
 
 Local enabling of Supgang mode and trust-anchor changes remain owner-approved through the
 consumer's existing native boundary. A missing Supgang installation does not break a tool's
@@ -171,11 +181,21 @@ native mode. Native modes use each consumer's own keys, schema, and domain separ
 use its own `k7/owner-action/v1` and `k7/action-request/v1` domains. Supgang mode has no hidden
 fallback to an unauthenticated path.
 
+Supgang itself may consume owner-action assertions for ordinary remote administration while
+healthy, but it cannot be its own only recovery path. Every consumer, including Supgang, needs
+a pre-provisioned, independently authenticated native recovery path that remains usable when
+the target's Supgang service or route is broken. A tunnel carried by that same Supgang service
+does not meet this requirement. Before relying on remote administration during travel, the
+owner must have an off-network test showing the independent path can repair a stopped or
+wedged Supgang on the target without a target-local presence prompt. If the operating system
+still requires such a prompt for a particular repair, that repair remains an explicit physical
+recovery limit rather than an accepted remote action.
+
 ## Decisions required before implementation
 
-1. Which owner-held key providers and user-presence properties are required for version 1?
-   How does a grant require and a verifier validate fresh presence for an exact action? Naming
-   a key alone must not be described as a human signature.
+1. Which owner-held key provider on the **carried device** supplies fresh presence for version
+   1? How does a grant require and a verifier validate that presence for an exact target and
+   action without a target-local prompt? Naming a key alone is not a human signature.
 2. What is the maximum status-lease lifetime, and which root or threshold signers may renew it
    **remotely** while the owner is away? Availability after expiry and the bound on revoked
    authority must be stated together.
@@ -185,6 +205,9 @@ fallback to an unauthenticated path.
    clock-skew ceilings? Consumers may narrow them but cannot widen them.
 5. Which macOS and Linux IPC mechanisms give each consumer verifier a verifiable caller
    without granting ordinary same-UID processes administrative authority?
+6. What independently authenticated native recovery path works for each consumer when
+   Supgang is absent or broken, especially to repair Supgang itself on an unattended target?
+   Which repairs still require physical intervention because of operating-system policy?
 
 The Supgang lead and owner must settle these before this ADR changes from Proposed. Remap
 ADR-0022 and K7's Supgang authorization mode remain proposed consumers; neither should ship
@@ -198,8 +221,11 @@ against this draft's bytes or presume the missing grant, lease, or delivery APIs
 - Durable crash/restart tests proving nonce consumption precedes side effects and rollback
   cannot silently restore spent authority.
 - Consumer-verifier tests on macOS and Linux showing that a same-UID untrusted process and
-  an ordinary hive member cannot request a privileged operation; K7 must also prove its
-  owner-touch requirement still holds in Supgang mode.
+  an ordinary hive member cannot request a privileged operation. K7 must prove an
+  owner-approved carried-device presence policy for Supgang mode without silently weakening
+  its native owner-touch gate or requiring a touch on the target.
+- An off-network fault test with target Supgang stopped or wedged, proving a separate native
+  recovery path can restore it without that Supgang instance or a target-local presence prompt.
 - The complete Supgang quality gate, then identical installed artifacts on each configured
   physical peer and a cross-host action through Remap and K7 with their native policies intact.
 
