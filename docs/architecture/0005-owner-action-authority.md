@@ -4,6 +4,8 @@ Status: **Proposed for owner and consumer review; no protocol or API in this ADR
 
 Date: 2026-10-14
 
+Updated: 2026-10-15
+
 ## Problem and boundary
 
 The owner wants any of their authorized computers to request a security-sensitive action on
@@ -46,6 +48,7 @@ root-authorized, canonical grant records:
 | `signer` | Exact enrolled public key and algorithm, bound to a device or owner credential with a possession proof. |
 | `consumer_id` | Stable product identifier, such as `org.agenxy.remap`; no wildcard consumer. |
 | `operations` | Sorted, bounded, closed set of consumer-defined operation identifiers. |
+| `presence` | Per-operation `required` or `policy`; the assertion cannot choose or downgrade it. |
 | `target_scope` | Tagged `node(NodeId)` or `hive_nodes(HiveId)`; no implicit wildcard or name lookup. |
 | `not_before`, `not_after` | Bounded grant lifetime. |
 | `issuer_head` | Root-chain predecessor and sequence needed for rollback and equivocation checks. |
@@ -59,18 +62,31 @@ not the default. No grant delegates further grants in version 1. A target pins i
 and may apply a stricter local allowlist; remote actions cannot change that pin, enable the
 mode, enlarge a grant, or alter the local verifier policy.
 
-The owner must select which key represents an owner action. Version 1 should permit an
-explicitly enrolled device key or a distinct certified subordinate key, but **only** when the
-root grant names that exact key. Supgang must label file-held, synced, and hardware-held custody
-honestly. The signer key never leaves its provider. A device key signature proves control of
-that device key; user presence needs a separate policy and provider capability. A consumer
-requiring fresh presence for an operation, such as K7's owner-touch policy, must verify that
-the named signer/provider enforced presence for this exact target and operation. Until such
-evidence has a defined, verified encoding, a Supgang assertion cannot replace that touch;
-the consumer's native policy still applies. Version 1 must not require the target's Touch ID
-or Secure Enclave user-presence check. A consumer that currently demands target-local touch
-needs an owner-approved remote-presence policy with equivalent exact-action checks before it
-can accept this mode; a device signature alone does not create that equivalence.
+The owner chose two modes for version 1. `required` needs a fresh signature from an enrolled
+owner-presence key for **each** action. `policy` allows a root-issued standing grant for a
+closed, bounded operation set without a prompt; lease-renewal requests and service refreshes
+are candidates, not automatically allowed operations. A grant fixes the mode for each exact
+operation. The consumer may demand presence even when the grant says `policy`, but cannot
+treat an ordinary device signature as presence when the grant says `required`. `policy` still
+requires a grant-named signer, an exact signed assertion, freshness, and replay protection.
+
+The proposed `owner_presence_key` signer kind is a Secure Enclave P-256 key on a computer the
+owner carries. It reuses ADR 0003's provider and strict low-S P-256 signature rules. Creation
+must set a private-key-use access control that requires biometry or user presence for each
+signature; implementation must demonstrate that no reused authentication context silently
+authorizes another assertion. The hive root enrolls and certifies the exact public key and
+claimed presence policy in an owner-reviewed ceremony. The enrolling device inspects its
+local key policy. A target trusts that **root-signed enrollment claim**, not a self-reported
+custody label or an attestation at signing time. ADR 0003 explicitly says a peer cannot infer
+Secure Enclave residence from a signature. Apple's
+[App Attest on macOS 27](https://developer.apple.com/videos/play/wwdc2026/201/) is a separate
+app-integrity facility; no attestation of this CryptoKit owner-presence key or its per-signature
+policy is implemented or assumed here. The optional `supgang-secure-enclave` helper is not
+installed as part of today's Supgang release.
+
+A consumer such as K7 that currently demands target-local touch needs an owner-approved
+remote-presence policy with equivalent exact-action checks before it can accept this mode.
+Version 1 must never require a Touch ID or Secure Enclave presence check on the target.
 
 ## Proposed shared assertion
 
@@ -84,25 +100,29 @@ The payload is this ordered array:
 [
   1, algorithm, hive_id:b32, signer_ref, grant_id:b16,
   target_node_id:b32, consumer_id:text, operation:text,
-  request_digest:b32, nonce:b16, issued_at:u64, expires_at:u64
+  request_digest:b32, challenge_digest:b32-or-null,
+  nonce:b16, issued_at:u64, expires_at:u64
 ]
 ```
 
-`signer_ref` has a distinct tag for a member device key and for an enrolled subordinate key,
-and binds the signer `NodeId` and exact key identity. The grant fixes the acceptable algorithm;
-the assertion cannot choose a weaker one. Algorithms and signature encodings must reuse the
-strict Ed25519 and low-S P-256 rules already specified for certified keys. The target must
-compare the fields to the pinned grant and to **its own** identity, rather than trusting a
-name supplied in the request.
+`signer_ref` has distinct tags for a member device key, an enrolled subordinate key, and an
+enrolled `owner_presence_key`. It binds the signer `NodeId` and exact key identity. The grant
+fixes the acceptable algorithm and per-operation presence mode; the assertion cannot choose
+a weaker one. Algorithms and signature encodings must reuse the strict Ed25519 and low-S
+P-256 rules already specified for certified keys. The target compares the fields to the
+pinned grant and to **its own** identity, rather than trusting a name in the request.
 
 The digest is `SHA-256("supgang/action-request/v1\0" || canonical_consumer_request)`. Each
 consumer defines one versioned, bounded canonical request encoding, which may be canonical JSON
 or another unambiguous format. It includes the exact arguments and target-observed
 preconditions checked immediately before the effect. For Remap DNS activation, that includes
 the operation's arguments and the resolver plan the target last reported. For K7, its native
-approval policy may narrow a Supgang grant and must bind
-the exact operation it executes. A generic digest of a human-readable description is not
-sufficient. The target rejects a changed plan or arguments even with a valid signature.
+approval policy may narrow a Supgang grant and must bind the exact operation it executes.
+A generic digest of a human-readable description is not sufficient. The target rejects a
+changed plan or arguments even with a valid signature. For `required`, `challenge_digest` is
+`SHA-256("supgang/owner-action-challenge/v1\0" || canonical_challenge)`; for `policy` it is
+null. The target rejects a mode/digest mismatch with the root grant, or a request digest that
+does not match the canonical arguments and preconditions in the challenge.
 
 The assertion has a short validity interval; the consumer may impose a shorter one (Remap
 proposes five minutes). The target checks time and clock reliability before acting. It records
@@ -112,20 +132,26 @@ skew, fails closed on exhaustion, and survives restart. The consumer operation r
 transactional and checks its own preconditions. No peer address, secret, request body, or
 assertion bytes enter command arguments, ordinary logs, URLs, or crash reports.
 
-## Precondition discovery
+## Target-issued challenge and prompt
 
-The requester needs authenticated access to the target's current precondition bytes before
-signing a request digest. For Remap, the resolver plan may contain private upstream addresses.
-The design must choose a bounded read-only observation exchange or a target-issued challenge
-that returns those bytes and a fresh target nonce. Remap prefers the challenge. Either path
-must authenticate the target, restrict disclosure to a device named by an applicable grant,
-bound the returned bytes and challenge lifetime, and keep them out of ordinary logs. The
-target must compare the signed preconditions to its own state immediately before the effect.
-If a challenge is chosen, the assertion must sign its target nonce and precondition bytes;
-issuing it cannot change durable authority state. A challenge may include target time so the
-requester need not rely on its own clock, but it does not replace target-side assertion-expiry,
-status-lease, or replay checks. The exact challenge encoding, one-use rule, and clock semantics
-remain undecided.
+The owner chose a target-issued challenge for presence-required actions. The target's
+consumer-owned verifier, a root helper where the operation needs one, issues a bounded
+canonical challenge containing the exact operation, target identity, canonical arguments,
+target-observed preconditions, fresh random nonce, and expiry. For Remap, the preconditions
+may contain private resolver upstream addresses. The requester authenticates the target and
+verifies the challenge matches its intended grant and action before asking for presence.
+Only a device expressly authorized for that grant receives the challenge; no challenge
+contents enter ordinary logs. Issuing a challenge cannot change durable authority state.
+
+The laptop constructs its Touch ID or other presence prompt **only from parsed, validated
+structured fields**. It never renders free text supplied by the target as an approval prompt.
+The owner-presence key signs an assertion that commits to the complete canonical challenge
+through `challenge_digest`; the assertion's nonce is the target nonce and its expiry cannot
+exceed the challenge expiry. The target checks the signed challenge against its current state
+immediately before the effect, then consumes the nonce durably before acting. Target time may
+supply the assertion's time window without trusting the laptop clock. Target-side clock
+reliability, lease freshness, and replay checks remain mandatory. Exact challenge bytes,
+one-use storage, and clock semantics remain design work.
 
 ## Revocation freshness
 
@@ -136,9 +162,10 @@ become fresh merely because it arrived over a live session. The certified-key au
 manifest has its own `next_update` check, but it does not supply owner-grant or membership
 freshness. Remap and K7 must not infer a freshness bound from either mechanism.
 
-Version 1 therefore needs a root- or approved-threshold-signed **status lease** that binds
-the hive, current root-chain head, member-revocation serial, grant-revocation serial, issuance,
-and expiry. Its issuer must have the actual authority to state that no newer root operation is
+Version 1 therefore needs a **status lease** signed by the root, approved threshold, or an
+explicitly root-delegated status issuer. It binds the hive, current root-chain head,
+member-revocation serial, grant-revocation serial, issuance, and expiry. Its issuer must have
+the actual authority and current-state evidence to state that no newer root operation is
 effective as of issuance. A target retains monotonic heads and serials, refuses rollback or
 equivocation, and requires a lease within the owner-approved maximum age at the moment it
 executes an action. A live peer cannot extend a lease by relaying it. A partitioned target
@@ -151,14 +178,22 @@ use case. A five-minute assertion expiry does **not** imply five-minute revocati
 No numeric revocation bound is endorsed by this ADR yet; until the signing and availability
 model is decided and implemented, Supgang owner-action mode remains unavailable.
 
+The owner chose to permit the presence key on the traveling laptop to authorize remote lease
+renewal when an exact root grant allows it. A separate `policy` grant may permit a bounded
+unattended renewal request with its own signer. Neither request by itself proves that no
+newer revocation exists. The lease issuer must still be the root, an approved threshold, or
+a separately root-delegated status authority with authenticated current-head evidence.
+Its availability and freshness under travel and partition need a concrete design and test.
+
 ## Delivery and local authority
 
-A new typed, versioned, bounded peer stream carries one owner-action request on an already
-authenticated Supgang QUIC session. Admission, frame size, queue length, per-peer concurrency,
-timeouts, retries, and cancellation are explicit limits. No general RPC, peer-selected local
-port, arbitrary forwarding, public listener, hosted service, or vendor relay is introduced.
-Transport authenticates the sending **device** and supplies a route; it does not authorize the
-action. The signed assertion can name a different enrolled signer only if the grant allows it.
+A new typed, versioned, bounded peer stream carries one challenge and owner-action exchange
+on an already authenticated Supgang QUIC session. Admission, frame size, queue length,
+per-peer concurrency, timeouts, retries, and cancellation are explicit limits. No general RPC,
+peer-selected local port, arbitrary forwarding, public listener, hosted service, or vendor
+relay is introduced. Transport authenticates the sending **device** and supplies a route;
+it does not authorize the action. The signed assertion can name a different enrolled signer
+only if the grant allows it.
 
 The unprivileged Supgang service hands the bounded request and proof to a consumer-owned
 verifier over an OS-approved authenticated local boundary. Remap needs a privileged helper;
@@ -174,6 +209,15 @@ root, membership or signer credential, root grant, signed status lease, both rev
 canonical assertion signature, target, exact operation, digest, time, and spent nonce. It then
 applies the consumer's own policy. It refuses any missing or stale proof even if Supgang
 delivered the bytes successfully.
+
+The substitutable scope is an Agenxy-owned operation behind this independently verifying
+boundary: for example Remap DNS activation, K7 owner actions, or defined Supgang setup
+operations such as firewall rules and Supgang certificate trust decisions. A possible `sudo`
+PAM integration is a separate later decision, not part of version 1. This protocol cannot
+satisfy macOS-reserved approvals such as TCC privacy grants, System Settings authorization,
+system or kernel extension approval, or FileVault pre-boot unlock. Those remain physical or
+require a distinct supported operating-system workflow. No product may present an unverified
+bypass as remote acceptance.
 
 Local enabling of Supgang mode and trust-anchor changes remain owner-approved through the
 consumer's existing native boundary. A missing Supgang installation does not break a tool's
@@ -191,16 +235,16 @@ wedged Supgang on the target without a target-local presence prompt. If the oper
 still requires such a prompt for a particular repair, that repair remains an explicit physical
 recovery limit rather than an accepted remote action.
 
-## Decisions required before implementation
+## Open details before implementation
 
-1. Which owner-held key provider on the **carried device** supplies fresh presence for version
-   1? How does a grant require and a verifier validate that presence for an exact target and
-   action without a target-local prompt? Naming a key alone is not a human signature.
-2. What is the maximum status-lease lifetime, and which root or threshold signers may renew it
-   **remotely** while the owner is away? Availability after expiry and the bound on revoked
-   authority must be stated together.
-3. Will a requester use read-only observation or a target-issued challenge to obtain current
-   preconditions? Define authentication, disclosure scope, target nonce, time, and replay rules.
+1. How will enrollment verify the carried Secure Enclave key's per-signature presence policy,
+   and how will each consumer validate the root-certified enrollment and exact-action proof?
+   The root's local enrollment inspection is an explicit trust assumption, not attestation.
+2. What is the maximum status-lease lifetime, and which remote root, threshold, or delegated
+   status signers can issue a fresh lease while the owner is away? Define authenticated
+   current-head evidence, availability after expiry, and the bound on revoked authority.
+3. Define the canonical target challenge, authentication, disclosure scope, nonce storage,
+   prompt rendering, time, and replay rules for the chosen challenge flow.
 4. What are the exact per-grant lifetime, operation-count, request-size, concurrency, and
    clock-skew ceilings? Consumers may narrow them but cannot widen them.
 5. Which macOS and Linux IPC mechanisms give each consumer verifier a verifiable caller
@@ -209,15 +253,20 @@ recovery limit rather than an accepted remote action.
    Supgang is absent or broken, especially to repair Supgang itself on an unattended target?
    Which repairs still require physical intervention because of operating-system policy?
 
-The Supgang lead and owner must settle these before this ADR changes from Proposed. Remap
-ADR-0022 and K7's Supgang authorization mode remain proposed consumers; neither should ship
-against this draft's bytes or presume the missing grant, lease, or delivery APIs exist.
+The owner chose the two presence modes and target-issued challenge direction; the Supgang
+lead and owner must settle these remaining details before this ADR changes from Proposed.
+Remap ADR-0022 and K7's Supgang authorization mode remain proposed consumers; neither should
+ship against this draft's bytes or presume the missing grant, lease, or delivery APIs exist.
 
 ## Acceptance evidence required
 
 - Canonical cross-tool fixtures and negative tests for every field, algorithm, scope,
   downgrade, equivocation, replay, clock error, revocation, stale lease, presence requirement,
-  precondition challenge, and local policy.
+  challenge digest, per-operation policy mode, and local policy.
+- Physical carried-device tests proving one fresh OS-enforced presence check per `required`
+  action, cancellation before signing, no reusable authentication context, prompt text derived
+  only from validated structured fields, and no target-local touch. `policy` actions must be
+  proved limited to the exact root-granted operation set.
 - Durable crash/restart tests proving nonce consumption precedes side effects and rollback
   cannot silently restore spent authority.
 - Consumer-verifier tests on macOS and Linux showing that a same-UID untrusted process and
