@@ -266,8 +266,23 @@ pub(crate) mod simulated {
         static VIEW: RefCell<Option<Arc<dyn View>>> = const { RefCell::new(None) };
     }
 
+    /// Installs `view` for this thread until the guard is dropped.
+    pub fn install(view: Arc<dyn View>) -> Guard {
+        VIEW.with(|slot| *slot.borrow_mut() = Some(view));
+        Guard(())
+    }
+
     pub(super) fn current() -> Option<Arc<dyn View>> {
         VIEW.with(|slot| slot.borrow().clone())
+    }
+
+    /// Removes the thread's view when the simulated computer stops.
+    pub struct Guard(());
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            VIEW.with(|slot| *slot.borrow_mut() = None);
+        }
     }
 }
 

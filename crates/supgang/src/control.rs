@@ -38,6 +38,10 @@ const REQUEST_RESOLVE: u8 = 3;
 const REQUEST_REVOKE: u8 = 4;
 const REQUEST_UPDATE: u8 = 5;
 const REQUEST_RESTART: u8 = 6;
+const REQUEST_CONNECT: u8 = 7;
+const REQUEST_EXPOSE: u8 = 8;
+const REQUEST_ADD_MAPPED: u8 = 9;
+const REQUEST_TUNNEL_LIMITS: u8 = 10;
 const MAX_REQUEST_BYTES: usize = 128;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -45,6 +49,19 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 /// One bounded local request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlRequest {
+    /// Publish an explicit owner-managed public IPv4 UDP endpoint.
+    AddMapped { address: std::net::SocketAddrV4 },
+    /// Open byte transport to a named service on an exact authenticated peer.
+    Connect { target: NodeId, name: [u8; 16] },
+    /// Change an owner-approved loopback service; port zero removes exposure.
+    Expose { name: [u8; 16], port: u16 },
+    /// Save tunnel admission and idle limits for the next start of the
+    /// service, which the running service owns and would otherwise overwrite.
+    TunnelLimits {
+        per_peer: u16,
+        total: u16,
+        idle_seconds: u32,
+    },
     /// Restart an installed supervisor payload, available only to the local owner.
     Restart,
     /// Return non-secret service and identity status.
@@ -122,6 +139,14 @@ fn device_mode() -> String {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "response", rename_all = "kebab-case")]
 pub enum ControlReply {
+    /// The local socket now carries only application bytes.
+    Connected,
+    /// The runtime committed the owner's exposure policy.
+    ExposureChanged,
+    /// The runtime saved tunnel limits that apply when it next starts.
+    LimitsSaved,
+    /// The runtime signed and queued publication of an owner-mapped endpoint.
+    EndpointChanged,
     /// The local supervisor payload has accepted a restart request.
     Restarting {
         /// Instance that is shutting down; readiness requires a different instance.
@@ -278,6 +303,12 @@ pub async fn read_request(stream: &mut UnixStream) -> Result<ControlRequest, Con
 ///
 /// Rejects an unexpectedly large response and returns serialization or I/O failures.
 pub async fn write_reply(stream: &mut UnixStream, reply: &ControlReply) -> Result<(), ControlError> {
+    write_reply_open(stream, reply).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+pub async fn write_reply_open(stream: &mut UnixStream, reply: &ControlReply) -> Result<(), ControlError> {
     let bytes = serde_json::to_vec(reply).map_err(|_| ControlError::InvalidResponse)?;
     if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
         return Err(ControlError::InvalidResponse);
@@ -285,8 +316,45 @@ pub async fn write_reply(stream: &mut UnixStream, reply: &ControlReply) -> Resul
     let length = u32::try_from(bytes.len()).map_err(|_| ControlError::InvalidResponse)?;
     stream.write_all(&length.to_be_bytes()).await?;
     stream.write_all(&bytes).await?;
-    stream.shutdown().await?;
     Ok(())
+}
+
+pub fn connect_service(state_directory: &Path, target: NodeId, name: [u8; 16]) -> Result<BlockingUnixStream, String> {
+    let directory = storage::validate_directory(state_directory).map_err(|_| "local service state is unsafe")?;
+    let path = directory.join(CONTROL_SOCKET_FILE_NAME);
+    let metadata = fs::symlink_metadata(&path).map_err(|_| "start the local Supgang service before connecting")?;
+    validate_existing_socket_metadata(&metadata).map_err(|_| "local service socket is unsafe")?;
+    let mut stream = BlockingUnixStream::connect(path).map_err(|_| "local Supgang service is unavailable")?;
+    let timeout = Duration::from_secs(8);
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|_| "local tunnel timeout setup failed")?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|_| "local tunnel timeout setup failed")?;
+    validate_peer_blocking(&stream).map_err(|_| "local service belongs to another user")?;
+    write_blocking_frame(
+        &mut stream,
+        &encode_request(ControlRequest::Connect { target, name }),
+        MAX_REQUEST_BYTES,
+    )
+    .map_err(|_| "local tunnel request failed")?;
+    let bytes = read_blocking_frame(&mut stream, MAX_RESPONSE_BYTES).map_err(|_| "local tunnel setup failed")?;
+    match serde_json::from_slice::<ControlReply>(&bytes).map_err(|_| "local tunnel reply is invalid")? {
+        ControlReply::Connected => {}
+        ControlReply::Error { message } => return Err(message),
+        _ => return Err("local runtime does not support service tunnels; refresh its installed artifact".to_owned()),
+    }
+    stream
+        .set_read_timeout(None)
+        .map_err(|_| "local tunnel timeout removal failed")?;
+    stream
+        .set_write_timeout(None)
+        .map_err(|_| "local tunnel timeout removal failed")?;
+    stream
+        .set_nonblocking(true)
+        .map_err(|_| "local tunnel nonblocking setup failed")?;
+    Ok(stream)
 }
 
 /// Sends a bounded request to a running local service.
@@ -351,6 +419,31 @@ fn encode_request(request: ControlRequest) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(REQUEST_MAGIC.len() + 1 + 32);
     bytes.extend_from_slice(REQUEST_MAGIC);
     match request {
+        ControlRequest::AddMapped { address } => {
+            bytes.push(REQUEST_ADD_MAPPED);
+            bytes.extend_from_slice(&address.ip().octets());
+            bytes.extend_from_slice(&address.port().to_be_bytes());
+        }
+        ControlRequest::Connect { target, name } => {
+            bytes.push(REQUEST_CONNECT);
+            bytes.extend_from_slice(target.as_bytes());
+            bytes.extend_from_slice(&name);
+        }
+        ControlRequest::Expose { name, port } => {
+            bytes.push(REQUEST_EXPOSE);
+            bytes.extend_from_slice(&name);
+            bytes.extend_from_slice(&port.to_be_bytes());
+        }
+        ControlRequest::TunnelLimits {
+            per_peer,
+            total,
+            idle_seconds,
+        } => {
+            bytes.push(REQUEST_TUNNEL_LIMITS);
+            bytes.extend_from_slice(&per_peer.to_be_bytes());
+            bytes.extend_from_slice(&total.to_be_bytes());
+            bytes.extend_from_slice(&idle_seconds.to_be_bytes());
+        }
         ControlRequest::Restart => bytes.push(REQUEST_RESTART),
         ControlRequest::Status => bytes.push(REQUEST_STATUS),
         ControlRequest::Peers => bytes.push(REQUEST_PEERS),
@@ -380,6 +473,66 @@ fn decode_request(bytes: &[u8]) -> Result<ControlRequest, ControlError> {
         .copied()
         .ok_or(ControlError::InvalidRequest)?;
     match command {
+        REQUEST_ADD_MAPPED if bytes.len() == REQUEST_MAGIC.len() + 1 + 6 => {
+            let raw: [u8; 4] = bytes
+                .get(9..13)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            let port = bytes
+                .get(13..)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            Ok(ControlRequest::AddMapped {
+                address: std::net::SocketAddrV4::new(raw.into(), u16::from_be_bytes(port)),
+            })
+        }
+        REQUEST_CONNECT if bytes.len() == REQUEST_MAGIC.len() + 1 + 48 => {
+            let target = bytes
+                .get(9..41)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            let name = bytes
+                .get(41..)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            crate::tunnel_policy::decoded_name(name).map_err(|_| ControlError::InvalidRequest)?;
+            Ok(ControlRequest::Connect {
+                target: NodeId::from_bytes(target),
+                name,
+            })
+        }
+        REQUEST_EXPOSE if bytes.len() == REQUEST_MAGIC.len() + 1 + 18 => {
+            let name = bytes
+                .get(9..25)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            crate::tunnel_policy::decoded_name(name).map_err(|_| ControlError::InvalidRequest)?;
+            let port = bytes
+                .get(25..)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            Ok(ControlRequest::Expose {
+                name,
+                port: u16::from_be_bytes(port),
+            })
+        }
+        REQUEST_TUNNEL_LIMITS if bytes.len() == REQUEST_MAGIC.len() + 1 + 8 => {
+            let field = |range: std::ops::Range<usize>| bytes.get(range).ok_or(ControlError::InvalidRequest);
+            let per_peer = u16::from_be_bytes(field(9..11)?.try_into().map_err(|_| ControlError::InvalidRequest)?);
+            let total = u16::from_be_bytes(field(11..13)?.try_into().map_err(|_| ControlError::InvalidRequest)?);
+            let idle_seconds = u32::from_be_bytes(field(13..17)?.try_into().map_err(|_| ControlError::InvalidRequest)?);
+            Ok(ControlRequest::TunnelLimits {
+                per_peer,
+                total,
+                idle_seconds,
+            })
+        }
         REQUEST_RESTART if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Restart),
         REQUEST_STATUS if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Status),
         REQUEST_PEERS if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Peers),
@@ -535,77 +688,4 @@ fn validate_peer_blocking(stream: &BlockingUnixStream) -> Result<(), ControlErro
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        os::unix::{fs::symlink, net::UnixListener as BlockingUnixListener},
-    };
-
-    use super::{ControlError, ControlListener, ControlRequest, decode_request, encode_request, request};
-    use crate::ids::NodeId;
-    use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn request_encoding_is_canonical_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
-        for request in [
-            ControlRequest::Restart,
-            ControlRequest::Status,
-            ControlRequest::Peers,
-            ControlRequest::Resolve(NodeId::from_bytes([7_u8; 32])),
-            ControlRequest::Revoke(NodeId::from_bytes([8_u8; 32])),
-            ControlRequest::Update {
-                target: NodeId::from_bytes([9_u8; 32]),
-                digest: [10_u8; 32],
-            },
-        ] {
-            let encoded = encode_request(request);
-            assert_eq!(decode_request(&encoded)?, request);
-        }
-        assert!(matches!(decode_request(b""), Err(ControlError::InvalidRequest)));
-        let mut trailing = encode_request(ControlRequest::Status);
-        trailing.push(0);
-        assert!(matches!(decode_request(&trailing), Err(ControlError::InvalidRequest)));
-        Ok(())
-    }
-
-    #[test]
-    fn listener_rejects_symlink_and_cleans_only_its_socket() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let state_directory = temporary.path().join("state");
-        fs::create_dir(&state_directory)?;
-        fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
-        let socket = state_directory.join(super::CONTROL_SOCKET_FILE_NAME);
-        let target = temporary.path().join("target");
-        fs::write(&target, b"protected")?;
-        symlink(&target, &socket)?;
-        assert!(matches!(
-            ControlListener::bind(&state_directory),
-            Err(ControlError::UnsafeSocketPath)
-        ));
-        fs::remove_file(&socket)?;
-        let runtime = crate::transport::build_runtime()?;
-        let _runtime_guard = runtime.enter();
-        let listener = ControlListener::bind(&state_directory)?;
-        assert!(socket.exists());
-        drop(listener);
-        assert!(!socket.exists());
-        assert_eq!(fs::read(target)?, b"protected");
-        Ok(())
-    }
-
-    #[test]
-    fn client_treats_a_safe_stale_socket_as_service_stopped() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let state_directory = temporary.path().join("state");
-        fs::create_dir(&state_directory)?;
-        fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
-        let socket = state_directory.join(super::CONTROL_SOCKET_FILE_NAME);
-        let listener = BlockingUnixListener::bind(&socket)?;
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
-        drop(listener);
-
-        assert!(request(&state_directory, ControlRequest::Status)?.is_none());
-        assert!(socket.exists());
-        Ok(())
-    }
-}
+mod tests;

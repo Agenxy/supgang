@@ -38,7 +38,12 @@ impl Peer {
         let identity = transport_storage::load_or_create(path)?;
         let endpoint = quinn::Endpoint::server(identity.server_config()?, listen)?;
         let listen = endpoint.local_addr()?;
-        let config = ServiceConfig::new(PeerName::new("Production Test")?, listen, &[listen], &[])?
+        let advertised = if listen.ip().is_unspecified() {
+            std::net::SocketAddr::from(([127, 0, 0, 1], listen.port()))
+        } else {
+            listen
+        };
+        let config = ServiceConfig::new(PeerName::new("Production Test")?, listen, &[advertised], &[])?
             .with_intervals(Duration::from_secs(1), Duration::from_hours(1))?;
         let contact = make_local_contact(&mut state, &identity, &config)?;
         let directory = PeerDirectory::open(
@@ -101,6 +106,176 @@ async fn wait_connected(paths: &[&Path]) -> Result<(), Box<dyn std::error::Error
     })
     .await??;
     Ok(())
+}
+
+#[tokio::test]
+async fn named_tunnel_is_default_deny_and_preserves_bytes_and_half_close() -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let temporary = tempfile::tempdir()?;
+    let left_path = temporary.path().join("left");
+    let right_path = temporary.path().join("right");
+    let mut founder = state::initialize(&left_path)?;
+    let request = state::create_join_request(&right_path)?;
+    let now = unix_time()?;
+    let member = founder.authorize_join_request(
+        &request,
+        NodeId::from_verifying_key(&request.device_verifying_key),
+        MembershipRoles::DEVICE,
+        now,
+        now + 86_400,
+    )?;
+    let bundle = JoinBundle::new(
+        founder.identity().root.as_ref().ok_or("root missing")?,
+        member,
+        founder.revocations().clone(),
+        now,
+    )?;
+    let joined = state::install_join_bundle(&right_path, &bundle, founder.identity().hive_id)?;
+    let target = joined.identity().device.node_id();
+    let mut left = Peer::new(&left_path, founder, "127.0.0.1:0".parse()?)?;
+    let mut right = Peer::new(&right_path, joined, "0.0.0.0:0".parse()?)?;
+    left.directory.import(right.contact.clone(), now)?;
+    right.directory.import(left.contact.clone(), now)?;
+    let left_task = left.start()?;
+    let right_task = right.start()?;
+    let outcome = async {
+        wait_connected(&[&left_path, &right_path]).await?;
+        let path = right_path.clone();
+        let mapped: std::net::SocketAddrV4 = "9.9.9.9:44330".parse()?;
+        assert!(matches!(tokio::task::spawn_blocking(move || control::request(&path,
+            ControlRequest::AddMapped { address: mapped })).await??, Some(ControlReply::EndpointChanged)));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let path = left_path.clone();
+                let reply = tokio::task::spawn_blocking(move || control::request(&path, ControlRequest::Resolve(target))).await??;
+                if matches!(reply, Some(ControlReply::Resolve { value }) if value.candidates.iter().any(|candidate| candidate.address == mapped.to_string())) {
+                    return Ok::<(), Box<dyn std::error::Error>>(());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await??;
+        let name = crate::tunnel_policy::encoded_name(&crate::record::ServiceName::new("ssh")?);
+        let path = left_path.clone();
+        assert!(
+            tokio::task::spawn_blocking(move || control::connect_service(&path, target, name))
+                .await?
+                .is_err()
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let path = right_path.clone();
+        assert!(matches!(
+            tokio::task::spawn_blocking(move || { control::request(&path, ControlRequest::Expose { name, port }) })
+                .await??,
+            Some(ControlReply::ExposureChanged)
+        ));
+        wait_connected(&[&left_path, &right_path]).await?;
+        let path = left_path.clone();
+        let local = tokio::task::spawn_blocking(move || control::connect_service(&path, target, name)).await??;
+        let mut local = tokio::net::UnixStream::from_std(local)?;
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept()).await??;
+        // Exceed a QUIC stream window to exercise backpressure. Reply only
+        // after EOF so a premature full-close loses the response and fails.
+        let payload = vec![0xa5; 96 * 1_024];
+        let expected = payload.clone();
+        let echo = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            (&mut socket).take(128 * 1_024).read_to_end(&mut bytes).await?;
+            assert_eq!(bytes, expected);
+            socket.write_all(&bytes).await?;
+            socket.shutdown().await
+        });
+        local.write_all(&payload).await?;
+        local.shutdown().await?;
+        let mut received = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            (&mut local).take(128 * 1_024).read_to_end(&mut received),
+        )
+        .await??;
+        assert_eq!(received, payload);
+        echo.await??;
+        let mut held = Vec::new();
+        let mut targets = Vec::new();
+        for _ in 0..4 {
+            let path = left_path.clone();
+            let socket = tokio::task::spawn_blocking(move || control::connect_service(&path, target, name)).await??;
+            held.push(tokio::net::UnixStream::from_std(socket)?);
+            targets.push(
+                tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                    .await??
+                    .0,
+            );
+        }
+        let path = left_path.clone();
+        assert!(
+            tokio::task::spawn_blocking(move || control::connect_service(&path, target, name))
+                .await?
+                .is_err()
+        );
+        let path = right_path.clone();
+        assert!(matches!(
+            tokio::task::spawn_blocking(move || { control::request(&path, ControlRequest::Expose { name, port: 0 }) })
+                .await??,
+            Some(ControlReply::ExposureChanged)
+        ));
+        for socket in &mut held {
+            let mut byte = [0];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte)).await??,
+                0
+            );
+        }
+        for socket in &mut targets {
+            let mut byte = [0];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte)).await??,
+                0
+            );
+        }
+        wait_connected(&[&left_path, &right_path]).await?;
+        let path = left_path.clone();
+        assert!(
+            tokio::task::spawn_blocking(move || control::connect_service(&path, target, name))
+                .await?
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+        let path = right_path.clone();
+        assert!(matches!(
+            tokio::task::spawn_blocking(move || control::request(&path, ControlRequest::Expose { name, port }))
+                .await??,
+            Some(ControlReply::ExposureChanged)
+        ));
+        wait_connected(&[&left_path, &right_path]).await?;
+        let path = left_path.clone();
+        let socket = tokio::task::spawn_blocking(move || control::connect_service(&path, target, name)).await??;
+        let mut socket = tokio::net::UnixStream::from_std(socket)?;
+        let (mut served, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept()).await??;
+        let path = left_path.clone();
+        assert!(matches!(
+            tokio::task::spawn_blocking(move || control::request(&path, ControlRequest::Revoke(target))).await??,
+            Some(ControlReply::Revoked { .. })
+        ));
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), socket.read(&mut byte)).await??,
+            0
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), served.read(&mut byte)).await??,
+            0
+        );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    left_task.abort();
+    right_task.abort();
+    outcome
 }
 
 #[tokio::test]

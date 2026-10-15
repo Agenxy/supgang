@@ -14,6 +14,21 @@ pub(super) fn should_attempt_peer(
     !active.contains_key(&peer)
 }
 
+/// Whether a live connection to `peer` runs over a path that is not directly
+/// attached here, so a directly attached path to the same peer would be
+/// better: back on the home LAN, a connection through the gateway's public
+/// forward keeps working by hairpin, and nothing else would replace it.
+pub(super) fn wants_on_link_path(
+    active: &std::collections::BTreeMap<crate::ids::NodeId, super::active::ActiveConnection>,
+    peer: crate::ids::NodeId,
+    networks: &[crate::network::InterfaceNetwork],
+) -> bool {
+    active.get(&peer).is_some_and(|connection| {
+        let remote = connection.remote_address().ip().to_canonical();
+        !networks.iter().any(|network| network.contains(remote))
+    })
+}
+
 /// Keeps the preferred path and the other address family in every mixed batch.
 /// Rotates the remaining hints within the same fixed packet-attempt budget.
 pub(super) fn candidate_batch(addresses: &[std::net::SocketAddr], cycle: usize) -> Vec<std::net::SocketAddr> {

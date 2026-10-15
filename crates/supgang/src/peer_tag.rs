@@ -31,7 +31,11 @@ const TEMPORARY_ATTEMPTS: usize = 8;
 const RESERVED_TAGS: &[&str] = &[
     "advertise",
     "anchor",
+    "connect",
     "doctor",
+    "endpoint",
+    "expose",
+    "forward",
     "config",
     "help",
     "import",
@@ -50,8 +54,10 @@ const RESERVED_TAGS: &[&str] = &[
     "status",
     "supervise",
     "tag",
+    "tunnel-limits",
     "untag",
     "unadvertise",
+    "unexpose",
     "update",
 ];
 

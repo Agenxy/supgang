@@ -15,16 +15,20 @@ use crate::ids::TransportKeyId;
 
 /// Supgang's TLS application protocol identifier.
 pub const ALPN: &[u8] = b"supgang/1";
-/// Maximum accepted bidirectional streams on one peer connection.
-pub const MAX_BIDIRECTIONAL_STREAMS: u32 = 4;
+/// Maximum accepted bidirectional streams on one peer connection: every
+/// tunnel a peer may hold, plus the sync and update streams.
+pub const MAX_BIDIRECTIONAL_STREAMS: u32 = 66;
 /// Maximum accepted one-way control streams on one peer connection.
 pub const MAX_UNIDIRECTIONAL_STREAMS: u32 = 2;
 /// Maximum idle period before transport teardown.
 pub const MAX_IDLE_SECONDS: u64 = 45;
-/// Per-stream receive budget.
-pub const STREAM_RECEIVE_BYTES: u32 = 64 * 1024;
-/// Per-connection receive budget.
-pub const CONNECTION_RECEIVE_BYTES: u32 = 256 * 1024;
+/// Per-stream receive budget. A stream moves at most one window per round
+/// trip, so this is sized for bulk transfer through one tunnel across an ocean:
+/// about 7 MB/s at 150 ms.
+pub const STREAM_RECEIVE_BYTES: u32 = 1024 * 1024;
+/// Per-connection receive budget, shared by every stream to one peer: about
+/// 55 MB/s at 150 ms.
+pub const CONNECTION_RECEIVE_BYTES: u32 = 8 * 1024 * 1024;
 /// Total inbound or outbound unreliable control bytes buffered per connection.
 pub const DATAGRAM_BUFFER_BYTES: usize = 16 * 1024;
 /// Maximum serialized transport certificate size accepted from protected storage.

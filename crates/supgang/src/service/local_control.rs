@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use quinn::{Connection, Endpoint};
+use quinn::Connection;
 
 use super::{
     PeerEvent, ServiceError,
@@ -15,7 +15,6 @@ use super::{
     gossip_page, rendezvous, unix_time,
 };
 use crate::{
-    candidate::CandidateKind,
     cli_peer,
     contact::PeerContact,
     control::{self, ControlListener, ControlReply, ControlRequest, ControlStatus},
@@ -25,6 +24,10 @@ use crate::{
     state::LocalState,
     sync::{MAX_SYNC_CONTACTS, SyncPage},
 };
+
+mod reachability;
+mod tunnel_control;
+use reachability::internet_reachability;
 
 const REVOCATION_INTAKE_INTERVAL: Duration = Duration::from_millis(50);
 const SYNC_MUTATION_INTERVAL: Duration = Duration::from_millis(250);
@@ -218,6 +221,15 @@ pub(super) fn process_peer_events(
                     }
                     if sync_budget.allow(peer, tokio::time::Instant::now()) {
                         directory_changed |= import_received(directory, page.contacts, unix_time()?)?;
+                        // Only the verified current peer record can extend this
+                        // live session, and only for its original transport pin
+                        // and generation. Gossip from an unproved node cannot.
+                        let now = unix_time()?;
+                        if let Some(contact) = directory.usable(&peer, now)
+                            && let Some(connection) = active.get(&peer)
+                        {
+                            connection.renew_verified_record(peer, &contact.endpoint.record, now);
+                        }
                         directory_changed |= import_received_reachability(directory, page.reachability, unix_time()?);
                     }
                 }
@@ -314,42 +326,19 @@ fn close_if_revoked(active: &mut BTreeMap<NodeId, ActiveConnection>, local_state
     true
 }
 
-pub(super) async fn stop_if_requested(receiver: &mut tokio::sync::mpsc::Receiver<()>, endpoint: &Endpoint) -> bool {
-    if receiver.try_recv().is_err() {
-        return false;
-    }
-    endpoint.close(0_u8.into(), b"service shutdown");
-    let _idle = tokio::time::timeout(Duration::from_secs(2), endpoint.wait_idle()).await;
-    true
-}
-
-pub(super) fn shutdown_receiver() -> Result<tokio::sync::mpsc::Receiver<()>, ServiceError> {
-    let mut terminate =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(ServiceError::Signal)?;
-    let (sender, receiver) = tokio::sync::mpsc::channel(2);
-    let interrupt_sender = sender.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            let _sent = interrupt_sender.send(()).await;
-        }
-    });
-    tokio::spawn(async move {
-        if terminate.recv().await.is_some() {
-            let _sent = sender.send(()).await;
-        }
-    });
-    Ok(receiver)
-}
-
 pub(super) struct ControlView<'a> {
     pub instance_id: &'a str,
     pub restart_requested: &'a mut bool,
     pub state_directory: &'a std::path::Path,
     pub update_delivery: &'a mut super::update_delivery::UpdateDeliveryQueue,
     pub listen: SocketAddr,
-    pub local_contact: &'a crate::contact::PeerContact,
+    pub local_contact: &'a mut crate::contact::PeerContact,
+    pub config: &'a mut super::ServiceConfig,
+    pub transport_identity: &'a crate::transport::TransportIdentity,
     pub router_mapping: RouterMappingStatus,
     pub anchor_mode: bool,
+    pub tunnels: &'a super::tunnel::TunnelRuntime,
+    pub tunnel_tasks: &'a mut tokio::task::JoinSet<()>,
 }
 
 pub(super) enum ControlActivity<T> {
@@ -377,15 +366,15 @@ pub(super) async fn poll_control_or_incoming<T>(
     let Ok(accepted) = accepted else {
         return Ok(ControlActivity::Control(false));
     };
-    if let Ok(mut stream) = accepted {
-        let changed = handle_control(&mut stream, local_state, directory, active, view).await?;
+    if let Ok(stream) = accepted {
+        let changed = handle_control(stream, local_state, directory, active, view).await?;
         return Ok(ControlActivity::Control(changed));
     }
     Ok(ControlActivity::Control(false))
 }
 
 async fn handle_control(
-    stream: &mut tokio::net::UnixStream,
+    mut stream: tokio::net::UnixStream,
     local_state: &mut LocalState,
     directory: &mut PeerDirectory,
     active: &mut BTreeMap<NodeId, ActiveConnection>,
@@ -398,11 +387,53 @@ async fn handle_control(
         update_delivery,
         listen,
         local_contact,
+        config,
+        transport_identity,
         router_mapping,
         anchor_mode,
+        tunnels,
+        tunnel_tasks,
     } = view;
-    let request = tokio::time::timeout(Duration::from_secs(2), control::read_request(stream)).await;
+    let request = tokio::time::timeout(Duration::from_secs(2), control::read_request(&mut stream)).await;
+    if let Ok(Ok(ControlRequest::Connect { target, name })) = request {
+        tunnel_control::connect(stream, target, name, local_state, active, tunnels, tunnel_tasks).await;
+        return Ok(false);
+    }
     let (reply, changed) = match request {
+        Ok(Ok(ControlRequest::AddMapped { address })) => {
+            let result = tunnel_control::add_mapped_endpoint(
+                tunnels,
+                state_directory,
+                address.into(),
+                config,
+                local_state,
+                transport_identity,
+                local_contact,
+            );
+            match result {
+                Ok(changed) => (ControlReply::EndpointChanged, changed),
+                Err(tunnel_control::PublicationError::Policy(message)) => (ControlReply::Error { message }, false),
+                Err(tunnel_control::PublicationError::Authority(error)) => return Err(error),
+            }
+        }
+        Ok(Ok(ControlRequest::TunnelLimits {
+            per_peer,
+            total,
+            idle_seconds,
+        })) => match tunnels.save_limits(
+            state_directory,
+            usize::from(per_peer),
+            usize::from(total),
+            u64::from(idle_seconds),
+        ) {
+            Ok(()) => ControlReply::LimitsSaved,
+            Err(message) => ControlReply::Error { message },
+        }
+        .into_unchanged(),
+        Ok(Ok(ControlRequest::Expose { name, port })) => {
+            tunnel_control::expose(tunnels, state_directory, name, port, active).into_unchanged()
+        }
+        Ok(Ok(ControlRequest::Connect { .. })) => unreachable_connect_reply().into_unchanged(),
         Ok(Ok(ControlRequest::Restart)) => {
             restart_reply(instance_id, restart_requested, is_supervised()).into_unchanged()
         }
@@ -518,8 +549,14 @@ async fn handle_control(
         }
         .into_unchanged(),
     };
-    let _write = tokio::time::timeout(Duration::from_secs(2), control::write_reply(stream, &reply)).await;
+    let _write = tokio::time::timeout(Duration::from_secs(2), control::write_reply(&mut stream, &reply)).await;
     Ok(changed)
+}
+
+fn unreachable_connect_reply() -> ControlReply {
+    ControlReply::Error {
+        message: "local tunnel request was not admitted".to_owned(),
+    }
 }
 
 fn is_supervised() -> bool {
@@ -578,50 +615,6 @@ fn queue_update(
             },
             false,
         ),
-    }
-}
-
-fn internet_reachability(
-    local_contact: &crate::contact::PeerContact,
-    router_mapping: RouterMappingStatus,
-    directory: &PeerDirectory,
-    local_node: NodeId,
-    now: u64,
-) -> &'static str {
-    let peer_reported = directory.reachability_claims(now).iter().any(|claim| {
-        claim.subject == local_node && claim.source == crate::reachability::ReachabilitySource::PeerObserved
-    });
-    internet_reachability_from_candidates(&local_contact.endpoint.record.candidates, router_mapping, peer_reported)
-}
-
-fn internet_reachability_from_candidates(
-    candidates: &[crate::candidate::EndpointCandidate],
-    router_mapping: RouterMappingStatus,
-    peer_reported: bool,
-) -> &'static str {
-    if peer_reported {
-        return "peer-reported-address";
-    }
-    if candidates
-        .iter()
-        .any(|candidate| candidate.kind() == CandidateKind::Reflexive)
-    {
-        return "device-claimed-address";
-    }
-    if matches!(router_mapping, RouterMappingStatus::Mapped(_))
-        || candidates
-            .iter()
-            .any(|candidate| candidate.kind() == CandidateKind::Mapped)
-    {
-        return "gateway-reported-address";
-    }
-    if candidates
-        .iter()
-        .any(|candidate| candidate.kind() == CandidateKind::Direct)
-    {
-        "direct-address-unverified"
-    } else {
-        "local-only"
     }
 }
 

@@ -72,7 +72,7 @@ pub(super) fn make_local_contact(
     Ok(PeerContact { membership, endpoint })
 }
 
-fn require_live_membership(state: &LocalState, now: u64) -> Result<(), ServiceError> {
+pub(super) fn require_live_membership(state: &LocalState, now: u64) -> Result<(), ServiceError> {
     let membership = state.local_membership().ok_or(StateError::IdentityMismatch)?;
     if membership.certificate.expires_at <= now {
         return Err(ServiceError::MembershipExpired);

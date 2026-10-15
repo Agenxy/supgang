@@ -7,6 +7,19 @@ use crate::{
 #[test]
 fn unreachable_current_records_do_not_delay_the_only_usable_historical_family() -> Result<(), Box<dyn std::error::Error>>
 {
+    // The interfaces under test are passed explicitly; routes for both
+    // families are simulated so the result never depends on the network the
+    // test machine happens to be on.
+    struct BothFamiliesRouted;
+    impl crate::network::simulated::View for BothFamiliesRouted {
+        fn interfaces(&self) -> Vec<InterfaceNetwork> {
+            Vec::new()
+        }
+        fn route_exists(&self, _remote: std::net::SocketAddr) -> bool {
+            true
+        }
+    }
+    let _routes = crate::network::simulated::install(std::sync::Arc::new(BothFamiliesRouted));
     let temporary = tempfile::tempdir()?;
     let state_path = temporary.path().join("state");
     let mut publisher = state::initialize(&state_path)?;

@@ -45,6 +45,7 @@ struct PeerActorContext {
     events: tokio::sync::mpsc::Sender<PeerEvent>,
     interval: Duration,
     update: Option<PeerUpdateContext>,
+    tunnel_admission: Arc<tokio::sync::Semaphore>,
     authorization: SessionAuthorization,
 }
 
@@ -55,6 +56,7 @@ pub(super) struct PeerUpdateContext {
     pub(super) hive_id: HiveId,
     pub(super) local_node: NodeId,
     pub(super) admission: Arc<tokio::sync::Semaphore>,
+    pub(super) tunnels: Option<super::tunnel::TunnelRuntime>,
 }
 
 impl PeerUpdateContext {
@@ -65,6 +67,7 @@ impl PeerUpdateContext {
             hive_id: identity.hive_id,
             local_node: identity.device.node_id(),
             admission: Arc::new(tokio::sync::Semaphore::new(1)),
+            tunnels: None,
         }
     }
 }
@@ -96,9 +99,16 @@ pub(super) fn register_connection(
         connection.close(2_u8.into(), b"duplicate or neighbor limit");
         return;
     }
+    let limit = registry
+        .update
+        .as_ref()
+        .and_then(|update| update.tunnels.as_ref())
+        .map_or(4, |runtime| runtime.policy.borrow().per_peer);
+    let tunnel_admission = Arc::new(tokio::sync::Semaphore::new(limit));
     registry.active.insert(
         peer,
-        ActiveConnection::new(connection.clone(), authorization.clone(), capabilities),
+        ActiveConnection::new(connection.clone(), authorization.clone(), capabilities)
+            .with_tunnel_admission(tunnel_admission.clone()),
     );
     if preferred {
         registry.noncanonical_outbound.remove(&peer);
@@ -114,6 +124,7 @@ pub(super) fn register_connection(
         interval: registry.interval,
         update: registry.update.clone(),
         authorization,
+        tunnel_admission,
     }));
 }
 
@@ -182,9 +193,12 @@ async fn peer_actor(context: PeerActorContext) {
         interval,
         update,
         authorization,
+        tunnel_admission,
     } = context;
     let connection_id = connection.stable_id();
+    let mut tunnels = tokio::task::JoinSet::new();
     loop {
+        while tunnels.try_join_next().is_some() {}
         tokio::select! {
             () = tokio::time::sleep(interval), if initiator => {
                 let page = pages.borrow().clone();
@@ -222,6 +236,15 @@ async fn peer_actor(context: PeerActorContext) {
                         }
                     }
                     StreamKind::Sync => break,
+                    StreamKind::Service => {
+                        let Some(runtime) = update.as_ref().and_then(|context| context.tunnels.clone()) else {
+                            continue;
+                        };
+                        if tunnels.len() >= runtime.policy.borrow().per_peer { continue; }
+                        tunnels.spawn(super::tunnel::incoming(
+                            send, receive, runtime, authorization.clone(), tunnel_admission.clone(),
+                        ));
+                    }
                     StreamKind::Update => {
                         let Some(update) = update.as_ref() else {
                             break;
@@ -543,6 +566,7 @@ mod tests {
                 interval: Duration::from_secs(30),
                 update: None,
                 authorization: authorization()?,
+                tunnel_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
             }));
 
             let (mut malformed, _receive) = client_connection.open_bi().await?;

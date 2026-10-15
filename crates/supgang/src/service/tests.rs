@@ -8,7 +8,10 @@ use super::{
 };
 use crate::{candidate::CandidateKind, ids::NodeId};
 
+mod forward;
 mod production;
+mod scenarios;
+mod sim_harness;
 
 const _: () = {
     assert!(MAX_PENDING_INBOUND_SESSIONS > 0);
@@ -71,6 +74,45 @@ fn explicit_router_mappings_preserve_provenance_and_fail_closed() -> Result<(), 
         ServiceConfig::new(name(), listen, &[local], &[])?
             .with_mapped_addresses(&[SocketAddr::from(([192, 168, 1, 1], 4_433))])
             .is_err()
+    );
+    Ok(())
+}
+
+/// A home computer with a full set of discovered addresses (two private IPv4,
+/// a private IPv6 bridge and five public IPv6, as macOS accumulates temporary
+/// addresses) must still start with its owner-published forward.
+#[test]
+fn a_router_forward_always_fits_beside_a_full_set_of_discovered_addresses() -> Result<(), Box<dyn std::error::Error>> {
+    let listen = SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 44_330));
+    let local = [
+        SocketAddr::from(([192, 168, 1, 191], 44_330)),
+        SocketAddr::from(([192, 168, 64, 1], 44_330)),
+        "[fd7c::1]:44330".parse()?,
+    ];
+    let direct = (1..=5)
+        .map(|index| format!("[2600:1700:1:2::{index}]:44330").parse())
+        .collect::<Result<Vec<SocketAddr>, _>>()?;
+    let mapped = SocketAddr::from(([104, 59, 124, 24], 44_330));
+    let config = ServiceConfig::new(name(), listen, &local, &direct)?.with_mapped_addresses(&[mapped])?;
+    assert_eq!(config.candidates.len(), crate::candidate::MAX_CANDIDATES);
+    assert!(
+        config
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind() == CandidateKind::Mapped && candidate.address() == mapped)
+    );
+    // Both families stay represented among what was kept.
+    assert!(
+        config
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind() == CandidateKind::Local)
+    );
+    assert!(
+        config
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind() == CandidateKind::Direct)
     );
     Ok(())
 }

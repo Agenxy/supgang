@@ -23,6 +23,34 @@ guarantee.
 
 ## What works now
 
+The service tunnel in this working tree passed [installed physical LAN acceptance](docs/validation/2026-10-06-service-tunnel-lan-acceptance.md).
+Separate-network acceptance passed on 2026-10-13. It is opt-in:
+on the destination, `supgang expose ssh 22` grants authenticated hive members access only to
+that named IPv4 loopback service. `supgang connect solis ssh` carries application bytes on stdin and
+stdout through the existing authenticated QUIC connection. SSH still checks its own host key and
+user credentials. `supgang unexpose ssh` removes the grant and closes existing peer sessions before
+acknowledging the change. No public TCP SSH port or arbitrary destination proxy is added.
+
+For clients that need a TCP port rather than stdin and stdout, such as a browser,
+`supgang forward 14331 solis preview` listens on 127.0.0.1:14331 on this computer and carries each
+connection through its own stream to the peer's `preview` service. It listens only on loopback,
+admits at most 32 connections at once, closes a connection whose stream the peer refuses, and runs
+until Ctrl-C.
+
+Defaults are four concurrent tunnels per peer, sixteen total, and a two-hour idle timeout; the
+per-peer ceiling is 64, for tools that keep many SSH connections open at once.
+While the service is stopped, `supgang tunnel-limits --per-peer 4 --total 16 --idle-seconds 7200`
+sets bounded owner policy. Active transfers have no fixed lifetime cutoff; verified fresh endpoint
+records may renew the same device, transport key and generation before existing authority expires.
+Revocation and membership expiry still end that authority. A changed transport key or generation
+cannot renew the session and requires a new handshake.
+
+For an owner-configured IPv4 UDP forward, write its public socket to an owner-only file and run
+`supgang endpoint add-mapped --from-file /private/path/endpoint`. The running service signs and
+gossips this declaration. `supgang doctor --peer solis` reports signed public endpoint presence and
+expiry without claiming WAN reachability. See the [service tunnel design](docs/architecture/0003-opt-in-service-tunnels.md)
+for limits, router prerequisites and acceptance still required.
+
 - One self-certifying hive root and stable Ed25519 identity per computer.
 - Recipient-generated, proof-of-possession join requests. A private device key never leaves the
   computer that created it.

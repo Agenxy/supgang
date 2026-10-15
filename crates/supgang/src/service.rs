@@ -14,7 +14,7 @@ use quinn::Endpoint;
 use thiserror::Error;
 
 use crate::{
-    candidate::{CandidateKind, CandidateTransport, EndpointCandidate, MAX_CANDIDATES},
+    candidate::{EndpointCandidate, MAX_CANDIDATES},
     control::{self, ControlListener},
     ids::NodeId,
     peer_directory::{PeerDirectory, PeerDirectoryError},
@@ -37,10 +37,12 @@ mod events;
 mod gateway_reachability;
 mod interface_refresh;
 mod live_session;
+pub(crate) mod liveness;
 mod local_control;
 mod peer_actor;
 mod rendezvous;
 mod retry_schedule;
+mod tunnel;
 mod update_delivery;
 
 use active::ActiveConnection;
@@ -48,7 +50,7 @@ pub(crate) use active::SessionAuthorization;
 use admission::InboundAdmission;
 use connection::{AuthenticatedExchange, SessionAuthentication, dial_observed_peer, dial_peer, inbound_session};
 use contact_state::{gossip_page, make_local_contact};
-use events::PeerEvent;
+use events::{PeerEvent, shutdown_receiver, stop_if_requested};
 use gateway_reachability::replace_gateway_reachability;
 use interface_refresh::{
     InterfaceRefreshHealth, RouterMappingUpdateBudget, bounded_automatic_interfaces, interface_addresses,
@@ -60,7 +62,6 @@ use live_session::{
 use local_control::{
     ControlActivity, ControlView, PeerEventState, import_received, import_received_reachability,
     merge_received_revocations, poll_control_or_incoming, process_peer_events, publish_gossip_if, revocation_listener,
-    shutdown_receiver, stop_if_requested,
 };
 use peer_actor::{PeerActorRegistry, PeerUpdateContext, reap_ready_tasks, register_connection};
 use retry_schedule::{aligned_retry_delay, next_service_wait, retry_epoch, should_attempt_peer};
@@ -122,112 +123,6 @@ pub struct ServiceConfig {
     pub automatic_router_mapping: bool,
     /// Maximum authenticated neighbors retained by this process.
     pub max_active_peers: usize,
-}
-
-impl ServiceConfig {
-    /// Creates a strict service configuration from explicit local and direct addresses.
-    /// # Errors
-    ///
-    /// Rejects port zero, absent or excessive advertisements, invalid address
-    /// scope, retry below one second, and record lifetime outside one hour to
-    /// seven days.
-    pub fn new(
-        display_name: PeerName,
-        listen: SocketAddr,
-        local_addresses: &[SocketAddr],
-        direct_addresses: &[SocketAddr],
-    ) -> Result<Self, ServiceError> {
-        if listen.port() == 0 {
-            return Err(ServiceError::InvalidConfiguration);
-        }
-        let count = local_addresses.len().saturating_add(direct_addresses.len());
-        if count == 0 || count > MAX_CANDIDATES {
-            return Err(ServiceError::InvalidConfiguration);
-        }
-        let mut candidates = Vec::with_capacity(count);
-        for address in local_addresses {
-            candidates.push(
-                EndpointCandidate::new(CandidateKind::Local, CandidateTransport::QuicV1, *address)
-                    .map_err(|_| ServiceError::InvalidConfiguration)?,
-            );
-        }
-        for address in direct_addresses {
-            candidates.push(
-                EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, *address)
-                    .map_err(|_| ServiceError::InvalidConfiguration)?,
-            );
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-        Ok(Self {
-            display_name,
-            listen,
-            candidates,
-            services: Vec::new(),
-            retry_interval: Duration::from_secs(DEFAULT_RETRY_SECONDS),
-            record_lifetime: Duration::from_secs(DEFAULT_RECORD_LIFETIME_SECONDS),
-            address_history: DEFAULT_ADDRESS_HISTORY,
-            automatic_interface_refresh: false,
-            automatic_router_mapping: false,
-            max_active_peers: MAX_ACTIVE_PEERS,
-        })
-    }
-
-    /// Replaces retry and record lifetimes after enforcing release bounds.
-    ///
-    /// # Errors
-    ///
-    /// Rejects retry below one second and record lifetimes outside one hour to
-    /// seven days.
-    pub fn with_intervals(mut self, retry: Duration, record_lifetime: Duration) -> Result<Self, ServiceError> {
-        if retry < Duration::from_secs(1)
-            || !(Duration::from_hours(1)..=Duration::from_hours(168)).contains(&record_lifetime)
-        {
-            return Err(ServiceError::InvalidConfiguration);
-        }
-        self.retry_interval = retry;
-        self.record_lifetime = record_lifetime;
-        Ok(self)
-    }
-
-    /// Replaces the per-peer historical-address retry budget.
-    ///
-    /// # Errors
-    ///
-    /// Rejects values outside the fixed memory and retry bounds.
-    pub fn with_address_history(mut self, address_history: usize) -> Result<Self, ServiceError> {
-        if !(MIN_ADDRESS_HISTORY..=MAX_ADDRESS_HISTORY).contains(&address_history) {
-            return Err(ServiceError::InvalidConfiguration);
-        }
-        self.address_history = address_history;
-        Ok(self)
-    }
-
-    /// Enables side-effect-free interface re-enumeration for automatic mode.
-    #[must_use]
-    pub fn with_automatic_interface_refresh(mut self, enabled: bool) -> Self {
-        self.automatic_interface_refresh = enabled;
-        if enabled {
-            let local = interface_addresses(&self.candidates, CandidateKind::Local);
-            let direct = interface_addresses(&self.candidates, CandidateKind::Direct);
-            self.candidates = bounded_automatic_interfaces(&local, &direct, &self.candidates);
-        }
-        self
-    }
-
-    /// Enables renewable local-gateway UDP mapping.
-    #[must_use]
-    pub const fn with_automatic_router_mapping(mut self, enabled: bool) -> Self {
-        self.automatic_router_mapping = enabled;
-        self
-    }
-
-    /// Enables the larger, still fixed neighbor budget for a user-owned anchor.
-    #[must_use]
-    pub const fn with_anchor_mode(mut self, enabled: bool) -> Self {
-        self.max_active_peers = if enabled { MAX_ANCHOR_PEERS } else { MAX_ACTIVE_PEERS };
-        self
-    }
 }
 
 /// A fatal service initialization or authoritative-state failure.
@@ -299,6 +194,9 @@ pub fn run_with_ready(
 ) -> Result<(), ServiceError> {
     validate_config(&config)?;
     let mut local_state = state::open(state_directory.as_ref())?;
+    let policy =
+        crate::tunnel_policy::load(state_directory.as_ref()).map_err(|_| ServiceError::InvalidConfiguration)?;
+    config.clone().with_mapped_addresses(&policy.mapped)?;
     if local_state
         .revocations()
         .contains(&local_state.identity().device.node_id())
@@ -359,6 +257,11 @@ async fn service_loop(
     directory: &mut PeerDirectory,
     mut config: ServiceConfig,
 ) -> Result<(), ServiceError> {
+    let initial_tunnel_policy =
+        crate::tunnel_policy::load(state_directory).map_err(|_| ServiceError::InvalidConfiguration)?;
+    if !initial_tunnel_policy.mapped.is_empty() {
+        config = config.with_mapped_addresses(&initial_tunnel_policy.mapped)?;
+    }
     let mut local_contact = make_local_contact(local_state, &transport_identity, &config)?;
     if local_state
         .revocations()
@@ -407,7 +310,10 @@ async fn service_loop(
     let mut router_mapping_budget = RouterMappingUpdateBudget::new(tokio::time::Instant::now());
     let mut interface_refresh_health = InterfaceRefreshHealth::new();
     let anchor_mode = config.max_active_peers > MAX_ACTIVE_PEERS;
-    let update_context = PeerUpdateContext::new(state_directory, local_state.identity());
+    let mut update_context = PeerUpdateContext::new(state_directory, local_state.identity());
+    let tunnels = tunnel::TunnelRuntime::new(state_directory).map_err(|_| ServiceError::InvalidConfiguration)?;
+    update_context.tunnels = Some(tunnels.clone());
+    let mut tunnel_tasks = tokio::task::JoinSet::new();
     let mut update_delivery = UpdateDeliveryQueue::open(state_directory, unix_time()?)?;
     loop {
         if restart_requested || stop_if_requested(&mut shutdown, &endpoint).await {
@@ -477,6 +383,7 @@ async fn service_loop(
             },
         )?;
         reap_ready_tasks(&mut actor_tasks)?;
+        reap_ready_tasks(&mut tunnel_tasks)?;
         let mut unused_outbound_slot = false;
         finish_ready_sessions(
             &mut priority_inbound_tasks,
@@ -624,11 +531,15 @@ async fn service_loop(
                 state_directory: &update_context.state_directory,
                 update_delivery: &mut update_delivery,
                 listen: config.listen,
-                local_contact: &local_contact,
+                local_contact: &mut local_contact,
                 router_mapping: router_mapping
                     .as_ref()
                     .map_or(RouterMappingStatus::Disabled, RouterMapping::status),
                 anchor_mode,
+                tunnels: &tunnels,
+                tunnel_tasks: &mut tunnel_tasks,
+                config: &mut config,
+                transport_identity: &transport_identity,
             },
         )
         .await?;

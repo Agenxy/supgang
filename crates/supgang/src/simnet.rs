@@ -15,6 +15,7 @@ mod nat;
 mod socket;
 #[cfg(test)]
 mod tests;
+mod view;
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -30,6 +31,7 @@ use rand_chacha::{ChaCha8Rng, rand_core::SeedableRng as _};
 pub use nat::{Behavior, Firewall6, Nat44, PortAssignment};
 
 pub use socket::SimSocket;
+pub use view::HostView;
 
 /// Most sites, hosts and sockets a scenario may create.
 const MAX_SITES: usize = 32;

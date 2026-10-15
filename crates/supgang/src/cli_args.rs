@@ -33,13 +33,71 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+/// Owner-managed public UDP endpoint publication.
+#[derive(Debug, Subcommand)]
+pub enum EndpointCommand {
+    /// Sign and gossip a public IPv4 UDP forward without changing the router.
+    AddMapped {
+        /// Owner-only UTF-8 file containing one public IPv4:UDP-port socket.
+        #[arg(long, value_name = "PATH")]
+        from_file: PathBuf,
+    },
+}
+
 /// Stable local and sovereign peer command surface.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
+    Connect {
+        /// Unique signed peer name, local tag, fingerprint or node identity.
+        peer: String,
+        /// Target-owner service name; the caller cannot select an address or port.
+        service: String,
+    },
+    /// Listen on a loopback TCP port here and carry each connection to a peer's named service.
+    Forward {
+        /// Port or loopback socket to listen on, e.g. 14331 or 127.0.0.1:14331; never a public address.
+        listen: String,
+        /// Unique signed peer name, local tag, fingerprint or node identity.
+        peer: String,
+        /// Target-owner service name exposed on that peer.
+        service: String,
+    },
+    /// Expose a named IPv4 loopback TCP port to authenticated hive members.
+    Expose {
+        /// Restricted service name, 1 through 16 ASCII bytes.
+        name: String,
+        /// Nonzero TCP port on 127.0.0.1; SSH uses 22.
+        #[arg(value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
+    },
+    /// Remove a service exposure and end existing sessions under that policy.
+    Unexpose { name: String },
+    /// Set bounded tunnel admission and idle limits.
+    TunnelLimits {
+        /// Concurrent streams per peer, 1 through 64; default 4.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+        per_peer: u16,
+        /// Concurrent streams in this runtime, 1 through 128; default 16.
+        #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u16).range(1..=128))]
+        total: u16,
+        /// No-byte idle deadline, 60 through 86400 seconds; default two hours.
+        #[arg(long, default_value_t = 7_200, value_parser = clap::value_parser!(u64).range(60..=86_400))]
+        idle_seconds: u64,
+    },
     /// Create a new private hive and this computer's identity.
     Init,
     /// Validate local security, identity, and durable state.
-    Doctor,
+    Doctor {
+        /// Check a peer's public endpoint availability and signed record expiry.
+        #[arg(long)]
+        peer: Option<String>,
+    },
+    /// Publish an owner-managed public IPv4 UDP endpoint from a private file.
+    Endpoint {
+        #[command(subcommand)]
+        command: EndpointCommand,
+    },
     /// Show or change owner-only local settings.
     Config {
         #[command(subcommand)]

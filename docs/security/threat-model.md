@@ -15,6 +15,24 @@ witnesses are outside this model because they are not implemented.
 
 ## Security objectives
 
+### Opt-in service tunnel addition under acceptance
+
+The working tree adds a named byte tunnel over a mutually authenticated QUIC session. The owner
+must explicitly expose each service; the remote caller supplies only its bounded name, and the
+destination connects only to that name's configured IPv4 loopback port. It never resolves a remote
+hostname or accepts a caller-supplied destination. SSH host-key and user authentication remain
+end to end. This grants every authorized hive member access to the exposed application, so the
+application must retain its own authorization.
+
+Fixed stream headers, five-second setup deadlines, nonqueued per-peer and global admission, bounded
+copy buffers, transport receive windows and configurable idle deadlines bound resource use. Removing
+an exposure closes existing authenticated sessions before the owner receives acknowledgement.
+Revocation and expiry cancel both loopback and QUIC I/O. Verified contact refresh can extend only a
+still-current session bound to the same device, transport key and generation; it cannot revive
+expired or revoked authority. Persistent policy is owner-only, size bounded and atomically replaced.
+Installed physical LAN acceptance passed on 6 October 2026; separate-network acceptance remains
+pending. See the [LAN acceptance record](../validation/2026-10-06-service-tunnel-lan-acceptance.md).
+
 Supgang M1 aims to preserve:
 
 - authenticity of hive membership, device identity, endpoint records, and revocation;

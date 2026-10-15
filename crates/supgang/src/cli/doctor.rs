@@ -1,5 +1,39 @@
 //! Plain-language reachability diagnosis for `supgang doctor`.
 
+pub(super) fn peer_endpoint_check(directory: &std::path::Path, selector: &str) -> super::DoctorCheck {
+    let result = (|| {
+        let target = crate::cli_control::resolve_peer_node(directory, selector)?;
+        let value = match crate::control::request(directory, crate::control::ControlRequest::Resolve(target))
+            .map_err(|_| "peer endpoint check could not reach the local service".to_owned())?
+        {
+            Some(crate::control::ControlReply::Resolve { value }) => value,
+            Some(crate::control::ControlReply::Error { message }) => return Err(message),
+            Some(_) => return Err("local peer endpoint reply is incompatible".to_owned()),
+            None => crate::cli_peer::resolve(directory, &target.to_string())?,
+        };
+        let public = value
+            .candidates
+            .iter()
+            .any(|candidate| candidate.scope == "public" && candidate.provenance == "device-signed");
+        Ok((public, value.expires_at))
+    })();
+    match result {
+        Ok((public, expires_at)) => super::DoctorCheck {
+            id: "peer-public-endpoint",
+            status: if public { "ok" } else { "error" },
+            detail: format!(
+                "peer signed record has {}public endpoint and expires at Unix time {expires_at}; this is no proof of WAN reachability",
+                if public { "a " } else { "no " }
+            ),
+        },
+        Err(detail) => super::DoctorCheck {
+            id: "peer-public-endpoint",
+            status: "error",
+            detail,
+        },
+    }
+}
+
 use super::DoctorCheck;
 use crate::device_key::custody::{self, Availability, CustodyCapability, CustodyKind};
 
@@ -58,6 +92,11 @@ pub(super) fn reachability_check(live: Option<&(String, String, usize)>) -> Doct
         };
     };
     let mut check = match reachability.as_str() {
+        "owner-mapped-address-unverified" => DoctorCheck {
+            id: "internet-reachability",
+            status: "warning",
+            detail: "the owner declared a UDP forward, but Supgang has not proved its return path".to_owned(),
+        },
         "gateway-reported-address" => DoctorCheck {
             id: "internet-reachability",
             status: "warning",
@@ -96,6 +135,162 @@ pub(super) fn reachability_check(live: Option<&(String, String, usize)>) -> Doct
         check.detail = format!("{} computer(s) connected now. {}", active_peers, check.detail);
     }
     check
+}
+
+use super::{DoctorOutput, EXIT_FAILURE, VERSION, control, render_json, state, storage};
+use std::{io::Write, path::PathBuf, process::ExitCode};
+pub(super) fn run(
+    state_directory: &PathBuf,
+    peer: Option<&str>,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> ExitCode {
+    let mut checks = vec![DoctorCheck {
+        id: "public-dependencies",
+        status: "ok",
+        detail: "strict mode has no hosted discovery, account, telemetry, DNS publisher, or vendor relay".to_owned(),
+    }];
+    let identity_result = storage::load_identity(state_directory);
+    checks.push(match &identity_result {
+        Ok(_) => DoctorCheck {
+            id: "identity",
+            status: "ok",
+            detail: "protected identity is owner-only and its checksum is valid".to_owned(),
+        },
+        Err(storage_error) => DoctorCheck {
+            id: "identity",
+            status: "error",
+            detail: storage_error.to_string(),
+        },
+    });
+    let status_response = control::request(state_directory, control::ControlRequest::Status);
+    let live_reachability = match &status_response {
+        Ok(Some(control::ControlReply::Status { value })) => Some((
+            value.router_mapping.clone(),
+            value.internet_reachability.clone(),
+            value.active_peers,
+        )),
+        _ => None,
+    };
+    let (state_ok, state_check) = match status_response {
+        Ok(Some(control::ControlReply::Status { value })) => (
+            true,
+            DoctorCheck {
+                id: "authoritative-state",
+                status: "ok",
+                detail: format!(
+                    "running owner service holds {} verified event(s) for {} authorized member(s)",
+                    value.event_count, value.member_count
+                ),
+            },
+        ),
+        Ok(Some(control::ControlReply::Error { message })) => (
+            false,
+            DoctorCheck {
+                id: "authoritative-state",
+                status: "error",
+                detail: message,
+            },
+        ),
+        Ok(Some(_)) => (
+            false,
+            DoctorCheck {
+                id: "authoritative-state",
+                status: "error",
+                detail: "local service returned an unexpected response".to_owned(),
+            },
+        ),
+        Ok(None) => match state::open_read_only(state_directory) {
+            Ok(state) if state.revocations().contains(&state.identity().device.node_id()) => (
+                false,
+                DoctorCheck {
+                    id: "authoritative-state",
+                    status: "error",
+                    detail: "local device identity is root-revoked; service startup is denied".to_owned(),
+                },
+            ),
+            Ok(state) => (
+                true,
+                DoctorCheck {
+                    id: "authoritative-state",
+                    status: "ok",
+                    detail: format!(
+                        "root authorization and {} committed event(s) replayed with consecutive counters",
+                        state.event_count()
+                    ),
+                },
+            ),
+            Err(state_error) => (
+                false,
+                DoctorCheck {
+                    id: "authoritative-state",
+                    status: "error",
+                    detail: state_error.to_string(),
+                },
+            ),
+        },
+        Err(control_error) => (
+            false,
+            DoctorCheck {
+                id: "authoritative-state",
+                status: "error",
+                detail: control_error.to_string(),
+            },
+        ),
+    };
+    checks.push(state_check);
+    checks.push(reachability_check(live_reachability.as_ref()));
+    if let Some(peer) = peer {
+        checks.push(peer_endpoint_check(state_directory, peer));
+    }
+    checks.push(DoctorCheck {
+        id: "key-provider",
+        status: "warning",
+        detail: if identity_result.is_ok() {
+            "the live Ed25519 identity uses an owner-only file; optional P-256 providers do not migrate it"
+        } else {
+            "the live identity could not be loaded; its custody is unknown"
+        }
+        .to_owned(),
+    });
+    let failed = identity_result.is_err() || !state_ok || checks.iter().any(|check| check.status == "error");
+    let result = DoctorOutput {
+        schema: "supgang.doctor/v1",
+        status: if failed { "error" } else { "warning" },
+        version: VERSION,
+        strict_mode: true,
+        public_dependencies: 0,
+        checks,
+        custody: CustodyOutput::current(identity_result.is_ok()),
+    };
+    let rendered = if json {
+        render_json(&result, output, error)
+    } else {
+        render_doctor_human(&result, output)
+    };
+    if rendered != ExitCode::SUCCESS {
+        rendered
+    } else if failed {
+        ExitCode::from(EXIT_FAILURE)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn render_doctor_human(result: &DoctorOutput, output: &mut dyn Write) -> ExitCode {
+    if writeln!(output, "Supgang doctor: {}", result.status).is_err() {
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    for check in &result.checks {
+        if writeln!(output, "[{}] {}: {}", check.status, check.id, check.detail).is_err() {
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    }
+    if render_custody(&result.custody, output).is_err() {
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]

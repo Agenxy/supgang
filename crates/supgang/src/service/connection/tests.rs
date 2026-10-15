@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod filter;
+mod liveness_cases;
 mod nat_cases;
 mod nat_lab;
 use filter::FilteredSocket;

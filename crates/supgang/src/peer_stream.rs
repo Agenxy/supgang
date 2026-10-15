@@ -10,6 +10,7 @@ const HEADER_BYTES: usize = 3;
 pub enum StreamKind {
     Sync = 1,
     Update = 2,
+    Service = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -31,13 +32,14 @@ pub async fn open(connection: &Connection, kind: StreamKind) -> Result<(SendStre
 pub async fn accept(connection: &Connection) -> Result<(StreamKind, SendStream, RecvStream), StreamError> {
     let (send, mut receive) = connection.accept_bi().await.map_err(|_| StreamError::Transport)?;
     let mut bytes = [0_u8; HEADER_BYTES];
-    receive
-        .read_exact(&mut bytes)
+    tokio::time::timeout(std::time::Duration::from_secs(5), receive.read_exact(&mut bytes))
         .await
+        .map_err(|_| StreamError::Transport)?
         .map_err(|_| StreamError::Transport)?;
     let kind = match bytes {
         [0, 1, 1] => StreamKind::Sync,
         [0, 1, 2] => StreamKind::Update,
+        [0, 1, 3] => StreamKind::Service,
         _ => return Err(StreamError::Invalid),
     };
     Ok((kind, send, receive))

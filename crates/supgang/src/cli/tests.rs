@@ -1,4 +1,4 @@
-use super::{reachability_check, run};
+use super::{doctor::reachability_check, run};
 
 #[test]
 fn every_command_name_is_reserved_against_new_tags() {

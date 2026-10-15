@@ -1,6 +1,8 @@
 # ADR 0001: Sovereign address plane
 
-Status: corrective wide-area work in progress; physical WAN acceptance has not passed
+Status: physical WAN acceptance passed on 2026-10-13 over IPv4 through an owner UDP forward
+([record](../validation/2026-10-13-service-tunnel-wan-acceptance.md)); inbound IPv6 through a default-deny
+home gateway, renumbering while away, and an independent rendezvous remain open
 
 Date: 2026-08-16
 

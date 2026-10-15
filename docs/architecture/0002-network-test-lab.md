@@ -1,6 +1,6 @@
 # Network test lab: K7 orchestration, real peers, measured networks
 
-Status: proposed, implementation and acceptance pending. Reviewed 2026-09-18.
+Status: layer 1 (in-process simulation) implemented 2026-10-12; the kernel and macOS lanes remain proposed. Reviewed 2026-09-18.
 
 ## Purpose
 
@@ -12,6 +12,44 @@ first-class test target. No lab component becomes a Supgang runtime dependency.
 The smallest product topology has exactly two Supgang processes. Virtual routers,
 test controllers, and guest-management channels are test equipment, not additional
 Supgang members, introducers, address brokers, or relays.
+
+## Layers
+
+| Layer | Runs | Proves | Status |
+| --- | --- | --- | --- |
+| 1. In-process simulation | `cargo test`, every platform, in the gate | The production service's decisions against modeled gateways | Implemented |
+| 2. Linux kernel lab | Namespaces, nftables, netem in a Linux guest | The same against real kernel NAT, conntrack and impairment | Planned below |
+| 3. macOS guests | K7 packet attachment | Native macOS stack behaviour | Planned below |
+| 4. Physical acceptance | Owner hardware and real networks | A specific gateway, ISP and carrier | Required per milestone |
+
+Each layer narrows a different gap; none substitutes for the one below it. In particular, a
+simulated gateway is a declared model. Whether the owner's real gateway behaves like a given model
+is a separate measured fact, and physical acceptance remains the only evidence for it.
+
+### Layer 1: deterministic in-process simulation
+
+`crates/supgang/src/simnet` is a test-only network. Sites have an IPv4 side that is public or
+translated by a gateway with RFC 4787's independent mapping and filtering axes
+(endpoint-independent, address-dependent, address-and-port-dependent), port preservation,
+sequential or seeded-random allocation, idle timeouts, hairpinning and static two-way forwards,
+and an IPv6 side that is open or an RFC 6092 stateful firewall with pinholes. Hosts roam between
+sites or go offline; gateways renumber; seeded loss applies at uplinks. Every discarded datagram is
+counted by reason, so a scenario asserts which gateway refused a path. Calibration tests in
+`simnet/tests.rs` pin each modeled behaviour with raw datagrams before any QUIC runs over it.
+
+`service/tests/sim_harness.rs` runs the production `service_loop` for each simulated computer on
+its own thread and runtime, with its own state directory, control socket, and a simulated socket
+through quinn's `AsyncUdpSocket`. A test-only thread-local view answers that computer's interface
+and route questions (`network::simulated`); production builds do not contain it. Identity,
+admission, scheduling, gossip, record signing and tunnels are the real code. Scenarios in
+`service/tests/scenarios.rs` pair two computers at home, move the laptop to a hotel or a phone
+hotspot, and assert either the expected authenticated path with tunnel bytes intact, or honest
+unreachability with the refusing gateway identified.
+
+Known limits: scenarios run in real time with one-second retry rounds, so behaviour that depends
+on hours of wall-clock time (record expiry after sleep) is not yet covered; the model has no
+NAT64/464XLAT, captive portals, port-restricted egress, latency or MTU; and routes are by family,
+not by prefix. These are model extensions, not reasons to trust a scenario beyond its model.
 
 ## Reuse decision
 

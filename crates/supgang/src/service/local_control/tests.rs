@@ -29,7 +29,7 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
     let path = temporary.path().join("state");
     let mut local_state = state::initialize(&path)?;
     let device = DeviceIdentity::generate()?;
-    let contact = signed_contact(&mut local_state, &device, 44_330)?;
+    let mut contact = signed_contact(&mut local_state, &device, 44_330)?;
     let mut directory = PeerDirectory::open(
         &path,
         local_state.identity().root_verifying_key,
@@ -45,6 +45,15 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
     let mut active = BTreeMap::new();
     let mut restart = false;
     let mut updates = UpdateDeliveryQueue::open(&path, 50)?;
+    let tunnels = super::super::tunnel::TunnelRuntime::new(&path)?;
+    let mut tunnel_tasks = tokio::task::JoinSet::new();
+    let transport_identity = crate::transport::TransportIdentity::generate()?;
+    let mut config = super::super::ServiceConfig::new(
+        crate::profile::PeerName::new("Test")?,
+        "127.0.0.1:44330".parse()?,
+        &["127.0.0.1:44330".parse()?],
+        &[],
+    )?;
     {
         let dispatch = super::poll_control_or_incoming(
             &listener,
@@ -59,9 +68,13 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
                 state_directory: &path,
                 update_delivery: &mut updates,
                 listen: SocketAddr::from(([127, 0, 0, 1], 44_330)),
-                local_contact: &contact,
+                local_contact: &mut contact,
                 router_mapping: RouterMappingStatus::Disabled,
                 anchor_mode: false,
+                tunnels: &tunnels,
+                tunnel_tasks: &mut tunnel_tasks,
+                config: &mut config,
+                transport_identity: &transport_identity,
             },
         );
         tokio::pin!(dispatch);
@@ -145,7 +158,7 @@ fn owner_revocation_requests_gossip_only_when_state_changes() -> Result<(), Box<
     Ok(())
 }
 
-use super::{import_received, internet_reachability_from_candidates, queue_update};
+use super::{import_received, queue_update, reachability::internet_reachability_from_candidates};
 use crate::{
     candidate::{CandidateKind, CandidateTransport, EndpointCandidate},
     contact::PeerContact,
@@ -205,6 +218,15 @@ fn unverified_address_sources_are_never_reported_as_confirmed() -> Result<(), Bo
         SocketAddr::from(([8, 8, 8, 8], 44_330)),
     )?;
     let mapping = RouterMappingStatus::Mapped(SocketAddrV4::new(Ipv4Addr::new(9, 9, 9, 9), 44_330));
+    let owner_mapped = EndpointCandidate::new(
+        CandidateKind::Mapped,
+        CandidateTransport::QuicV1,
+        SocketAddr::from(([9, 9, 9, 9], 44_330)),
+    )?;
+    assert_eq!(
+        internet_reachability_from_candidates(&[owner_mapped], RouterMappingStatus::Disabled, false),
+        "owner-mapped-address-unverified"
+    );
     assert_eq!(
         internet_reachability_from_candidates(&[reflexive], mapping, false),
         "device-claimed-address"
