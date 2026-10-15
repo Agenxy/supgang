@@ -75,3 +75,27 @@ explicitly rather than inherit the lightweight probe's budget.
 
 No current probe result establishes outside-home connectivity, NAT behavior,
 network-change recovery, or macOS guest acceptance.
+
+## Bring-up results, 2026-10-13
+
+Run by the K7 team through K7's public CLI on this Mac's current-main `k7d`, `apple_container`
+provider, guest kernel 6.12.28:
+
+| Capability | Result |
+| --- | --- |
+| Spec validation | Passes after removing the unsupported `keep_container` field |
+| Public image acquisition | `k7 image pull ... --digest <upstream>` returns a verified local `k7.mesh.invalid/...` reference; cross-host identity of that reference is unverified |
+| Private namespaces (`unshare --user --net --mount --pid`) | Pass; only loopback inside |
+| Read-only single-file input | Pass via a K7-managed read-only workspace; writes refused |
+| Nonzero workload exit | Fails the job and the CLI; cleanup state after failure needs scrutiny |
+| veth | Pass |
+| nftables | **Fail** (`Not supported`), also in the outer guest namespace |
+| tc netem | **Fail** (`qdisc kind is unknown`) |
+| conntrack listing | Pass |
+
+The container provider cannot host the lab's modeled routers. The next candidate is K7's Linux VM
+path with a stock distribution kernel, to be checked for nft NAT, netem, file input, failure
+propagation and per-run boot time. K7 issues raised: full default capabilities with no authored
+scoping (#1881), a deterministic run-preparation fence (#1882), and stdout retrieval after cleanup
+(#1883). The in-process simulator ([ADR 0002](../../docs/architecture/0002-network-test-lab.md),
+layer 1) remains the gate's network coverage meanwhile.

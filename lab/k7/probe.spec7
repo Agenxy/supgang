@@ -26,7 +26,6 @@
         "no_dns": true,
         "read_only_rootfs": true,
         "detach": false,
-        "keep_container": false,
         "restart_policy": "no",
         "isolation": {"kind": "ephemeral_container"},
         "labels": ["supgang.lab=infrastructure-probe", "supgang.lab.peer-count=0"],

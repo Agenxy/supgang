@@ -25,7 +25,7 @@ class K7NetlabContractTests(unittest.TestCase):
         self.assertEqual(self.node["provider"], "apple_container")
         self.assertEqual(self.node["isolation"], {"kind": "ephemeral_container"})
         self.assertFalse(self.node["detach"])
-        self.assertFalse(self.node["keep_container"])
+        self.assertNotIn("keep_container", self.node)
         self.assertEqual(self.node["restart_policy"], "no")
 
     def test_no_host_state_or_other_deck_connections(self):
