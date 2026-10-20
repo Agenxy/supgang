@@ -143,8 +143,12 @@ judging it. A restart then hands the candidate to that supervisor, which applies
 returns to the known-good payload on failure. If a peer was connected before the refresh, a
 committed candidate must also show at least one connected peer within two minutes. If none does,
 the refresh returns the active record to the previous release, which the owner was running
-minutes earlier, and restarts. The failed release stays recorded as previous, so the version floor
-does not move back. The refresh detaches into its own session so that it survives the end of the
+minutes earlier, and restarts. A revert never leaves the failed release as the one the next
+revert would restore. Staging keeps a copy of the current previous release, which this computer ran
+and replaced, outside the slots the supervisor prunes. After a revert, that copy becomes the
+previous release again, or none is recorded. Forgetting a failed release can lower the recorded
+version floor only to the active release, so it never permits a release older than the one
+running. The refresh detaches into its own session so that it survives the end of the
 SSH session that started it, and it records the outcome (`committed`, `reverted-unhealthy` or
 `reverted-no-peer`) for `supgang update status`. A same-version rebuild still replaces the active
 slot and the supervisor directly. The supervisor is therefore updated by a same-version refresh,

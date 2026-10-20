@@ -29,6 +29,8 @@ struct UpdateOutput {
     peer: Option<String>,
     /// The last owner refresh that ran under probation, and what became of it.
     last_refresh: Option<update::RefreshOutcome>,
+    /// What `supgang update revert` would restore, as `version (digest prefix)`.
+    revert_target: Option<String>,
 }
 
 pub fn update(
@@ -78,7 +80,12 @@ pub fn update(
         };
         writeln!(output, "Last probation refresh to {}: {result}.", last.version)
     });
-    if writeln!(output, "{message}").is_ok() && refreshed.is_ok() {
+    let revert = match (value.operation, value.revert_target.as_ref()) {
+        ("status", Some(target)) => writeln!(output, "`supgang update revert` would restore {target}."),
+        ("status", None) => writeln!(output, "`supgang update revert` has no previous release to restore."),
+        _ => Ok(()),
+    };
+    if writeln!(output, "{message}").is_ok() && refreshed.is_ok() && revert.is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(EXIT_FAILURE)
@@ -177,6 +184,9 @@ fn execute(state_directory: &Path, command: &UpdateCommand) -> Result<UpdateOutp
                 activation_pending: Some(status.activation_pending),
                 queued_peer_deliveries: Some(status.queued_peer_deliveries),
                 last_refresh: update::last_refresh_outcome(state_directory).map_err(|error| error.to_string())?,
+                revert_target: update::revert_target(state_directory)
+                    .map_err(|error| error.to_string())?
+                    .map(|(version, digest)| format!("{version} ({})", digest.get(..12).unwrap_or(&digest))),
                 ..simple("status")
             })
         }
@@ -197,6 +207,7 @@ const fn simple(operation: &'static str) -> UpdateOutput {
         queued_peer_deliveries: None,
         peer: None,
         last_refresh: None,
+        revert_target: None,
     }
 }
 

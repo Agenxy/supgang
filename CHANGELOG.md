@@ -4,9 +4,14 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.11` so it cannot be mistaken for the published
+The corrective source reports version `0.2.0-alpha.12` so it cannot be mistaken for the published
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
+
+- Never leave `supgang update revert` pointing at a release that failed. A probation refresh keeps
+  a copy of the previous release outside the slots the supervisor prunes. After any revert, that
+  copy becomes the previous release, or none is recorded. `supgang update status` shows what a
+  revert would restore.
 
 - Use model-based congestion control (BBR). Loss-based control collapsed a tunnel to about
   35 kB/s at 150 ms on networks that drop a few percent of UDP.

@@ -8,6 +8,12 @@
 //! known-good release if it fails. After a candidate commits, the refresh
 //! still requires a peer to reconnect, and if none does it returns to the
 //! release that ran before, which the owner was running minutes earlier.
+//!
+//! A revert never points the next revert at a release that failed. Staging
+//! keeps a copy of the current previous release, a release this computer ran
+//! and replaced, outside the slots the supervisor prunes. A revert makes that
+//! copy the previous release again, or records none, so a second revert
+//! restores a release known to have worked, never the one that just failed.
 
 use std::path::Path;
 
@@ -25,6 +31,9 @@ use crate::{
 };
 
 const OUTCOME_FILE: &str = "refresh-outcome.json";
+/// The release a revert falls back to, kept outside the pruned slots.
+const FALLBACK_DIRECTORY: &str = "fallback";
+const FALLBACK_RECORD: &str = "fallback.json";
 
 /// What became of the last owner refresh that used probation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -74,6 +83,7 @@ pub fn stage_local_candidate_unlocked(state_directory: &Path, bytes: &[u8]) -> R
     }
     crate::update::executable::validate_staged(&target, &digest_bytes)?;
     crate::update::executable::validate_compatible_identity(&active.executable, &target)?;
+    preserve_fallback(&updates, &active)?;
     let record = SlotRecord {
         schema: "supgang.update-slot/v1".to_owned(),
         version: VERSION.to_owned(),
@@ -102,8 +112,8 @@ pub fn active_digest(state_directory: &Path) -> Result<String, UpdateError> {
 }
 
 /// Returns to the release that ran before `failed`, if `failed` is still the
-/// active release and a previous one is recorded. The failed release stays
-/// recorded as previous, so the version floor is unchanged.
+/// active release and a previous one is recorded. The release recorded as
+/// previous afterwards is the kept fallback, or none: never `failed`.
 ///
 /// # Errors
 ///
@@ -120,17 +130,85 @@ pub fn revert_local_candidate_unlocked(state_directory: &Path, failed: &str) -> 
     crate::update::executable::validate_compatible_identity(&active.executable, &previous.executable)?;
     write_atomic(
         &updates,
-        PREVIOUS_FILE,
-        &serde_json::to_vec(&active).map_err(|_| UpdateError::InvalidBundle)?,
-        0o600,
-    )?;
-    write_atomic(
-        &updates,
         ACTIVE_FILE,
         &serde_json::to_vec(&previous).map_err(|_| UpdateError::InvalidBundle)?,
         0o600,
     )?;
+    match restore_fallback(&updates, &previous, failed)? {
+        Some(fallback) => write_atomic(
+            &updates,
+            PREVIOUS_FILE,
+            &serde_json::to_vec(&fallback).map_err(|_| UpdateError::InvalidBundle)?,
+            0o600,
+        )?,
+        None => super::remove_file(&updates.join(PREVIOUS_FILE))?,
+    }
     prune_slots(&updates)
+}
+
+/// The release `supgang update revert` would restore, as (version, digest).
+///
+/// # Errors
+///
+/// Rejects unsafe state or a malformed record.
+pub fn revert_target(state_directory: &Path) -> Result<Option<(String, String)>, UpdateError> {
+    let updates = updates_directory(state_directory, false)?;
+    let Some(previous) = read_record(&updates.join(PREVIOUS_FILE))? else {
+        return Ok(None);
+    };
+    validate_record(&updates, &previous)?;
+    Ok(Some((previous.version, previous.digest)))
+}
+
+/// Keeps a copy of the current previous release, which this computer ran and
+/// replaced, so a revert can make it the previous release again after the
+/// supervisor prunes its slot.
+fn preserve_fallback(updates: &Path, active: &SlotRecord) -> Result<(), UpdateError> {
+    let Some(previous) = read_record(&updates.join(PREVIOUS_FILE))? else {
+        return Ok(());
+    };
+    validate_record(updates, &previous)?;
+    if previous.digest == active.digest {
+        return Ok(());
+    }
+    let kept = ensure_child(&ensure_child(updates, FALLBACK_DIRECTORY)?, &previous.digest)?;
+    let copy = kept.join("supgang");
+    if std::fs::symlink_metadata(&copy).is_err() {
+        let bytes =
+            crate::update::artifact_like_read(&previous.executable, crate::update::MAX_UPDATE_TARGET_BYTES, 0o700)?;
+        crate::update::write_new_file(&copy, &bytes, 0o700)?;
+    }
+    let digest = hex::decode(&previous.digest).map_err(|_| UpdateError::InvalidBundle)?;
+    crate::update::executable::validate_staged(&copy, &digest)?;
+    write_atomic(
+        updates,
+        FALLBACK_RECORD,
+        &serde_json::to_vec(&previous).map_err(|_| UpdateError::InvalidBundle)?,
+        0o600,
+    )
+}
+
+/// The kept fallback as a valid slot record, its slot restored if pruned, or
+/// `None` when there is none or it is the release being restored or the one
+/// that failed.
+fn restore_fallback(updates: &Path, restored: &SlotRecord, failed: &str) -> Result<Option<SlotRecord>, UpdateError> {
+    let Some(fallback) = read_record(&updates.join(FALLBACK_RECORD))? else {
+        return Ok(None);
+    };
+    if fallback.digest == restored.digest || fallback.digest == failed {
+        return Ok(None);
+    }
+    let digest = hex::decode(&fallback.digest).map_err(|_| UpdateError::InvalidBundle)?;
+    let kept = updates.join(FALLBACK_DIRECTORY).join(&fallback.digest).join("supgang");
+    crate::update::executable::validate_staged(&kept, &digest)?;
+    if std::fs::symlink_metadata(&fallback.executable).is_err() {
+        let slot = ensure_child(&ensure_child(updates, SLOTS_DIRECTORY)?, &fallback.digest)?;
+        let bytes = crate::update::artifact_like_read(&kept, crate::update::MAX_UPDATE_TARGET_BYTES, 0o700)?;
+        crate::update::write_new_file(&slot.join("supgang"), &bytes, 0o700)?;
+    }
+    validate_record(updates, &fallback)?;
+    crate::update::executable::validate_compatible_identity(&restored.executable, &fallback.executable)?;
+    Ok(Some(fallback))
 }
 
 /// Records a probation outcome where the owner can read it after reconnecting.

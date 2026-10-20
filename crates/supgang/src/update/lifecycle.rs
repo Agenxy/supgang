@@ -25,7 +25,7 @@ use filesystem::remove_file;
 pub(super) use filesystem::{write_atomic, write_atomic_bounded};
 pub use local_candidate::{
     RefreshOutcome, active_digest, last_refresh_outcome, record_refresh_outcome, revert_local_candidate_unlocked,
-    stage_local_candidate_unlocked,
+    revert_target, stage_local_candidate_unlocked,
 };
 
 /// Non-secret local update readiness and activation state.
