@@ -4,8 +4,24 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.10` so it cannot be mistaken for the published
-`0.1.0` build that failed physical WAN acceptance.
+The corrective source reports version `0.2.0-alpha.11` so it cannot be mistaken for the published
+`0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
+that a remote refresh to this source runs under probation.
+
+- Use model-based congestion control (BBR). Loss-based control collapsed a tunnel to about
+  35 kB/s at 150 ms on networks that drop a few percent of UDP.
+- Refresh to a newer release under probation. The installed supervisor judges the candidate's
+  health, and the refresh returns to the previous release if no previously connected peer
+  reconnects within two minutes. The outcome is reported by `supgang update status`.
+- Keep a bounded, address-free history of connections made and ended, shown by `supgang status`.
+- Report each connection's round trip, congestion window, loss and MTU in `supgang peers --json`.
+- Retire a connection whose path went silent once a probe confirms it is gone. Keepalives are now
+  every 5 s, so a network left without any local sign is noticed well before the idle timeout.
+- Wait up to 10 s for an owner's command and say when the service did not answer in time. Name
+  why a tunnel was refused and what to do.
+- Probe a registered connection when its peer authenticates over a new path, and prefer a
+  directly attached path, so roaming and returning home reconnect within seconds.
+- Add `supgang forward`, a loopback-only TCP listener carried by service tunnels.
 
 - Restrict MCP `initialize` to 2025-11-25; reject modern revisions with the legacy-only
   supported list while preserving stateless 2026-07-28 requests and dual-era discovery.

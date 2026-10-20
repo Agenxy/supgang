@@ -341,11 +341,11 @@ fn repository_with_root_rotation(seed: u8, version: &str) -> Result<SignedReposi
 #[test]
 fn target_names_bind_version_platform_and_architecture() -> Result<(), Box<dyn std::error::Error>> {
     let valid = format!(
-        "supgang-0.2.0-alpha.10-{}-{}",
+        "supgang-0.2.0-alpha.11-{}-{}",
         std::env::consts::OS,
         std::env::consts::ARCH
     );
-    assert_eq!(validate_target_name(&valid)?.to_string(), "0.2.0-alpha.10");
+    assert_eq!(validate_target_name(&valid)?.to_string(), "0.2.0-alpha.11");
     assert!(matches!(
         validate_target_name("supgang-9.9.9-linux-wrong"),
         Err(UpdateError::WrongPlatform)
