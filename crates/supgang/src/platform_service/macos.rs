@@ -156,9 +156,10 @@ fn install(
 
 fn refresh(state_directory: &Path, service_definition: &Path) -> Result<Report, ServiceError> {
     preflight_restart_with_definition(state_directory, service_definition)?;
-    let _executable = replace_installed_executable(state_directory, true)?;
+    let refreshed = super::refresh::install(state_directory)?;
     upgrade_definition(service_definition)?;
-    restart(state_directory, service_definition)
+    let report = restart(state_directory, service_definition)?;
+    super::refresh::settle(state_directory, refreshed, report)
 }
 
 pub(super) fn preflight_restart(state_directory: &Path) -> Result<(), ServiceError> {

@@ -317,6 +317,11 @@ pub enum UpdateCommand {
     Apply,
     /// Show local update trust and activation state.
     Status,
+    /// Return to the release that ran before the last refresh or update.
+    ///
+    /// Owner-local and bounded: it restores only the recorded previous
+    /// release, which this computer already ran, then restarts the service.
+    Revert,
 }
 
 #[derive(Debug, Subcommand)]

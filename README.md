@@ -170,6 +170,17 @@ supgang service status
 `service refresh` preserves the installed service's endpoint, anchor, and router-mapping settings
 exactly. Use `service install` only when you intend to choose those settings again.
 
+Refreshing to a newer version is safe to do remotely. The new release runs on probation, and
+the refresh restores the previous release by itself in two cases:
+
+- the new release fails its health checks, or
+- it cannot reconnect a peer that was connected before, within two minutes.
+
+The refresh survives the end of the SSH session that started it, including one carried by
+Supgang itself. After reconnecting, `supgang update status` says what happened. A rebuild at the
+same version replaces the running release directly, with no probation, so do that only where you
+can recover by hand.
+
 The corresponding owner certificate must be trusted through an explicit local macOS approval.
 This is separate from TUF release authorization. TUF decides which bytes are an authorized Supgang
 release; the local code signature lets macOS recognize an approved program across updates. Every

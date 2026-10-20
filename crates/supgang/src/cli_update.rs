@@ -27,6 +27,8 @@ struct UpdateOutput {
     activation_pending: Option<bool>,
     queued_peer_deliveries: Option<usize>,
     peer: Option<String>,
+    /// The last owner refresh that ran under probation, and what became of it.
+    last_refresh: Option<update::RefreshOutcome>,
 }
 
 pub fn update(
@@ -56,6 +58,7 @@ pub fn update(
             "Update queued for that peer. Supgang will retry across reconnects for 24 hours; the receiver must still verify and activate it."
         }
         "apply" => "The verified release was handed to the A/B supervisor for a health-checked restart.",
+        "revert" => "The previous release is active again and the service restarted on it.",
         "status" if value.activation_pending == Some(true) => "A verified Supgang update is awaiting activation.",
         "status" if value.staged_version.is_some() => "A verified Supgang update is staged but not active.",
         "status" if value.queued_peer_deliveries.is_some_and(|count| count > 0) => {
@@ -65,7 +68,17 @@ pub fn update(
         "status" => "No Supgang update authority is pinned on this computer.",
         _ => return ExitCode::from(EXIT_FAILURE),
     };
-    if writeln!(output, "{message}").is_ok() {
+    let refreshed = value.last_refresh.as_ref().map_or(Ok(()), |last| {
+        let result = match last.result.as_str() {
+            "committed" => "committed",
+            "reverted-unhealthy" => "failed its health probation; the previous release was restored",
+            "reverted-no-peer" => "did not reconnect a peer; the previous release was restored",
+            "reverted-by-owner" => "was reverted by the owner",
+            _ => "has an unknown outcome",
+        };
+        writeln!(output, "Last probation refresh to {}: {result}.", last.version)
+    });
+    if writeln!(output, "{message}").is_ok() && refreshed.is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(EXIT_FAILURE)
@@ -135,6 +148,26 @@ fn execute(state_directory: &Path, command: &UpdateCommand) -> Result<UpdateOutp
                 ..simple("apply")
             })
         }
+        UpdateCommand::Revert => {
+            let failed = update::active_digest(state_directory).map_err(|error| error.to_string())?;
+            {
+                let _lock = update::UpdateLock::acquire(state_directory).map_err(|error| error.to_string())?;
+                update::revert_local_candidate_unlocked(state_directory, &failed)
+                    .map_err(|_| "no previous release is recorded to return to; nothing was changed".to_owned())?;
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            let _recorded = update::record_refresh_outcome(state_directory, &failed, "reverted-by-owner", now);
+            platform_service::perform(state_directory, Action::Restart).map_err(|error| {
+                format!("the previous release is active but the restart failed: {error}; run `supgang service restart`")
+            })?;
+            let status = update::status(state_directory).map_err(|error| error.to_string())?;
+            Ok(UpdateOutput {
+                active_version: Some(status.active_version),
+                ..simple("revert")
+            })
+        }
         UpdateCommand::Status => {
             let status = update::status(state_directory).map_err(|error| error.to_string())?;
             Ok(UpdateOutput {
@@ -143,6 +176,7 @@ fn execute(state_directory: &Path, command: &UpdateCommand) -> Result<UpdateOutp
                 staged_version: status.staged_version,
                 activation_pending: Some(status.activation_pending),
                 queued_peer_deliveries: Some(status.queued_peer_deliveries),
+                last_refresh: update::last_refresh_outcome(state_directory).map_err(|error| error.to_string())?,
                 ..simple("status")
             })
         }
@@ -162,6 +196,7 @@ const fn simple(operation: &'static str) -> UpdateOutput {
         activation_pending: None,
         queued_peer_deliveries: None,
         peer: None,
+        last_refresh: None,
     }
 }
 

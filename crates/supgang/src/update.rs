@@ -38,10 +38,12 @@ pub(crate) use delivery_queue::{
     QueuedPeerDelivery, finish_peer_delivery, load_peer_deliveries, prune_expired_peer_deliveries, queue_peer_delivery,
 };
 pub use error::UpdateError;
+pub use lifecycle::RefreshOutcome;
 pub use lifecycle::{UpdateStatus, activate_staged, cancel_activation, initialize_installed, status};
 pub(crate) use lifecycle::{
-    activation_pending, initialize_installed_unlocked, preflight_local_install_unlocked,
-    preflight_local_refresh_unlocked,
+    activation_pending, active_digest, initialize_installed_unlocked, last_refresh_outcome,
+    preflight_local_install_unlocked, preflight_local_refresh_unlocked, record_refresh_outcome,
+    revert_local_candidate_unlocked, stage_local_candidate_unlocked,
 };
 pub(crate) use lock::UpdateLock;
 pub use supervisor::{SupervisorError, SupervisorOptions, run_supervisor};

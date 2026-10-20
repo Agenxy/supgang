@@ -12,8 +12,8 @@ use std::{
 use plist::Value;
 
 use super::{
-    Action, Report, START_TIMEOUT, ServiceError, control_is_ready, executable, manager_status, owner_home,
-    replace_installed_executable, report, validate_state,
+    Action, Report, START_TIMEOUT, ServiceError, control_is_ready, executable, manager_status, owner_home, report,
+    validate_state,
 };
 use crate::control::{self, ControlReply, ControlRequest, ControlStatus};
 
@@ -132,8 +132,9 @@ pub(super) fn perform(state: &Path, action: Action<'_>) -> Result<Report, Servic
         }
         Action::Refresh => {
             preflight_restart(state)?;
-            let _executable = replace_installed_executable(state, true)?;
-            restart(state)
+            let refreshed = super::refresh::install(state)?;
+            let report = restart(state)?;
+            super::refresh::settle(state, refreshed, report)
         }
         Action::Restart => restart(state),
         Action::Install { .. } | Action::Stop | Action::Uninstall => Err(ServiceError::BootApprovalRequired),

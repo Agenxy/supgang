@@ -20,6 +20,7 @@ mod executable;
 #[cfg(any(target_os = "macos", test))]
 mod guarded;
 pub mod observation;
+mod refresh;
 #[cfg(target_os = "macos")]
 mod system_boot;
 
@@ -91,6 +92,14 @@ pub enum ServiceError {
     UpdateRollback,
     #[error("the installed supervisor cannot be refreshed while another update operation is in progress")]
     UpdateBusy,
+    #[error(
+        "the new release failed its health probation; the previous release is running again (see `supgang update status`)"
+    )]
+    CandidateRejected,
+    #[error(
+        "the new release did not reconnect any peer within its probation; the previous release is running again (see `supgang update status`)"
+    )]
+    CandidateReverted,
     #[error("the background service endpoint configuration is unsafe or invalid")]
     InvalidEndpoints,
     #[error("the background service directory or definition is unsafe")]
@@ -488,8 +497,9 @@ mod linux {
 
     fn refresh(state_directory: &Path, service_definition: &Path) -> Result<Report, ServiceError> {
         preflight_restart_with_definition(state_directory, service_definition)?;
-        let _executable = replace_installed_executable(state_directory, true)?;
-        restart(state_directory, service_definition)
+        let refreshed = super::refresh::install(state_directory)?;
+        let report = restart(state_directory, service_definition)?;
+        super::refresh::settle(state_directory, refreshed, report)
     }
 
     pub(super) fn preflight_restart(state_directory: &Path) -> Result<(), ServiceError> {

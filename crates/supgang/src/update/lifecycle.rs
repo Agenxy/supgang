@@ -20,8 +20,13 @@ const RECORD_BYTES: usize = 1024;
 const MAX_SLOT_ENTRIES_PER_PASS: usize = 16;
 
 mod filesystem;
+mod local_candidate;
 use filesystem::remove_file;
 pub(super) use filesystem::{write_atomic, write_atomic_bounded};
+pub use local_candidate::{
+    RefreshOutcome, active_digest, last_refresh_outcome, record_refresh_outcome, revert_local_candidate_unlocked,
+    stage_local_candidate_unlocked,
+};
 
 /// Non-secret local update readiness and activation state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

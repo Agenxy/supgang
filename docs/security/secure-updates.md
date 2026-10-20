@@ -136,6 +136,22 @@ older command therefore cannot overwrite a newer protected supervisor before rol
 A higher semantic version with byte-identical content still advances the durable active version;
 digest equality alone is not treated as interrupted-commit recovery.
 
+A refresh to a strictly newer local release takes the probation path instead of replacing the
+active slot. The refresh copies the invoking command into a content-addressed slot and marks it
+pending. The installed supervisor is left unchanged, so the release being judged is not the code
+judging it. A restart then hands the candidate to that supervisor, which applies step 10 and
+returns to the known-good payload on failure. If a peer was connected before the refresh, a
+committed candidate must also show at least one connected peer within two minutes. If none does,
+the refresh returns the active record to the previous release, which the owner was running
+minutes earlier, and restarts. The failed release stays recorded as previous, so the version floor
+does not move back. The refresh detaches into its own session so that it survives the end of the
+SSH session that started it, and it records the outcome (`committed`, `reverted-unhealthy` or
+`reverted-no-peer`) for `supgang update status`. A same-version rebuild still replaces the active
+slot and the supervisor directly. The supervisor is therefore updated by a same-version refresh,
+which the owner runs where they can recover by hand. A payload whose readiness exchange an older
+supervisor does not understand fails probation and is reverted, so the stale supervisor fails
+safe.
+
 Local refresh additionally requires the invoking executable to satisfy the existing active
 macOS signing identity; a source install is not an identity-reset bypass. The supervisor reserves
 a durable launch attempt before each pending candidate starts. Three interrupted probation

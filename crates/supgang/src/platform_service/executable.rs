@@ -30,6 +30,25 @@ pub(super) fn install_current() -> Result<PathBuf, ServiceError> {
     Ok(target)
 }
 
+/// Reads the running executable through a validated file descriptor.
+pub(super) fn read_current() -> Result<Vec<u8>, ServiceError> {
+    let source_path = env::current_exe()?.canonicalize()?;
+    let no_follow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| ServiceError::UnsafeExecutable)?;
+    let mut source = OpenOptions::new()
+        .read(true)
+        .custom_flags(no_follow)
+        .open(source_path)?;
+    validate_source(&source)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut source)
+        .take(MAX_EXECUTABLE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).map_err(|_| ServiceError::UnsafeExecutable)? > MAX_EXECUTABLE_BYTES {
+        return Err(ServiceError::UnsafeExecutable);
+    }
+    Ok(bytes)
+}
+
 /// Revalidates the protected executable used by an existing service.
 pub(super) fn validate_installed() -> Result<PathBuf, ServiceError> {
     let path = installed_path(false)?;

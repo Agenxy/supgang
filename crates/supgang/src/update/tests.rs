@@ -30,6 +30,7 @@ use super::{
 
 const TUF_SPEC: &str = "1.0.0";
 
+mod local_candidate;
 mod trust_failures;
 mod trust_recovery;
 
