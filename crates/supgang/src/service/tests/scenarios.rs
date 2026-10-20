@@ -16,7 +16,7 @@ use std::{
 };
 
 use super::sim_harness::{
-    Error, Fleet, PORT, add_mapped, connection, eventually, expose_echo, tunnel_round_trip, wait_connected,
+    Error, Fleet, PORT, add_mapped, connection, eventually, expose_echo, open_tunnel, tunnel_round_trip, wait_connected,
 };
 use crate::simnet::{Discard, Firewall6, Nat44, Network, SiteId, SiteSpec, V4Access, V6Access};
 
@@ -175,6 +175,127 @@ fn travel(world: &World, spec: SiteSpec) -> Result<(), Error> {
         retired.is_some(),
         "the connection over the home LAN was still reported {STALE_PATH_RETIREMENT:?} after leaving"
     );
+    Ok(())
+}
+
+/// A hotel whose LAN reuses the home subnet, 192.168.1.0/24, as many consumer
+/// gateways do. Solis's home LAN address then looks directly attached.
+fn same_subnet_hotel_site() -> SiteSpec {
+    SiteSpec {
+        v4: Some(V4Access::Translated {
+            public: Ipv4Addr::new(8, 8, 8, 8),
+            lan: Ipv4Addr::new(192, 168, 1, 0),
+            nat: Nat44::symmetric(),
+        }),
+        v6: None,
+    }
+}
+
+/// Travels to a same-subnet hotel where `guests` other devices joined first,
+/// which decides the laptop's address there: with none it takes Solis's home
+/// address, with one its own home address, with two an address new to it.
+fn travel_to_same_subnet_hotel(guests: usize, seed: u64) -> Result<(), Error> {
+    let world = paired_at_home(
+        HomeGateway {
+            ipv4_forward: true,
+            ipv6: Ipv6Policy::DefaultDeny,
+        },
+        seed,
+    )?;
+    publish_forward(&world)?;
+    let hotel = world.network.add_site(same_subnet_hotel_site())?;
+    for _ in 0..guests {
+        world.network.add_host(Some(hotel))?;
+    }
+    let solis = world.fleet.computer(SOLIS)?;
+    let laptop = world.fleet.computer(LAPTOP)?;
+    let before = connection(laptop, solis.node)?.ok_or("not connected before travelling")?;
+    world.network.move_host(laptop.host, Some(hotel))?;
+    let forward = SocketAddr::new(IpAddr::V4(HOME_PUBLIC), PORT);
+    let reached = eventually(STALE_PATH_RETIREMENT + ROAMING, || {
+        Ok(connection(laptop, solis.node)?.filter(|path| *path == forward))
+    })?;
+    assert!(
+        reached.is_some(),
+        "no connection through the forward from a same-subnet hotel ({guests} guests); the home LAN path {before} was \
+         last reported as {:?}",
+        connection(laptop, solis.node)?
+    );
+    // The laptop's history tells the owner what happened, without addresses.
+    let Some(crate::control::ControlReply::Status { value }) =
+        crate::control::request(&laptop.path, crate::control::ControlRequest::Status)?
+    else {
+        return Err("no status from the laptop".into());
+    };
+    let events = &value.recent_connections;
+    let ended = events
+        .iter()
+        .position(|event| event.event == "ended" && event.path == "private-ipv4" && !event.reason.is_empty())
+        .ok_or_else(|| format!("no ended home-LAN connection in {events:?}"))?;
+    assert!(
+        events
+            .iter()
+            .skip(ended)
+            .any(|event| event.event == "connected" && event.path == "internet-ipv4"),
+        "no internet connection after the home LAN ended: {events:?}"
+    );
+    assert_tunnel(&world)
+}
+
+#[test]
+fn from_a_hotel_on_the_home_subnet_the_laptop_reaches_solis_through_the_forward() -> Result<(), Error> {
+    travel_to_same_subnet_hotel(2, 11)
+}
+
+#[test]
+fn from_a_hotel_on_the_home_subnet_that_reissues_the_laptops_home_address_the_forward_still_wins() -> Result<(), Error>
+{
+    travel_to_same_subnet_hotel(1, 12)
+}
+
+#[test]
+fn from_a_hotel_on_the_home_subnet_that_issues_solis_home_address_the_forward_still_wins() -> Result<(), Error> {
+    travel_to_same_subnet_hotel(0, 13)
+}
+
+/// A refused tunnel says which limit or state refused it and what to do, so
+/// the owner can tell a full tunnel budget from a peer that is reconnecting.
+#[test]
+fn a_refused_tunnel_names_its_reason_and_the_remedy() -> Result<(), Error> {
+    let mut world = paired_at_home(
+        HomeGateway {
+            ipv4_forward: false,
+            ipv6: Ipv6Policy::DefaultDeny,
+        },
+        14,
+    )?;
+    world.fleet.set_tunnel_limits(LAPTOP, 1, 64)?;
+    world.fleet.stop(LAPTOP)?;
+    world.fleet.start(LAPTOP)?;
+    wait_connected(&world.fleet, LAPTOP, SOLIS, PAIRING)?.ok_or("no reconnection after limits")?;
+    let solis = world.fleet.computer(SOLIS)?.node;
+    let echo = expose_echo(world.fleet.computer(SOLIS)?, "ssh")?;
+    wait_connected(&world.fleet, LAPTOP, SOLIS, ROAMING)?.ok_or("no reconnection after exposure")?;
+
+    let held = open_tunnel(world.fleet.computer(LAPTOP)?, solis, "ssh")?;
+    let Err(full) = open_tunnel(world.fleet.computer(LAPTOP)?, solis, "ssh") else {
+        return Err("a tunnel beyond the per-peer limit was admitted".into());
+    };
+    assert!(full.to_string().contains("per-peer limit"), "{full}");
+    held.shutdown(std::net::Shutdown::Both)?;
+    drop(held);
+    let _echo = echo.join();
+
+    world.fleet.stop(SOLIS)?;
+    let laptop = world.fleet.computer(LAPTOP)?;
+    eventually(CRASH_RECOVERY, || {
+        Ok(connection(laptop, solis)?.is_none().then_some(()))
+    })?
+    .ok_or("the laptop still reports the stopped computer")?;
+    let Err(down) = open_tunnel(laptop, solis, "ssh") else {
+        return Err("a tunnel to a stopped computer was admitted".into());
+    };
+    assert!(down.to_string().contains("not connected right now"), "{down}");
     Ok(())
 }
 
@@ -405,5 +526,23 @@ fn from_a_transatlantic_hotel_32_concurrent_tunnels_and_bulk_staging_work_throug
         elapsed < Duration::from_secs(20),
         "8 MiB each way took {elapsed:?} at 150 ms round trip"
     );
+    // The path statistics the owner reads to diagnose a slow tunnel reflect
+    // the modelled path.
+    let Some(crate::control::ControlReply::Peers { value }) =
+        crate::control::request(&laptop.path, crate::control::ControlRequest::Peers)?
+    else {
+        return Err("no peers reply from the laptop".into());
+    };
+    let path = value
+        .peers
+        .iter()
+        .find_map(|peer| peer.connection.as_ref()?.path.clone())
+        .ok_or("no path statistics for the connection to Solis")?;
+    assert!(
+        (140..1_000).contains(&path.rtt_ms),
+        "a 150 ms path reported {} ms",
+        path.rtt_ms
+    );
+    assert!(path.sent_packets > 0 && path.congestion_window_bytes > 0, "{path:?}");
     Ok(())
 }

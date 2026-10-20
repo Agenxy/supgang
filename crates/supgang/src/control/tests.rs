@@ -3,7 +3,7 @@ use std::{
     os::unix::{fs::symlink, net::UnixListener as BlockingUnixListener},
 };
 
-use super::{ControlError, ControlListener, ControlRequest, decode_request, encode_request, request};
+use super::{ControlError, ControlListener, ControlRequest, decode_request, encode_request, request, request_within};
 use crate::ids::NodeId;
 use std::os::unix::fs::PermissionsExt;
 
@@ -80,5 +80,37 @@ fn client_treats_a_safe_stale_socket_as_service_stopped() -> Result<(), Box<dyn 
 
     assert!(request(&state_directory, ControlRequest::Status)?.is_none());
     assert!(socket.exists());
+    Ok(())
+}
+
+#[test]
+fn a_service_that_accepts_but_never_answers_is_reported_as_unresponsive() -> Result<(), Box<dyn std::error::Error>> {
+    // A heavily loaded computer can leave the service unscheduled after the
+    // kernel has accepted the connection. The owner must be told that, within
+    // the bound, rather than see a generic socket failure.
+    let temporary = tempfile::tempdir()?;
+    let state_directory = temporary.path().join("state");
+    fs::create_dir(&state_directory)?;
+    fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
+    let socket = state_directory.join(super::CONTROL_SOCKET_FILE_NAME);
+    let _silent = BlockingUnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+
+    let started = std::time::Instant::now();
+    let result = request_within(
+        &state_directory,
+        ControlRequest::Status,
+        std::time::Duration::from_secs(1),
+    );
+    let elapsed = started.elapsed();
+    let Err(error) = result else {
+        return Err("a silent service produced a reply".into());
+    };
+    assert!(
+        matches!(error, ControlError::Unresponsive { seconds: 1 }),
+        "unexpected error: {error:?}"
+    );
+    assert!(error.to_string().contains("did not answer within 1 s"), "{error}");
+    assert!(elapsed < std::time::Duration::from_secs(3), "waited {elapsed:?}");
     Ok(())
 }

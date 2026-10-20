@@ -271,7 +271,7 @@ fn manager_status(program: &Path, arguments: &[&str]) -> Result<bool, ServiceErr
 }
 
 fn control_is_ready(state_directory: &Path) -> Result<bool, control::ControlError> {
-    control::request(state_directory, control::ControlRequest::Status)
+    control::probe(state_directory, control::ControlRequest::Status)
         .map(|reply| matches!(reply, Some(control::ControlReply::Status { .. })))
 }
 

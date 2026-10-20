@@ -22,6 +22,11 @@ pub const MAX_BIDIRECTIONAL_STREAMS: u32 = 66;
 pub const MAX_UNIDIRECTIONAL_STREAMS: u32 = 2;
 /// Maximum idle period before transport teardown.
 pub const MAX_IDLE_SECONDS: u64 = 45;
+/// Keepalive interval: a live peer is heard from at least this often.
+///
+/// That lets a silent path be judged gone well before the idle timeout, and
+/// it refreshes short UDP mappings in hotel and carrier gateways.
+pub const KEEP_ALIVE_SECONDS: u64 = 5;
 /// Per-stream receive budget. A stream moves at most one window per round
 /// trip, so this is sized for bulk transfer through one tunnel across an ocean:
 /// about 7 MB/s at 150 ms.
@@ -293,7 +298,12 @@ fn bounded_transport() -> Result<TransportConfig, TransportError> {
     let idle = quinn::IdleTimeout::try_from(Duration::from_secs(MAX_IDLE_SECONDS))
         .map_err(|_| TransportError::Configuration)?;
     transport.max_idle_timeout(Some(idle));
-    transport.keep_alive_interval(Some(Duration::from_secs(15)));
+    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECONDS)));
+    // Model-based congestion control. Loss-based control reads the few
+    // percent of UDP that hotel and café networks drop as congestion, and at
+    // an ocean's round trip collapses to tens of kilobytes per second
+    // (`service/tests/lossy_path.rs`).
+    transport.congestion_controller_factory(std::sync::Arc::new(quinn::congestion::BbrConfig::default()));
     Ok(transport)
 }
 

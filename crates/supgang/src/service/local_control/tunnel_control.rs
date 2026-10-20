@@ -17,43 +17,100 @@ pub(super) async fn connect(
     tunnels: &TunnelRuntime,
     tunnel_tasks: &mut tokio::task::JoinSet<()>,
 ) {
-    let connection = active
-        .get(&target)
-        .filter(|connection| {
-            connection.close_reason().is_none()
-                && connection.authorization().is_current(unix_time().unwrap_or(u64::MAX))
-                && !local_state.revocations().contains(&target)
-        })
-        .cloned();
-    let admitted = connection.and_then(|connection| {
-        if tunnel_tasks.len() >= tunnels.policy.borrow().total {
-            return None;
+    let admitted = admit(target, local_state, active, tunnels, tunnel_tasks);
+    let refusal = match (admitted, crate::tunnel_policy::decoded_name(name)) {
+        (Ok((connection, global, peer)), Ok(name)) => {
+            tunnel_tasks.spawn(super::super::tunnel::outgoing(
+                stream,
+                connection,
+                name,
+                tunnels.clone(),
+                global,
+                peer,
+            ));
+            return;
         }
-        let global = tunnels.admission.clone().try_acquire_owned().ok()?;
-        let peer = connection.tunnel_admission.clone().try_acquire_owned().ok()?;
-        Some((connection, global, peer))
-    });
-    if let Some((connection, global, peer)) = admitted
-        && let Ok(name) = crate::tunnel_policy::decoded_name(name)
-    {
-        tunnel_tasks.spawn(super::super::tunnel::outgoing(
-            stream,
-            connection,
-            name,
-            tunnels.clone(),
-            global,
-            peer,
-        ));
-        return;
-    }
+        (Err(refusal), _) => refusal,
+        (Ok(_), Err(_)) => Refusal::InvalidName,
+    };
     let _reply = control::write_reply(
         &mut stream,
         &ControlReply::Error {
-            message: "peer has no authorized live connection or tunnel admission is full; check supgang peers"
-                .to_owned(),
+            message: refusal.message().to_owned(),
         },
     )
     .await;
+}
+
+/// Why a tunnel request was refused, each with what the owner can do.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Refusal {
+    Revoked,
+    NotConnected,
+    Unauthorized,
+    RuntimeFull,
+    PeerFull,
+    InvalidName,
+}
+
+impl Refusal {
+    pub(super) const fn message(self) -> &'static str {
+        match self {
+            Self::Revoked => "the peer is revoked; tunnels to it are refused",
+            Self::NotConnected => {
+                "the peer is not connected right now; Supgang keeps reconnecting on its own. Retry shortly, or check `supgang peers`"
+            }
+            Self::Unauthorized => {
+                "the peer's session authorization has lapsed; Supgang renews it on its next contact. Retry shortly, or check `supgang peers`"
+            }
+            Self::RuntimeFull => {
+                "every tunnel this computer allows is in use; close idle sessions or raise the total with `supgang tunnel-limits`"
+            }
+            Self::PeerFull => {
+                "every tunnel allowed to this peer is in use; close idle sessions or raise the per-peer limit with `supgang tunnel-limits`"
+            }
+            Self::InvalidName => "the service name is invalid",
+        }
+    }
+}
+
+type Admission = (
+    ActiveConnection,
+    tokio::sync::OwnedSemaphorePermit,
+    tokio::sync::OwnedSemaphorePermit,
+);
+
+pub(super) fn admit(
+    target: NodeId,
+    local_state: &LocalState,
+    active: &BTreeMap<NodeId, ActiveConnection>,
+    tunnels: &TunnelRuntime,
+    tunnel_tasks: &tokio::task::JoinSet<()>,
+) -> Result<Admission, Refusal> {
+    if local_state.revocations().contains(&target) {
+        return Err(Refusal::Revoked);
+    }
+    let connection = active
+        .get(&target)
+        .filter(|connection| connection.close_reason().is_none())
+        .ok_or(Refusal::NotConnected)?;
+    if !connection.authorization().is_current(unix_time().unwrap_or(u64::MAX)) {
+        return Err(Refusal::Unauthorized);
+    }
+    if tunnel_tasks.len() >= tunnels.policy.borrow().total {
+        return Err(Refusal::RuntimeFull);
+    }
+    let global = tunnels
+        .admission
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Refusal::RuntimeFull)?;
+    let peer = connection
+        .tunnel_admission
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Refusal::PeerFull)?;
+    Ok((connection.clone(), global, peer))
 }
 
 pub(super) fn expose(

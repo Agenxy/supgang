@@ -1,14 +1,12 @@
 //! Owner-authenticated, bounded local control protocol for a running service.
 
 use std::{
-    fs,
-    io::{self, Read, Write},
+    fs, io,
     os::unix::{
         fs::{FileTypeExt, MetadataExt, PermissionsExt},
         net::UnixStream as BlockingUnixStream,
     },
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -44,7 +42,6 @@ const REQUEST_ADD_MAPPED: u8 = 9;
 const REQUEST_TUNNEL_LIMITS: u8 = 10;
 const MAX_REQUEST_BYTES: usize = 128;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One bounded local request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,6 +122,24 @@ pub struct ControlStatus {
     pub member_count: usize,
     /// Number of verified authoritative state events.
     pub event_count: usize,
+    /// The most recent connections made and ended, oldest first; bounded.
+    #[serde(default)]
+    pub recent_connections: Vec<ConnectionEvent>,
+}
+
+/// One connection made or ended. It names the path's kind, never its address.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConnectionEvent {
+    /// Unix seconds.
+    pub at: u64,
+    /// The peer's short fingerprint.
+    pub peer: String,
+    /// `connected` or `ended`.
+    pub event: String,
+    /// `private-ipv4`, `private-ipv6`, `internet-ipv4` or `internet-ipv6`.
+    pub path: String,
+    /// Why it ended; empty for a connection made.
+    pub reason: String,
 }
 
 fn legacy_connection_recovery() -> String {
@@ -199,6 +214,14 @@ pub enum ControlError {
     /// Socket filesystem or stream operation failed.
     #[error("local control socket operation failed")]
     Io(#[from] io::Error),
+    /// The service accepted the request but did not answer in time.
+    #[error(
+        "the local Supgang service did not answer within {seconds} s; this computer may be heavily loaded. Retry, or run `supgang service status`"
+    )]
+    Unresponsive {
+        /// The bound the client waited.
+        seconds: u64,
+    },
     /// An existing path is not a safely replaceable owner socket.
     #[error("local control socket path is unsafe or already occupied")]
     UnsafeSocketPath,
@@ -317,102 +340,6 @@ pub async fn write_reply_open(stream: &mut UnixStream, reply: &ControlReply) -> 
     stream.write_all(&length.to_be_bytes()).await?;
     stream.write_all(&bytes).await?;
     Ok(())
-}
-
-pub fn connect_service(state_directory: &Path, target: NodeId, name: [u8; 16]) -> Result<BlockingUnixStream, String> {
-    let directory = storage::validate_directory(state_directory).map_err(|_| "local service state is unsafe")?;
-    let path = directory.join(CONTROL_SOCKET_FILE_NAME);
-    let metadata = fs::symlink_metadata(&path).map_err(|_| "start the local Supgang service before connecting")?;
-    validate_existing_socket_metadata(&metadata).map_err(|_| "local service socket is unsafe")?;
-    let mut stream = BlockingUnixStream::connect(path).map_err(|_| "local Supgang service is unavailable")?;
-    let timeout = Duration::from_secs(8);
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|_| "local tunnel timeout setup failed")?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|_| "local tunnel timeout setup failed")?;
-    validate_peer_blocking(&stream).map_err(|_| "local service belongs to another user")?;
-    write_blocking_frame(
-        &mut stream,
-        &encode_request(ControlRequest::Connect { target, name }),
-        MAX_REQUEST_BYTES,
-    )
-    .map_err(|_| "local tunnel request failed")?;
-    let bytes = read_blocking_frame(&mut stream, MAX_RESPONSE_BYTES).map_err(|_| "local tunnel setup failed")?;
-    match serde_json::from_slice::<ControlReply>(&bytes).map_err(|_| "local tunnel reply is invalid")? {
-        ControlReply::Connected => {}
-        ControlReply::Error { message } => return Err(message),
-        _ => return Err("local runtime does not support service tunnels; refresh its installed artifact".to_owned()),
-    }
-    stream
-        .set_read_timeout(None)
-        .map_err(|_| "local tunnel timeout removal failed")?;
-    stream
-        .set_write_timeout(None)
-        .map_err(|_| "local tunnel timeout removal failed")?;
-    stream
-        .set_nonblocking(true)
-        .map_err(|_| "local tunnel nonblocking setup failed")?;
-    Ok(stream)
-}
-
-/// Sends a bounded request to a running local service.
-///
-/// `Ok(None)` means no control socket exists and the caller may safely try
-/// direct state access. An existing but invalid socket always fails closed.
-///
-/// # Errors
-///
-/// Rejects unsafe socket metadata, foreign peers, malformed responses, timeouts,
-/// and I/O failures.
-pub fn request(state_directory: &Path, request: ControlRequest) -> Result<Option<ControlReply>, ControlError> {
-    request_observed(state_directory, request).map(|reply| reply.map(|(reply, _pid)| reply))
-}
-
-/// Requests status with the socket peer PID obtained from the operating system.
-pub fn request_observed(
-    state_directory: &Path,
-    request: ControlRequest,
-) -> Result<Option<(ControlReply, u32)>, ControlError> {
-    let directory = storage::validate_directory(state_directory)?;
-    let path = directory.join(CONTROL_SOCKET_FILE_NAME);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    validate_existing_socket_metadata(&metadata)?;
-    let mut stream = match BlockingUnixStream::connect(path) {
-        Ok(stream) => stream,
-        Err(error) if matches!(error.kind(), io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound) => {
-            return Ok(None);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    stream.set_read_timeout(Some(CLIENT_TIMEOUT))?;
-    stream.set_write_timeout(Some(CLIENT_TIMEOUT))?;
-    validate_peer_blocking(&stream)?;
-    let pid = peer_pid(&stream)?;
-    let bytes = encode_request(request);
-    write_blocking_frame(&mut stream, &bytes, MAX_REQUEST_BYTES)?;
-    let response = read_blocking_frame(&mut stream, MAX_RESPONSE_BYTES)?;
-    let reply = serde_json::from_slice(&response).map_err(|_| ControlError::InvalidResponse)?;
-    Ok(Some((reply, pid)))
-}
-
-fn peer_pid(stream: &BlockingUnixStream) -> Result<u32, ControlError> {
-    #[cfg(target_os = "macos")]
-    let pid =
-        nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::LocalPeerPid).map_err(io::Error::other)?;
-    #[cfg(target_os = "linux")]
-    let pid = nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
-        .map_err(io::Error::other)?
-        .pid();
-    u32::try_from(pid)
-        .ok()
-        .filter(|pid| *pid != 0)
-        .ok_or(ControlError::WrongPeer)
 }
 
 fn encode_request(request: ControlRequest) -> Vec<u8> {
@@ -578,25 +505,6 @@ async fn read_async_length(stream: &mut UnixStream, maximum: usize) -> Result<us
     bounded_length(length_bytes, maximum, ControlError::InvalidRequest)
 }
 
-fn write_blocking_frame(stream: &mut BlockingUnixStream, bytes: &[u8], maximum: usize) -> Result<(), ControlError> {
-    if bytes.is_empty() || bytes.len() > maximum {
-        return Err(ControlError::InvalidRequest);
-    }
-    let length = u32::try_from(bytes.len()).map_err(|_| ControlError::InvalidRequest)?;
-    stream.write_all(&length.to_be_bytes())?;
-    stream.write_all(bytes)?;
-    Ok(())
-}
-
-fn read_blocking_frame(stream: &mut BlockingUnixStream, maximum: usize) -> Result<Vec<u8>, ControlError> {
-    let mut length_bytes = [0_u8; 4];
-    stream.read_exact(&mut length_bytes)?;
-    let length = bounded_length(length_bytes, maximum, ControlError::InvalidResponse)?;
-    let mut bytes = vec![0_u8; length];
-    stream.read_exact(&mut bytes)?;
-    Ok(bytes)
-}
-
 fn bounded_length(length_bytes: [u8; 4], maximum: usize, error: ControlError) -> Result<usize, ControlError> {
     let length = usize::try_from(u32::from_be_bytes(length_bytes)).map_err(|_| ControlError::InvalidResponse)?;
     if length == 0 || length > maximum {
@@ -686,6 +594,12 @@ fn validate_peer_blocking(stream: &BlockingUnixStream) -> Result<(), ControlErro
         Err(ControlError::WrongPeer)
     }
 }
+
+mod client;
+
+#[cfg(test)]
+use client::request_within;
+pub use client::{connect_service, probe, request, request_observed};
 
 #[cfg(test)]
 mod tests;

@@ -15,6 +15,15 @@ mod stdio;
 
 pub use forward::forward;
 
+/// Keeps a timeout's own advice, which tells the owner what to do; other
+/// control failures are summarised by the caller.
+fn request_failed(error: &control::ControlError, summary: &str) -> String {
+    match error {
+        control::ControlError::Unresponsive { .. } => error.to_string(),
+        _ => summary.to_owned(),
+    }
+}
+
 pub fn add_mapped(
     directory: &Path,
     input: &Path,
@@ -31,7 +40,7 @@ pub fn add_mapped(
             .parse()
             .map_err(|_| "mapped endpoint must be a public IPv4 UDP socket")?;
         match control::request(directory, ControlRequest::AddMapped { address })
-            .map_err(|_| "local endpoint publication request failed")?
+            .map_err(|error| request_failed(&error, "local endpoint publication request failed"))?
         {
             Some(ControlReply::EndpointChanged) => Ok(()),
             Some(ControlReply::Error { message }) => Err(message),
@@ -92,7 +101,9 @@ pub fn expose(
             name: tunnel_policy::encoded_name(&name),
             port,
         };
-        match control::request(directory, request).map_err(|_| "local service exposure request failed")? {
+        match control::request(directory, request)
+            .map_err(|error| request_failed(&error, "local service exposure request failed"))?
+        {
             Some(ControlReply::ExposureChanged) => Ok(()),
             Some(ControlReply::Error { message }) => Err(message),
             Some(_) => Err("local service does not support exposure; refresh its installed artifact".to_owned()),
@@ -144,7 +155,9 @@ pub fn limits(
             total: u16::try_from(total).map_err(|_| "total limit is out of range")?,
             idle_seconds: u32::try_from(idle_seconds).map_err(|_| "idle limit is out of range")?,
         };
-        match control::request(directory, request).map_err(|_| "local service request failed")? {
+        match control::request(directory, request)
+            .map_err(|error| request_failed(&error, "local service request failed"))?
+        {
             Some(ControlReply::LimitsSaved) => return Ok(true),
             Some(ControlReply::Error { message }) => return Err(message),
             Some(_) => return Err("local service returned an unexpected reply".to_owned()),

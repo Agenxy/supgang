@@ -85,6 +85,8 @@ pub(super) struct ActiveConnection {
     /// was made, if any: the LAN the path depends on.
     link: Option<crate::network::InterfaceNetwork>,
     pub(super) tunnel_admission: Arc<tokio::sync::Semaphore>,
+    /// Why this service ended the connection, for the connection history.
+    retired: Arc<std::sync::OnceLock<&'static [u8]>>,
 }
 
 impl ActiveConnection {
@@ -100,6 +102,7 @@ impl ActiveConnection {
             authority_record: None,
             link,
             tunnel_admission: Arc::new(tokio::sync::Semaphore::new(4)),
+            retired: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -123,8 +126,14 @@ impl ActiveConnection {
     }
 
     pub(super) fn invalidate(&self, reason: &'static [u8]) {
+        let _first = self.retired.set(reason);
         self.authorization.invalidate();
         self.connection.close(3_u8.into(), reason);
+    }
+
+    /// The reason this service gave when it ended the connection, if it did.
+    pub(super) fn retired_reason(&self) -> Option<&'static [u8]> {
+        self.retired.get().copied()
     }
 
     pub(super) const fn connection(&self) -> &Connection {

@@ -31,6 +31,7 @@ struct StatusOutput {
     internet_reachability: Option<String>,
     connection_recovery: Option<String>,
     mode: Option<String>,
+    recent_connections: Option<Vec<crate::control::ConnectionEvent>>,
 }
 
 pub fn status(state_directory: &Path, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
@@ -98,6 +99,7 @@ fn render_status(
         internet_reachability: runtime.map(|value| value.internet_reachability.clone()),
         connection_recovery: runtime.map(|value| value.connection_recovery.clone()),
         mode: runtime.map(|value| value.mode.clone()),
+        recent_connections: runtime.map(|value| value.recent_connections.clone()),
     };
     if json {
         render_json(&result, output, error)
@@ -152,9 +154,47 @@ fn render_status_human(result: &StatusOutput, output: &mut dyn Write) -> ExitCod
             .is_err()
         })
     {
-        ExitCode::from(EXIT_FAILURE)
-    } else {
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    render_recent_connections(result.recent_connections.as_deref().unwrap_or_default(), output)
+}
+
+/// Shows the last few connection changes, newest last, by age and path kind.
+fn render_recent_connections(events: &[crate::control::ConnectionEvent], output: &mut dyn Write) -> ExitCode {
+    const SHOWN: usize = 8;
+    if events.is_empty() {
+        return ExitCode::SUCCESS;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let mut written = writeln!(output, "Recent connections:");
+    for event in events.iter().skip(events.len().saturating_sub(SHOWN)) {
+        let age = now.saturating_sub(event.at);
+        let ago = if age < 120 {
+            format!("{age} s ago")
+        } else if age < 7_200 {
+            format!("{} min ago", age / 60)
+        } else {
+            format!("{} h ago", age / 3_600)
+        };
+        let reason = if event.reason.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", event.reason)
+        };
+        written = written.and_then(|()| {
+            writeln!(
+                output,
+                "  {ago}  {} [{}] over {}{reason}",
+                event.event, event.peer, event.path
+            )
+        });
+    }
+    if written.is_ok() {
         ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_FAILURE)
     }
 }
 

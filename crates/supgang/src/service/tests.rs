@@ -9,6 +9,7 @@ use super::{
 use crate::{candidate::CandidateKind, ids::NodeId};
 
 mod forward;
+mod lossy_path;
 mod production;
 mod scenarios;
 mod sim_harness;

@@ -339,6 +339,7 @@ pub(super) struct ControlView<'a> {
     pub anchor_mode: bool,
     pub tunnels: &'a super::tunnel::TunnelRuntime,
     pub tunnel_tasks: &'a mut tokio::task::JoinSet<()>,
+    pub recent_connections: Vec<crate::control::ConnectionEvent>,
 }
 
 pub(super) enum ControlActivity<T> {
@@ -393,6 +394,7 @@ async fn handle_control(
         anchor_mode,
         tunnels,
         tunnel_tasks,
+        recent_connections,
     } = view;
     let request = tokio::time::timeout(Duration::from_secs(2), control::read_request(&mut stream)).await;
     if let Ok(Ok(ControlRequest::Connect { target, name })) = request {
@@ -468,6 +470,7 @@ async fn handle_control(
                 mode: if anchor_mode { "anchor" } else { "device" }.to_owned(),
                 member_count: local_state.member_count(),
                 event_count: local_state.event_count(),
+                recent_connections,
             },
         }
         .into_unchanged(),
@@ -494,6 +497,7 @@ async fn handle_control(
                                 .to_string(),
                             received_datagrams: statistics.udp_rx.datagrams,
                             sent_datagrams: statistics.udp_tx.datagrams,
+                            path: Some((&statistics.path).into()),
                         }
                     });
                 }

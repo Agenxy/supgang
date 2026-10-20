@@ -101,6 +101,7 @@ fn connection_diagnostics_are_optional_and_separate_from_advertised_addresses() 
         remote_address: "192.0.2.1:51000".to_owned(),
         received_datagrams: 2,
         sent_datagrams: 3,
+        path: None,
     });
     let restored: PeerRow = serde_json::from_value(serde_json::to_value(&peer)?)?;
     assert!(restored.addresses.is_empty());

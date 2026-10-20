@@ -41,6 +41,44 @@ pub struct PeerConnection {
     pub received_datagrams: u64,
     /// Number of UDP datagrams sent on this connection.
     pub sent_datagrams: u64,
+    /// The QUIC path's measured state, for telling a lossy or policed network
+    /// from a transport problem. Absent from older services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathStatistics>,
+}
+
+/// One QUIC path's congestion and loss state at the time of the read.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PathStatistics {
+    /// Smoothed round-trip time in milliseconds.
+    pub rtt_ms: u64,
+    /// Congestion window in bytes: how much may be in flight.
+    pub congestion_window_bytes: u64,
+    /// Times congestion control reduced the window.
+    pub congestion_events: u64,
+    /// QUIC packets sent on this path.
+    pub sent_packets: u64,
+    /// QUIC packets declared lost on this path.
+    pub lost_packets: u64,
+    /// Current path MTU in bytes.
+    pub current_mtu: u16,
+    /// Times MTU discovery found larger packets silently dropped.
+    pub black_holes_detected: u64,
+}
+
+impl From<&quinn::PathStats> for PathStatistics {
+    fn from(path: &quinn::PathStats) -> Self {
+        Self {
+            rtt_ms: u64::try_from(path.rtt.as_millis()).unwrap_or(u64::MAX),
+            congestion_window_bytes: path.cwnd,
+            congestion_events: path.congestion_events,
+            sent_packets: path.sent_packets,
+            lost_packets: path.lost_packets,
+            current_mtu: path.current_mtu,
+            black_holes_detected: path.black_holes_detected,
+        }
+    }
 }
 
 /// One service a computer says it offers, signed by that computer's device.

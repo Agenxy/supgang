@@ -208,7 +208,7 @@ async fn probation(
 }
 
 fn healthy(state_directory: &Path, child: &Child, probe: &health::ExpectedPayload) -> bool {
-    control::request(state_directory, control::ControlRequest::Status)
+    control::probe(state_directory, control::ControlRequest::Status)
         .is_ok_and(|reply| probe.matches(reply.as_ref(), child.id()))
 }
 

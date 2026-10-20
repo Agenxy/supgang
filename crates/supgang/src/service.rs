@@ -35,6 +35,7 @@ mod connection;
 mod contact_state;
 mod events;
 mod gateway_reachability;
+mod history;
 mod interface_refresh;
 mod live_session;
 pub(crate) mod liveness;
@@ -42,6 +43,7 @@ mod local_control;
 mod peer_actor;
 mod rendezvous;
 mod retry_schedule;
+mod silence;
 mod tunnel;
 mod update_delivery;
 
@@ -315,6 +317,8 @@ async fn service_loop(
     update_context.tunnels = Some(tunnels.clone());
     let mut tunnel_tasks = tokio::task::JoinSet::new();
     let mut update_delivery = UpdateDeliveryQueue::open(state_directory, unix_time()?)?;
+    let mut silence = silence::SilenceWatch::default();
+    let mut history = history::ConnectionHistory::default();
     loop {
         if restart_requested || stop_if_requested(&mut shutdown, &endpoint).await {
             break;
@@ -361,6 +365,12 @@ async fn service_loop(
             )
             .await;
         }
+        if silence.retire_departed(&mut active) {
+            noncanonical_outbound.retain(|peer| active.contains_key(peer));
+            next_dial = now;
+        }
+        silence.observe(&active);
+        history.observe(&active, unix_time()?);
         publish_gossip_if(
             directory_changed,
             &page_sender,
@@ -538,6 +548,7 @@ async fn service_loop(
                 anchor_mode,
                 tunnels: &tunnels,
                 tunnel_tasks: &mut tunnel_tasks,
+                recent_connections: history.events(),
                 config: &mut config,
                 transport_identity: &transport_identity,
             },

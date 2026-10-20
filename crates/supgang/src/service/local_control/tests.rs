@@ -73,6 +73,7 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
                 anchor_mode: false,
                 tunnels: &tunnels,
                 tunnel_tasks: &mut tunnel_tasks,
+                recent_connections: Vec::new(),
                 config: &mut config,
                 transport_identity: &transport_identity,
             },
