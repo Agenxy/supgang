@@ -4,10 +4,11 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.13` so it cannot be mistaken for the published
+The corrective source reports version `0.2.0-alpha.14` so it cannot be mistaken for the published
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Keep one fallback release at most. The store had kept a copy from every probation refresh.
 - Judge a staged candidate even when the restart's own wait times out. A slow supervisor launch
   had ended the refresh before its reconnection check, which would have kept a release that cannot
   reach its peers. The refresh logs each stage with a timestamp, and an owner revert records the

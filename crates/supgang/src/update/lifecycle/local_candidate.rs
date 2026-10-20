@@ -185,7 +185,38 @@ fn preserve_fallback(updates: &Path, active: &SlotRecord) -> Result<(), UpdateEr
         FALLBACK_RECORD,
         &serde_json::to_vec(&previous).map_err(|_| UpdateError::InvalidBundle)?,
         0o600,
-    )
+    )?;
+    prune_fallbacks(updates, &previous.digest)
+}
+
+/// Keeps only the current fallback, so the store holds one release at most.
+fn prune_fallbacks(updates: &Path, keep: &str) -> Result<(), UpdateError> {
+    const MAX_ENTRIES_PER_PASS: usize = 16;
+    let store = ensure_child(updates, FALLBACK_DIRECTORY)?;
+    let mut inspected = 0_usize;
+    for entry in std::fs::read_dir(&store)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| UpdateError::InvalidBundle)?;
+        if name.len() != 64
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(UpdateError::InvalidBundle);
+        }
+        crate::storage::validate_trusted_owner_directory(&entry.path())?;
+        if name != keep {
+            std::fs::remove_dir_all(entry.path())?;
+        }
+        inspected = inspected.checked_add(1).ok_or(UpdateError::Capacity)?;
+        if inspected > MAX_ENTRIES_PER_PASS {
+            return Err(UpdateError::Capacity);
+        }
+    }
+    Ok(())
 }
 
 /// The kept fallback as a valid slot record, its slot restored if pruned, or

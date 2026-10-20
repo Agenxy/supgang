@@ -144,6 +144,10 @@ fn after_a_failed_candidate_is_reverted_the_next_revert_restores_a_release_that_
         "A's slot was not restored for the next revert"
     );
 
+    // The fallback store holds one release, however many refreshes ran.
+    let fallbacks = fs::read_dir(updates_directory(&state, false)?.join("fallback"))?.count();
+    assert_eq!(fallbacks, 1, "the fallback store grew to {fallbacks} releases");
+
     // The owner reverts once more: A runs, and nothing broken is left to restore.
     lifecycle::revert_local_candidate_unlocked(&state, &second.digest)?;
     assert_eq!(lifecycle::read_active(&state)?.digest, first.digest);
