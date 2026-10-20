@@ -82,7 +82,7 @@ fn a_committed_candidate_that_never_reconnects_returns_to_the_previous_release()
     // A second revert has nothing to return to.
     assert!(lifecycle::revert_local_candidate_unlocked(&state, &digest).is_err());
 
-    lifecycle::record_refresh_outcome(&state, &digest, "reverted-no-peer", 1_792_000_000)?;
+    lifecycle::record_refresh_outcome(&state, crate::VERSION, &digest, "reverted-no-peer", 1_792_000_000)?;
     let outcome = lifecycle::last_refresh_outcome(&state)?.ok_or("no outcome recorded")?;
     assert_eq!(outcome.result, "reverted-no-peer");
     assert_eq!(outcome.digest, digest);

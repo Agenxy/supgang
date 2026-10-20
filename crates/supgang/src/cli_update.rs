@@ -157,6 +157,9 @@ fn execute(state_directory: &Path, command: &UpdateCommand) -> Result<UpdateOutp
         }
         UpdateCommand::Revert => {
             let failed = update::active_digest(state_directory).map_err(|error| error.to_string())?;
+            let failed_version = update::status(state_directory)
+                .map_err(|error| error.to_string())?
+                .active_version;
             {
                 let _lock = update::UpdateLock::acquire(state_directory).map_err(|error| error.to_string())?;
                 update::revert_local_candidate_unlocked(state_directory, &failed)
@@ -165,7 +168,8 @@ fn execute(state_directory: &Path, command: &UpdateCommand) -> Result<UpdateOutp
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs());
-            let _recorded = update::record_refresh_outcome(state_directory, &failed, "reverted-by-owner", now);
+            let _recorded =
+                update::record_refresh_outcome(state_directory, &failed_version, &failed, "reverted-by-owner", now);
             platform_service::perform(state_directory, Action::Restart).map_err(|error| {
                 format!("the previous release is active but the restart failed: {error}; run `supgang service restart`")
             })?;

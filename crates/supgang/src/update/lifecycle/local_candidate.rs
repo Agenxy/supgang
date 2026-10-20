@@ -216,11 +216,17 @@ fn restore_fallback(updates: &Path, restored: &SlotRecord, failed: &str) -> Resu
 /// # Errors
 ///
 /// Rejects unsafe state.
-pub fn record_refresh_outcome(state_directory: &Path, digest: &str, result: &str, now: u64) -> Result<(), UpdateError> {
+pub fn record_refresh_outcome(
+    state_directory: &Path,
+    version: &str,
+    digest: &str,
+    result: &str,
+    now: u64,
+) -> Result<(), UpdateError> {
     let updates = updates_directory(state_directory, false)?;
     let outcome = RefreshOutcome {
         schema: "supgang.refresh-outcome/v1".to_owned(),
-        version: VERSION.to_owned(),
+        version: version.to_owned(),
         digest: digest.to_owned(),
         result: result.to_owned(),
         recorded_at: now,

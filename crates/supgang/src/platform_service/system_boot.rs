@@ -133,8 +133,8 @@ pub(super) fn perform(state: &Path, action: Action<'_>) -> Result<Report, Servic
         Action::Refresh => {
             preflight_restart(state)?;
             let refreshed = super::refresh::install(state)?;
-            let report = restart(state)?;
-            super::refresh::settle(state, refreshed, report)
+            let restarted = restart(state);
+            super::refresh::settle(state, refreshed, restarted, || status(state))
         }
         Action::Restart => restart(state),
         Action::Install { .. } | Action::Stop | Action::Uninstall => Err(ServiceError::BootApprovalRequired),

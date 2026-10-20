@@ -19,7 +19,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-supgang-core = { path = "../supgang", version = "=0.2.0-alpha.12" }
+supgang-core = { path = "../supgang", version = "=0.2.0-alpha.13" }
 
 [lints]
 workspace = true

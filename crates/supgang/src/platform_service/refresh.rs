@@ -63,44 +63,138 @@ pub(super) fn install(state_directory: &Path) -> Result<Refreshed, ServiceError>
 
 /// Waits for a candidate's verdict and its reconnection, returning to the
 /// previous release if it does not reconnect.
-pub(super) fn settle(state_directory: &Path, refreshed: Refreshed, report: Report) -> Result<Report, ServiceError> {
-    let Refreshed::Candidate { digest, peers_before } = refreshed else {
-        return Ok(report);
+///
+/// A staged candidate is always judged here, whatever `restarted` says. The
+/// restart's own wait can end while the supervisor is still validating and
+/// starting the candidate, and returning then would skip the reconnection
+/// check that keeps a release that cannot reach its peers from staying.
+pub(super) fn settle(
+    state_directory: &Path,
+    refreshed: Refreshed,
+    restarted: Result<Report, ServiceError>,
+    report: impl Fn() -> Result<Report, ServiceError>,
+) -> Result<Report, ServiceError> {
+    settle_with(
+        &Local(state_directory),
+        refreshed,
+        restarted,
+        report,
+        Timings::INSTALLED,
+    )
+}
+
+/// How long each stage of a candidate's judgement may take.
+#[derive(Clone, Copy)]
+struct Timings {
+    verdict: Duration,
+    reconnect: Duration,
+    poll: Duration,
+}
+
+impl Timings {
+    const INSTALLED: Self = Self {
+        verdict: VERDICT_TIMEOUT,
+        reconnect: RECONNECT_TIMEOUT,
+        poll: POLL,
     };
-    let verdict = Instant::now() + VERDICT_TIMEOUT;
-    while crate::update::activation_pending(state_directory).map_err(|error| service_update_error(&error))? {
+}
+
+/// The state a candidate's judgement reads and the actions it may take.
+trait Probation {
+    fn pending(&self) -> Result<bool, ServiceError>;
+    fn active_digest(&self) -> Result<String, ServiceError>;
+    fn connected_peers(&self) -> Option<u32>;
+    fn revert(&self, failed: &str) -> Result<(), ServiceError>;
+    fn restart(&self);
+    fn record(&self, digest: &str, result: &str);
+    /// A progress line for the refresh log; the owner reads it after reconnecting.
+    fn note(&self, line: &str);
+}
+
+fn settle_with(
+    probation: &impl Probation,
+    refreshed: Refreshed,
+    restarted: Result<Report, ServiceError>,
+    report: impl Fn() -> Result<Report, ServiceError>,
+    timings: Timings,
+) -> Result<Report, ServiceError> {
+    let Refreshed::Candidate { digest, peers_before } = refreshed else {
+        return restarted;
+    };
+    if restarted.is_err() {
+        probation.note("restart wait ended before the service answered; judging the candidate anyway");
+    }
+    let verdict = Instant::now() + timings.verdict;
+    while probation.pending()? {
         if Instant::now() >= verdict {
+            probation.note("no supervisor verdict in time");
             return Err(ServiceError::NotReady);
         }
-        thread::sleep(POLL);
+        thread::sleep(timings.poll);
     }
-    if crate::update::active_digest(state_directory).map_err(|error| service_update_error(&error))? != digest {
-        record(state_directory, &digest, "reverted-unhealthy");
+    if probation.active_digest()? != digest {
+        probation.note("supervisor rejected the candidate; the previous release runs");
+        probation.record(&digest, "reverted-unhealthy");
         return Err(ServiceError::CandidateRejected);
     }
+    probation.note("supervisor committed the candidate");
     if peers_before == 0 {
-        record(state_directory, &digest, "committed");
-        return Ok(report);
+        probation.record(&digest, "committed");
+        return report();
     }
-    let reconnect = Instant::now() + RECONNECT_TIMEOUT;
+    probation.note("waiting for a peer to reconnect");
+    let reconnect = Instant::now() + timings.reconnect;
     while Instant::now() < reconnect {
-        if connected_peers(state_directory).is_some_and(|peers| peers > 0) {
-            record(state_directory, &digest, "committed");
-            return Ok(report);
+        if probation.connected_peers().is_some_and(|peers| peers > 0) {
+            probation.note("a peer reconnected; keeping the candidate");
+            probation.record(&digest, "committed");
+            return report();
         }
-        thread::sleep(POLL);
+        thread::sleep(timings.poll);
     }
-    {
-        let _lock =
-            crate::update::UpdateLock::acquire(state_directory).map_err(|error| service_update_error(&error))?;
-        crate::update::revert_local_candidate_unlocked(state_directory, &digest)
-            .map_err(|error| service_update_error(&error))?;
-    }
-    record(state_directory, &digest, "reverted-no-peer");
+    probation.note("no peer reconnected; returning to the previous release");
+    probation.revert(&digest)?;
+    probation.record(&digest, "reverted-no-peer");
     // The supervisor exits on a clean restart with nothing pending, and the
     // service manager starts it again on the active, previous release.
-    let _restart = control::request(state_directory, ControlRequest::Restart);
+    probation.restart();
+    probation.note("restart requested on the previous release");
     Err(ServiceError::CandidateReverted)
+}
+
+/// This computer's update state and running service.
+struct Local<'a>(&'a Path);
+
+impl Probation for Local<'_> {
+    fn pending(&self) -> Result<bool, ServiceError> {
+        crate::update::activation_pending(self.0).map_err(|error| service_update_error(&error))
+    }
+
+    fn active_digest(&self) -> Result<String, ServiceError> {
+        crate::update::active_digest(self.0).map_err(|error| service_update_error(&error))
+    }
+
+    fn connected_peers(&self) -> Option<u32> {
+        connected_peers(self.0)
+    }
+
+    fn revert(&self, failed: &str) -> Result<(), ServiceError> {
+        let _lock = crate::update::UpdateLock::acquire(self.0).map_err(|error| service_update_error(&error))?;
+        crate::update::revert_local_candidate_unlocked(self.0, failed).map_err(|error| service_update_error(&error))
+    }
+
+    fn restart(&self) {
+        let _restart = control::request(self.0, ControlRequest::Restart);
+    }
+
+    fn record(&self, digest: &str, result: &str) {
+        let _recorded = crate::update::record_refresh_outcome(self.0, crate::VERSION, digest, result, unix_now());
+    }
+
+    fn note(&self, line: &str) {
+        use std::io::Write as _;
+        let _written = writeln!(std::io::stderr(), "supgang refresh {}: {line}", unix_now());
+    }
 }
 
 fn connected_peers(state_directory: &Path) -> Option<u32> {
@@ -110,9 +204,11 @@ fn connected_peers(state_directory: &Path) -> Option<u32> {
     }
 }
 
-fn record(state_directory: &Path, digest: &str, result: &str) {
-    let now = std::time::SystemTime::now()
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let _recorded = crate::update::record_refresh_outcome(state_directory, digest, result, now);
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
+
+#[cfg(test)]
+mod tests;

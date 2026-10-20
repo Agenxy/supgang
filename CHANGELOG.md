@@ -4,10 +4,14 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.12` so it cannot be mistaken for the published
+The corrective source reports version `0.2.0-alpha.13` so it cannot be mistaken for the published
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Judge a staged candidate even when the restart's own wait times out. A slow supervisor launch
+  had ended the refresh before its reconnection check, which would have kept a release that cannot
+  reach its peers. The refresh logs each stage with a timestamp, and an owner revert records the
+  version it reverted.
 - Never leave `supgang update revert` pointing at a release that failed. A probation refresh keeps
   a copy of the previous release outside the slots the supervisor prunes. After any revert, that
   copy becomes the previous release, or none is recorded. `supgang update status` shows what a

@@ -498,8 +498,10 @@ mod linux {
     fn refresh(state_directory: &Path, service_definition: &Path) -> Result<Report, ServiceError> {
         preflight_restart_with_definition(state_directory, service_definition)?;
         let refreshed = super::refresh::install(state_directory)?;
-        let report = restart(state_directory, service_definition)?;
-        super::refresh::settle(state_directory, refreshed, report)
+        let restarted = restart(state_directory, service_definition);
+        super::refresh::settle(state_directory, refreshed, restarted, || {
+            status(state_directory, service_definition)
+        })
     }
 
     pub(super) fn preflight_restart(state_directory: &Path) -> Result<(), ServiceError> {
