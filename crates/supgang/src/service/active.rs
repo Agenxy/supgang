@@ -136,6 +136,11 @@ impl ActiveConnection {
         self.retired.get().copied()
     }
 
+    /// The shared slot for why this connection ended, for its session task.
+    pub(super) fn retired_slot(&self) -> Arc<std::sync::OnceLock<&'static [u8]>> {
+        Arc::clone(&self.retired)
+    }
+
     pub(super) const fn connection(&self) -> &Connection {
         &self.connection
     }

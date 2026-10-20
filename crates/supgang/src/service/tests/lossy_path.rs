@@ -80,3 +80,47 @@ fn a_tunnel_from_a_lossy_hotel_across_an_ocean_keeps_its_throughput() -> Result<
     );
     Ok(())
 }
+
+/// A brief stall, longer than one contact exchange may take but shorter than
+/// the silence a dead path shows, must not end the session or the tunnels on
+/// it. On 20 October one failed exchange ended a laptop's session and with it
+/// every SSH master riding it.
+#[test]
+fn a_tunnel_survives_a_stall_longer_than_one_contact_exchange() -> Result<(), Error> {
+    let network = Network::new(53);
+    let home = network.add_site(site(HOME_PUBLIC, Ipv4Addr::new(192, 168, 1, 0), Nat44::home_router()))?;
+    let solis = network.add_host(Some(home))?;
+    let laptop = network.add_host(Some(home))?;
+    network.forward_udp(home, PORT, solis, PORT)?;
+    let mut fleet = Fleet::pair(Arc::clone(&network), &[solis, laptop])?;
+    fleet.start_all()?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_secs(30))?.ok_or("no connection at home")?;
+    add_mapped(fleet.computer(SOLIS)?, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
+    let echo = expose_echo(fleet.computer(SOLIS)?, "ssh")?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no reconnection after exposure")?;
+    let hotel = network.add_site(site(
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(10, 20, 0, 0),
+        Nat44::symmetric(),
+    ))?;
+    network.move_host(laptop, Some(hotel))?;
+    let forward = SocketAddr::new(IpAddr::V4(HOME_PUBLIC), PORT);
+    eventually(Duration::from_mins(1), || {
+        Ok(connection(fleet.computer(LAPTOP)?, fleet.computer(SOLIS)?.node)?.filter(|path| *path == forward))
+    })?
+    .ok_or("no connection from the hotel")?;
+
+    // An SSH master's stream, open before the stall.
+    let mut master = open_tunnel(fleet.computer(LAPTOP)?, fleet.computer(SOLIS)?.node, "ssh")?;
+    master.write_all(b"before")?;
+    network.set_loss_permille(hotel, 1_000)?;
+    std::thread::sleep(Duration::from_secs(13));
+    network.set_loss_permille(hotel, 0)?;
+    master.write_all(b" and after")?;
+    master.shutdown(std::net::Shutdown::Write)?;
+    let mut returned = Vec::new();
+    master.read_to_end(&mut returned)?;
+    echo.join().map_err(|_| "echo server panicked")??;
+    assert_eq!(returned, b"before and after", "the stall ended the tunnel");
+    Ok(())
+}

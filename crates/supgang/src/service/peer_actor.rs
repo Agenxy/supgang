@@ -47,6 +47,9 @@ struct PeerActorContext {
     update: Option<PeerUpdateContext>,
     tunnel_admission: Arc<tokio::sync::Semaphore>,
     authorization: SessionAuthorization,
+    /// Why this session ended, shared with the registered connection so the
+    /// connection history can say.
+    ended: Arc<std::sync::OnceLock<&'static [u8]>>,
 }
 
 #[derive(Clone)]
@@ -105,11 +108,10 @@ pub(super) fn register_connection(
         .and_then(|update| update.tunnels.as_ref())
         .map_or(4, |runtime| runtime.policy.borrow().per_peer);
     let tunnel_admission = Arc::new(tokio::sync::Semaphore::new(limit));
-    registry.active.insert(
-        peer,
-        ActiveConnection::new(connection.clone(), authorization.clone(), capabilities)
-            .with_tunnel_admission(tunnel_admission.clone()),
-    );
+    let registered = ActiveConnection::new(connection.clone(), authorization.clone(), capabilities)
+        .with_tunnel_admission(tunnel_admission.clone());
+    let ended = registered.retired_slot();
+    registry.active.insert(peer, registered);
     if preferred {
         registry.noncanonical_outbound.remove(&peer);
     } else {
@@ -125,6 +127,7 @@ pub(super) fn register_connection(
         update: registry.update.clone(),
         authorization,
         tunnel_admission,
+        ended,
     }));
 }
 
@@ -183,7 +186,14 @@ fn offered_connection(local: NodeId, peer: NodeId, origin: ConnectionOrigin) -> 
     }
 }
 
-async fn peer_actor(context: PeerActorContext) {
+/// Consecutive failed contact exchanges a live session tolerates. One slow
+/// exchange on a lossy or loaded path is not evidence the peer is gone, and
+/// ending the session would end every tunnel on it. A dead path is retired by
+/// the silence probe and QUIC's idle timeout.
+const MAX_SYNC_FAILURES: u32 = 3;
+
+/// Runs one peer's authenticated session until it ends, and says why.
+async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
     let PeerActorContext {
         connection,
         peer,
@@ -194,48 +204,34 @@ async fn peer_actor(context: PeerActorContext) {
         update,
         authorization,
         tunnel_admission,
+        ended: _,
     } = context;
     let connection_id = connection.stable_id();
     let mut tunnels = tokio::task::JoinSet::new();
+    let mut sync_failures = 0_u32;
     loop {
         while tunnels.try_join_next().is_some() {}
-        tokio::select! {
+        let exchanged = tokio::select! {
             () = tokio::time::sleep(interval), if initiator => {
                 let page = pages.borrow().clone();
-                let Ok(Ok((mut send, mut receive))) = tokio::time::timeout(
-                    Duration::from_secs(SESSION_TIMEOUT_SECONDS),
-                    peer_stream::open(&connection, StreamKind::Sync),
-                ).await else {
-                    break;
-                };
-                let Ok(Ok(page)) = tokio::time::timeout(
-                    Duration::from_secs(SESSION_TIMEOUT_SECONDS),
-                    sync::exchange_outbound_stream(&mut send, &mut receive, &page),
-                ).await else {
-                    break;
-                };
-                if send_contacts(&events, peer, connection_id, page).await.is_err() {
-                    return;
-                }
+                exchange_outbound(&connection, &page).await
             }
             accepted = peer_stream::accept(&connection) => {
                 let Ok((kind, mut send, mut receive)) = accepted else {
-                    break;
+                    return b"peer stream acceptance ended";
                 };
                 match kind {
                     StreamKind::Sync if !initiator => {
                         let page = pages.borrow().clone();
-                        let Ok(Ok(page)) = tokio::time::timeout(
+                        tokio::time::timeout(
                             Duration::from_secs(SESSION_TIMEOUT_SECONDS),
                             sync::exchange_inbound_stream(&mut send, &mut receive, &page),
-                        ).await else {
-                            break;
-                        };
-                        if send_contacts(&events, peer, connection_id, page).await.is_err() {
-                            return;
-                        }
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
                     }
-                    StreamKind::Sync => break,
+                    StreamKind::Sync => return b"peer opened a sync stream out of turn",
                     StreamKind::Service => {
                         let Some(runtime) = update.as_ref().and_then(|context| context.tunnels.clone()) else {
                             continue;
@@ -244,10 +240,11 @@ async fn peer_actor(context: PeerActorContext) {
                         tunnels.spawn(super::tunnel::incoming(
                             send, receive, runtime, authorization.clone(), tunnel_admission.clone(),
                         ));
+                        continue;
                     }
                     StreamKind::Update => {
                         let Some(update) = update.as_ref() else {
-                            break;
+                            return b"peer offered an update this computer cannot receive";
                         };
                         let received = update_wire::receive(
                             send,
@@ -267,13 +264,47 @@ async fn peer_actor(context: PeerActorContext) {
                             received,
                             Err(UpdateWireError::InvalidPreface | UpdateWireError::Rejected | UpdateWireError::Failed)
                         ) {
-                            break;
+                            return b"peer update delivery failed";
                         }
+                        continue;
                     }
+                }
+            }
+        };
+        match exchanged {
+            Some(page) => {
+                sync_failures = 0;
+                if send_contacts(&events, peer, connection_id, page).await.is_err() {
+                    return b"service stopped";
+                }
+            }
+            None if connection.close_reason().is_some() => return b"connection closed during sync",
+            None => {
+                sync_failures = sync_failures.saturating_add(1);
+                if sync_failures >= MAX_SYNC_FAILURES {
+                    return b"contact sync failed repeatedly";
                 }
             }
         }
     }
+}
+
+/// One bounded outbound contact exchange; `None` if it did not complete.
+async fn exchange_outbound(connection: &Connection, page: &SyncPage) -> Option<SyncPage> {
+    let (mut send, mut receive) = tokio::time::timeout(
+        Duration::from_secs(SESSION_TIMEOUT_SECONDS),
+        peer_stream::open(connection, StreamKind::Sync),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    tokio::time::timeout(
+        Duration::from_secs(SESSION_TIMEOUT_SECONDS),
+        sync::exchange_outbound_stream(&mut send, &mut receive, page),
+    )
+    .await
+    .ok()?
+    .ok()
 }
 
 async fn send_contacts(
@@ -301,14 +332,16 @@ async fn supervise_connection(context: PeerActorContext) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(u64::MAX, |duration| duration.as_secs());
-    tokio::select! {
-        () = peer_actor(context) => {}
-        () = revocation_listener(connection.clone(), peer, events.clone()) => {}
-        () = rendezvous::listener(connection.clone(), peer, events.clone()) => {}
-        () = authorization.wait_until_invalid(now) => {}
-    }
+    let ended = Arc::clone(&context.ended);
+    let reason: &'static [u8] = tokio::select! {
+        reason = peer_actor(context) => reason,
+        () = revocation_listener(connection.clone(), peer, events.clone()) => b"revocation stream ended",
+        () = rendezvous::listener(connection.clone(), peer, events.clone()) => b"rendezvous stream ended",
+        () = authorization.wait_until_invalid(now) => b"session authorization lapsed",
+    };
+    let _first = ended.set(reason);
     authorization.invalidate();
-    connection.close(1_u8.into(), b"peer session ended");
+    connection.close(1_u8.into(), reason);
     let _closed = send_closed_event(&events, PeerEvent::Closed { peer, connection_id }, CLOSED_EVENT_TIMEOUT).await;
 }
 
@@ -567,6 +600,7 @@ mod tests {
                 update: None,
                 authorization: authorization()?,
                 tunnel_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
+                ended: std::sync::Arc::new(std::sync::OnceLock::new()),
             }));
 
             let (mut malformed, _receive) = client_connection.open_bi().await?;

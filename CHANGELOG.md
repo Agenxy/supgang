@@ -8,6 +8,10 @@ The corrective source reports version `0.2.0-alpha.14` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Keep a session, and every tunnel on it, through a stall. One contact exchange that missed its
+  12 s bound ended the whole session, which on 20 October dropped the travelling laptop's SSH
+  masters. A session now ends only after three consecutive failed exchanges or once its
+  connection has closed. Each session records why it ended, shown in the connection history.
 - Keep one fallback release at most. The store had kept a copy from every probation refresh.
 - Judge a staged candidate even when the restart's own wait times out. A slow supervisor launch
   had ended the refresh before its reconnection check, which would have kept a release that cannot
