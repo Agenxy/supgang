@@ -4,7 +4,7 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.14` so it cannot be mistaken for the published
+The corrective source reports version `0.2.0-alpha.15` so it cannot be mistaken for the published
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
