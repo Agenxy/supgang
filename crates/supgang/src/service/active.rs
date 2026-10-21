@@ -85,6 +85,8 @@ pub(super) struct ActiveConnection {
     /// was made, if any: the LAN the path depends on.
     link: Option<crate::network::InterfaceNetwork>,
     pub(super) tunnel_admission: Arc<tokio::sync::Semaphore>,
+    tunnel_limit: usize,
+    draining: tokio::sync::watch::Sender<bool>,
     /// Why this service ended the connection, for the connection history.
     retired: Arc<std::sync::OnceLock<&'static [u8]>>,
 }
@@ -95,6 +97,7 @@ impl ActiveConnection {
         let link = crate::network::interface_networks()
             .ok()
             .and_then(|networks| networks.into_iter().find(|network| network.contains(remote)));
+        let (draining, _) = tokio::sync::watch::channel(false);
         Self {
             connection,
             authorization,
@@ -102,6 +105,8 @@ impl ActiveConnection {
             authority_record: None,
             link,
             tunnel_admission: Arc::new(tokio::sync::Semaphore::new(4)),
+            tunnel_limit: 4,
+            draining,
             retired: Arc::new(std::sync::OnceLock::new()),
         }
     }
@@ -116,9 +121,23 @@ impl ActiveConnection {
         }
     }
 
-    pub(super) fn with_tunnel_admission(mut self, admission: Arc<tokio::sync::Semaphore>) -> Self {
+    pub(super) fn with_tunnel_admission(mut self, admission: Arc<tokio::sync::Semaphore>, limit: usize) -> Self {
         self.tunnel_admission = admission;
+        self.tunnel_limit = limit;
         self
+    }
+
+    pub(super) fn begin_draining(&self) {
+        self.tunnel_admission.close();
+        self.draining.send_replace(true);
+    }
+
+    pub(super) fn drain_signal(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.draining.subscribe()
+    }
+
+    pub(super) fn has_tunnels(&self) -> bool {
+        self.tunnel_admission.available_permits() < self.tunnel_limit
     }
 
     pub(super) const fn authorization(&self) -> &SessionAuthorization {

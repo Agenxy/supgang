@@ -349,6 +349,15 @@ pub(super) fn expose_echoes(
     name: &str,
     connections: usize,
 ) -> Result<thread::JoinHandle<Result<(), String>>, Error> {
+    expose_echoes_with_timeout(computer, name, connections, Duration::from_mins(1))
+}
+
+pub(super) fn expose_echoes_with_timeout(
+    computer: &Computer,
+    name: &str,
+    connections: usize,
+    read_timeout: Duration,
+) -> Result<thread::JoinHandle<Result<(), String>>, Error> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let echo = thread::spawn(move || {
@@ -357,7 +366,7 @@ pub(super) fn expose_echoes(
             let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
             handlers.push(thread::spawn(move || {
                 stream
-                    .set_read_timeout(Some(Duration::from_mins(1)))
+                    .set_read_timeout(Some(read_timeout))
                     .map_err(|error| error.to_string())?;
                 let mut bytes = Vec::new();
                 stream.read_to_end(&mut bytes).map_err(|error| error.to_string())?;

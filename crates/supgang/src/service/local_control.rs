@@ -129,11 +129,13 @@ pub(super) fn merge_received_revocations(
     local_state: &mut LocalState,
     directory: &mut PeerDirectory,
     active: &mut BTreeMap<NodeId, ActiveConnection>,
+    draining: &mut super::draining::DrainingConnections,
     incoming: crate::revocation::SignedRevocationList,
 ) -> Result<bool, ServiceError> {
     let changed = apply_received_revocations(local_state, incoming)?;
     if changed {
         deauthorize_revoked(active, local_state.revocations());
+        draining.invalidate_revoked(local_state.revocations());
         directory.set_revocations(local_state.revocations())?;
     }
     Ok(changed)
@@ -168,6 +170,7 @@ pub(super) async fn revocation_listener(
 
 pub(super) struct PeerEventState<'a> {
     pub(super) active: &'a mut BTreeMap<NodeId, ActiveConnection>,
+    pub(super) draining: &'a mut super::draining::DrainingConnections,
     pub(super) noncanonical_outbound: &'a mut BTreeSet<NodeId>,
     pub(super) local_state: &'a mut LocalState,
     pub(super) directory: &'a mut PeerDirectory,
@@ -182,6 +185,7 @@ pub(super) fn process_peer_events(
 ) -> Result<bool, ServiceError> {
     let PeerEventState {
         active,
+        draining,
         noncanonical_outbound,
         local_state,
         directory,
@@ -213,7 +217,7 @@ pub(super) fn process_peer_events(
                         }
                         continue;
                     }
-                    if merge_received_revocations(local_state, directory, active, page.revocations)? {
+                    if merge_received_revocations(local_state, directory, active, draining, page.revocations)? {
                         directory_changed = true;
                     }
                     if close_if_revoked(active, local_state, peer) {
@@ -248,7 +252,7 @@ pub(super) fn process_peer_events(
                     }
                     continue;
                 }
-                if merge_received_revocations(local_state, directory, active, revocations)? {
+                if merge_received_revocations(local_state, directory, active, draining, revocations)? {
                     directory_changed = true;
                 }
                 close_if_revoked(active, local_state, peer);
@@ -327,6 +331,7 @@ fn close_if_revoked(active: &mut BTreeMap<NodeId, ActiveConnection>, local_state
 }
 
 pub(super) struct ControlView<'a> {
+    pub(super) draining: &'a mut super::draining::DrainingConnections,
     pub instance_id: &'a str,
     pub restart_requested: &'a mut bool,
     pub state_directory: &'a std::path::Path,
@@ -382,6 +387,7 @@ async fn handle_control(
     view: ControlView<'_>,
 ) -> Result<bool, ServiceError> {
     let ControlView {
+        draining,
         instance_id,
         restart_requested,
         state_directory,
@@ -433,7 +439,11 @@ async fn handle_control(
         }
         .into_unchanged(),
         Ok(Ok(ControlRequest::Expose { name, port })) => {
-            tunnel_control::expose(tunnels, state_directory, name, port, active).into_unchanged()
+            let reply = tunnel_control::expose(tunnels, state_directory, name, port, active);
+            if matches!(reply, ControlReply::ExposureChanged) {
+                draining.invalidate_all(b"local tunnel policy changed");
+            }
+            reply.into_unchanged()
         }
         Ok(Ok(ControlRequest::Connect { .. })) => unreachable_connect_reply().into_unchanged(),
         Ok(Ok(ControlRequest::Restart)) => {
@@ -544,7 +554,9 @@ async fn handle_control(
                 },
             )
             .into_unchanged(),
-        Ok(Ok(ControlRequest::Revoke(node_id))) => revoke_from_control(local_state, directory, active, node_id)?,
+        Ok(Ok(ControlRequest::Revoke(node_id))) => {
+            revoke_from_control(local_state, directory, active, draining, node_id)?
+        }
         Ok(Ok(ControlRequest::Update { target, digest })) => {
             queue_update(state_directory, update_delivery, local_state, target, digest)
         }
@@ -636,6 +648,7 @@ fn revoke_from_control(
     local_state: &mut LocalState,
     directory: &mut PeerDirectory,
     active: &mut BTreeMap<NodeId, ActiveConnection>,
+    draining: &mut super::draining::DrainingConnections,
     node_id: NodeId,
 ) -> Result<(ControlReply, bool), ServiceError> {
     let before = local_state.revocations().list.serial;
@@ -655,6 +668,7 @@ fn revoke_from_control(
     let changed = revocations.list.serial > before;
     if changed {
         deauthorize_revoked(active, &revocations);
+        draining.invalidate_revoked(&revocations);
     }
     if changed {
         directory.set_revocations(&revocations)?;

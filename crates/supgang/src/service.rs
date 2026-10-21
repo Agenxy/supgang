@@ -33,6 +33,7 @@ mod admission;
 mod config;
 mod connection;
 mod contact_state;
+mod draining;
 mod events;
 mod gateway_reachability;
 mod history;
@@ -287,6 +288,7 @@ async fn service_loop(
     let (page_sender, _unused_page_receiver) = tokio::sync::watch::channel(initial_page);
     let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(PEER_EVENT_QUEUE);
     let mut active = BTreeMap::<NodeId, ActiveConnection>::new();
+    let mut draining = draining::DrainingConnections::default();
     let mut noncanonical_outbound = BTreeSet::<NodeId>::new();
     let mut rendezvous_intents = rendezvous::RendezvousIntents::new();
     let mut sync_mutation_budget = local_control::SyncMutationBudget::new();
@@ -328,6 +330,7 @@ async fn service_loop(
         }
         let mut directory_changed = false;
         let now = tokio::time::Instant::now();
+        draining.reap(local_state.revocations(), now);
         let wall_refresh = contact_state::needs_wall_clock_refresh(
             local_contact.endpoint.record.issued_at,
             local_contact.endpoint.record.expires_at,
@@ -388,6 +391,7 @@ async fn service_loop(
             &mut event_receiver,
             PeerEventState {
                 active: &mut active,
+                draining: &mut draining,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 local_state,
                 directory,
@@ -410,6 +414,7 @@ async fn service_loop(
                 config: &mut config,
                 local_contact: &mut local_contact,
                 active: &mut active,
+                draining: &mut draining,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -428,6 +433,7 @@ async fn service_loop(
                 config: &mut config,
                 local_contact: &mut local_contact,
                 active: &mut active,
+                draining: &mut draining,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -453,6 +459,7 @@ async fn service_loop(
                 config: &mut config,
                 local_contact: &mut local_contact,
                 active: &mut active,
+                draining: &mut draining,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -474,6 +481,7 @@ async fn service_loop(
                 config: &mut config,
                 local_contact: &mut local_contact,
                 active: &mut active,
+                draining: &mut draining,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -510,6 +518,7 @@ async fn service_loop(
                         config: &mut config,
                         local_contact: &mut local_contact,
                         active: &mut active,
+                        draining: &mut draining,
                         noncanonical_outbound: &mut noncanonical_outbound,
                         page_sender: &page_sender,
                         event_sender: &event_sender,
@@ -527,12 +536,12 @@ async fn service_loop(
                 + aligned_retry_delay(hive_id, system_time_since_epoch()?, config.retry_interval);
         }
 
-        let wait = next_service_wait(
+        let wait = draining.bound_wait(next_service_wait(
             outbound_in_flight,
             next_dial,
             next_refresh,
             config.automatic_interface_refresh.then_some(next_interface_refresh),
-        );
+        ));
         let activity = poll_control_or_incoming(
             control_listener,
             endpoint.accept(),
@@ -541,6 +550,7 @@ async fn service_loop(
             directory,
             &mut active,
             ControlView {
+                draining: &mut draining,
                 instance_id: &instance_id,
                 restart_requested: &mut restart_requested,
                 state_directory: &update_context.state_directory,
@@ -592,6 +602,7 @@ async fn service_loop(
                     config: &mut config,
                     local_contact: &mut local_contact,
                     active: &mut active,
+                    draining: &mut draining,
                     noncanonical_outbound: &mut noncanonical_outbound,
                     page_sender: &page_sender,
                     event_sender: &event_sender,

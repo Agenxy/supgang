@@ -244,6 +244,7 @@ fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> 
             reachability: Vec::new(),
             local_reachability: local_reachability.clone(),
         };
+        let mut draining = super::super::draining::DrainingConnections::default();
         LiveSessionState {
             update: None,
             local_node: local_state.identity().device.node_id(),
@@ -252,6 +253,7 @@ fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> 
             config: &mut config,
             local_contact: &mut local_contact,
             active: &mut active,
+            draining: &mut draining,
             noncanonical_outbound: &mut noncanonical_outbound,
             page_sender: &page_sender,
             event_sender: &event_sender,
@@ -275,6 +277,7 @@ fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> 
             config: &mut config,
             local_contact: &mut local_contact,
             active: &mut active,
+            draining: &mut draining,
             noncanonical_outbound: &mut noncanonical_outbound,
             page_sender: &page_sender,
             event_sender: &event_sender,

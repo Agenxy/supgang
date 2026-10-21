@@ -46,6 +46,7 @@ struct PeerActorContext {
     interval: Duration,
     update: Option<PeerUpdateContext>,
     tunnel_admission: Arc<tokio::sync::Semaphore>,
+    draining: tokio::sync::watch::Receiver<bool>,
     authorization: SessionAuthorization,
     /// Why this session ended, shared with the registered connection so the
     /// connection history can say.
@@ -109,8 +110,9 @@ pub(super) fn register_connection(
         .map_or(4, |runtime| runtime.policy.borrow().per_peer);
     let tunnel_admission = Arc::new(tokio::sync::Semaphore::new(limit));
     let registered = ActiveConnection::new(connection.clone(), authorization.clone(), capabilities)
-        .with_tunnel_admission(tunnel_admission.clone());
+        .with_tunnel_admission(tunnel_admission.clone(), limit);
     let ended = registered.retired_slot();
+    let draining = registered.drain_signal();
     registry.active.insert(peer, registered);
     if preferred {
         registry.noncanonical_outbound.remove(&peer);
@@ -127,6 +129,7 @@ pub(super) fn register_connection(
         update: registry.update.clone(),
         authorization,
         tunnel_admission,
+        draining,
         ended,
     }));
 }
@@ -204,6 +207,7 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
         update,
         authorization,
         tunnel_admission,
+        mut draining,
         ended: _,
     } = context;
     let connection_id = connection.stable_id();
@@ -211,7 +215,18 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
     let mut sync_failures = 0_u32;
     loop {
         while tunnels.try_join_next().is_some() {}
+        if *draining.borrow() {
+            // The connection remains authorized for already admitted tunnel
+            // tasks, but does no further sync or stream admission while it
+            // drains. The supervisor's authorization wait ends this actor.
+            std::future::pending::<()>().await;
+            return b"drain ended";
+        }
         let exchanged = tokio::select! {
+            result = draining.changed() => {
+                if result.is_err() { return b"drain signal ended"; }
+                continue;
+            }
             () = tokio::time::sleep(interval), if initiator => {
                 let page = pages.borrow().clone();
                 exchange_outbound(&connection, &page).await
@@ -233,6 +248,7 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
                     }
                     StreamKind::Sync => return b"peer opened a sync stream out of turn",
                     StreamKind::Service => {
+                        if tunnel_admission.is_closed() { continue; }
                         let Some(runtime) = update.as_ref().and_then(|context| context.tunnels.clone()) else {
                             continue;
                         };
@@ -587,6 +603,7 @@ mod tests {
                 revocations: SignedRevocationList::empty(&root, 1)?,
             };
             let (_page_sender, page_receiver) = tokio::sync::watch::channel(page);
+            let (_drain_sender, drain_receiver) = tokio::sync::watch::channel(false);
             let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(4);
             let peer = NodeId::from_bytes([9; 32]);
             let mut actor_tasks = tokio::task::JoinSet::new();
@@ -600,6 +617,7 @@ mod tests {
                 update: None,
                 authorization: authorization()?,
                 tunnel_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
+                draining: drain_receiver,
                 ended: std::sync::Arc::new(std::sync::OnceLock::new()),
             }));
 

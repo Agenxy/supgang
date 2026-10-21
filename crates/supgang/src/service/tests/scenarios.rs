@@ -10,6 +10,7 @@
 //! installed service's is a loopback SSH server.
 
 use std::{
+    io::{Read as _, Write as _},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
     time::Duration,
@@ -55,6 +56,8 @@ fn a_live_but_degraded_ipv6_path_moves_to_clean_ipv4() -> Result<(), Error> {
         71,
     )?;
     publish_forward(&world)?;
+    let echo =
+        super::sim_harness::expose_echoes_with_timeout(world.fleet.computer(SOLIS)?, "ssh", 2, Duration::from_mins(3))?;
     let away = world.network.add_site(cellular_site())?;
     // Make IPv6 the only usable path for the first off-network connection.
     world.network.set_family_loss_permille(away, IpFamily::V4, 1_000)?;
@@ -65,6 +68,10 @@ fn a_live_but_degraded_ipv6_path_moves_to_clean_ipv4() -> Result<(), Error> {
         Ok(connection(laptop, solis.node)?.filter(SocketAddr::is_ipv6))
     })?
     .ok_or("the laptop did not establish the initial IPv6 session")?;
+    let mut master = open_tunnel(laptop, solis.node, "ssh")?;
+    master
+        .write_all(b"before")
+        .map_err(|error| format!("held tunnel before migration: {error}"))?;
 
     // IPv6 remains alive but becomes 1.5 seconds slower round-trip. IPv4 is
     // available through the same previously published, signed peer record.
@@ -72,7 +79,8 @@ fn a_live_but_degraded_ipv6_path_moves_to_clean_ipv4() -> Result<(), Error> {
     world
         .network
         .set_family_latency(away, IpFamily::V6, Duration::from_millis(750))?;
-    world.network.set_family_mtu(away, IpFamily::V6, Some(1_200))?;
+    // Keep this case about RTT-driven migration; the separate PMTU scenario
+    // exercises black-hole recovery while a tunnel remains on one path.
     eventually(QUALITY_MIGRATION, || {
         Ok(connection(laptop, solis.node)?.filter(SocketAddr::is_ipv4))
     })?
@@ -81,6 +89,25 @@ fn a_live_but_degraded_ipv6_path_moves_to_clean_ipv4() -> Result<(), Error> {
         Ok(connection(solis, laptop.node)?.filter(SocketAddr::is_ipv4))
     })?
     .ok_or("the home peer did not retain the same IPv4 replacement")?;
+    assert_eq!(
+        tunnel_round_trip(laptop, solis.node, "ssh", b"new tunnel")?,
+        b"new tunnel"
+    );
+    master
+        .write_all(b" and after")
+        .map_err(|error| format!("held tunnel after migration: {error}"))?;
+    master
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|error| format!("held tunnel shutdown: {error}"))?;
+    let mut returned = Vec::new();
+    master
+        .read_to_end(&mut returned)
+        .map_err(|error| format!("held tunnel read: {error}"))?;
+    assert_eq!(
+        returned, b"before and after",
+        "the held tunnel was cut during migration"
+    );
+    echo.join().map_err(|_| "echo server panicked")??;
     std::thread::sleep(Duration::from_secs(8));
     assert!(connection(laptop, solis.node)?.is_some_and(|path| path.is_ipv4()));
     assert!(connection(solis, laptop.node)?.is_some_and(|path| path.is_ipv4()));

@@ -35,6 +35,7 @@ pub(super) struct LiveSessionState<'a> {
     pub(super) config: &'a mut ServiceConfig,
     pub(super) local_contact: &'a mut PeerContact,
     pub(super) active: &'a mut BTreeMap<NodeId, ActiveConnection>,
+    pub(super) draining: &'a mut super::draining::DrainingConnections,
     pub(super) noncanonical_outbound: &'a mut BTreeSet<NodeId>,
     pub(super) page_sender: &'a tokio::sync::watch::Sender<SyncPage>,
     pub(super) event_sender: &'a tokio::sync::mpsc::Sender<PeerEvent>,
@@ -109,18 +110,6 @@ impl LiveSessionState<'_> {
         origin: ConnectionOrigin,
         superseded: Option<usize>,
     ) -> Result<(), ServiceError> {
-        // Only the exact connection selected by the path comparison is
-        // retired; one registered since then is left to admission.
-        if let Some(stale) = superseded
-            && self
-                .active
-                .get(&exchange.peer)
-                .is_some_and(|active| active.stable_id() == stale)
-            && let Some(active) = self.active.remove(&exchange.peer)
-        {
-            active.invalidate(b"superseded by a connection on a new path");
-            self.noncanonical_outbound.remove(&exchange.peer);
-        }
         if self.local_state.revocations().contains(&exchange.peer) {
             connection.close(3_u8.into(), b"peer revoked");
             return Ok(());
@@ -130,6 +119,20 @@ impl LiveSessionState<'_> {
             connection.close(3_u8.into(), b"peer authorization expired");
             return Ok(());
         };
+        let selected_old = superseded.filter(|stale| {
+            self.active
+                .get(&exchange.peer)
+                .is_some_and(|active| active.stable_id() == *stale)
+        });
+        if selected_old.is_some() && self.draining.contains(exchange.peer) {
+            // One drain slot per peer: keep the already-held tunnels instead
+            // of evicting them for another quality migration.
+            connection.close(2_u8.into(), b"previous tunnel drain in progress");
+            return Ok(());
+        }
+        // Only the exact connection compared before authentication can move
+        // to the drain slot. Keep it until the replacement is admitted.
+        let old = selected_old.and_then(|_| self.active.remove(&exchange.peer));
         let connection_id = connection.stable_id();
         let route = (connection.remote_address(), connection.local_ip());
         let authenticated_contact = exchange
@@ -160,14 +163,26 @@ impl LiveSessionState<'_> {
             .get(&exchange.peer)
             .is_some_and(|active| active.stable_id() == connection_id);
         if !admitted {
+            if let Some(old) = old {
+                self.active.insert(exchange.peer, old);
+            }
             return Ok(());
+        }
+        if let Some(old) = old {
+            self.draining.begin(exchange.peer, old, tokio::time::Instant::now());
         }
         if let Some(contact) = authenticated_contact.as_ref()
             && let Some(active) = self.active.get_mut(&exchange.peer)
         {
             active.bind_authority_record(&contact.endpoint.record);
         }
-        merge_received_revocations(self.local_state, self.directory, self.active, exchange.revocations)?;
+        merge_received_revocations(
+            self.local_state,
+            self.directory,
+            self.active,
+            self.draining,
+            exchange.revocations,
+        )?;
         if self.local_state.revocations().contains(&exchange.peer) {
             if let Some(active) = self.active.get(&exchange.peer) {
                 active.close(3_u8.into(), b"peer revoked");

@@ -43,6 +43,7 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
     client.write_all(&9_u32.to_be_bytes()).await?;
     let (network_sender, mut network_receiver) = oneshot::channel::<()>();
     let mut active = BTreeMap::new();
+    let mut draining = super::super::draining::DrainingConnections::default();
     let mut restart = false;
     let mut updates = UpdateDeliveryQueue::open(&path, 50)?;
     let tunnels = super::super::tunnel::TunnelRuntime::new(&path)?;
@@ -63,6 +64,7 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
             &mut directory,
             &mut active,
             super::ControlView {
+                draining: &mut draining,
                 instance_id: "test",
                 restart_requested: &mut restart,
                 state_directory: &path,
@@ -149,11 +151,24 @@ fn owner_revocation_requests_gossip_only_when_state_changes() -> Result<(), Box<
     )?;
     directory.import(contact, 50)?;
     let mut active = std::collections::BTreeMap::new();
-    let (reply, changed) = super::revoke_from_control(&mut local_state, &mut directory, &mut active, device.node_id())?;
+    let mut draining = super::super::draining::DrainingConnections::default();
+    let (reply, changed) = super::revoke_from_control(
+        &mut local_state,
+        &mut directory,
+        &mut active,
+        &mut draining,
+        device.node_id(),
+    )?;
     assert!(changed);
     assert!(matches!(reply, ControlReply::Revoked { changed: true, .. }));
     assert!(directory.is_revoked(&device.node_id()));
-    let (reply, changed) = super::revoke_from_control(&mut local_state, &mut directory, &mut active, device.node_id())?;
+    let (reply, changed) = super::revoke_from_control(
+        &mut local_state,
+        &mut directory,
+        &mut active,
+        &mut draining,
+        device.node_id(),
+    )?;
     assert!(!changed);
     assert!(matches!(reply, ControlReply::Revoked { changed: false, .. }));
     Ok(())
