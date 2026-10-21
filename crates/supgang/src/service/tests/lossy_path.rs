@@ -16,7 +16,12 @@ use std::{
 use super::sim_harness::{
     Error, Fleet, PORT, add_mapped, connection, eventually, expose_echo, open_tunnel, wait_connected,
 };
-use crate::simnet::{Nat44, Network, SiteSpec, V4Access};
+use crate::{
+    cli_peer_types::PathStatistics,
+    control::{ControlReply, ControlRequest},
+    ids::NodeId,
+    simnet::{IpFamily, Nat44, Network, SiteSpec, V4Access},
+};
 
 const SOLIS: usize = 0;
 const LAPTOP: usize = 1;
@@ -122,5 +127,91 @@ fn a_tunnel_survives_a_stall_longer_than_one_contact_exchange() -> Result<(), Er
     master.read_to_end(&mut returned)?;
     echo.join().map_err(|_| "echo server panicked")??;
     assert_eq!(returned, b"before and after", "the stall ended the tunnel");
+    Ok(())
+}
+
+fn path_stats(computer: &super::sim_harness::Computer, peer: NodeId) -> Result<Option<PathStatistics>, Error> {
+    let Some(ControlReply::Peers { value }) = crate::control::request(&computer.path, ControlRequest::Peers)? else {
+        return Ok(None);
+    };
+    Ok(value
+        .peers
+        .into_iter()
+        .find(|row| row.node_id == peer.to_string() && row.connected == Some(true))
+        .and_then(|row| row.connection)
+        .and_then(|connection| connection.path))
+}
+
+/// Repeated PMTU black holes do not mean a path carrying application bytes is
+/// dead. An SSH master held through all three events must remain usable even
+/// after the old reconnect deadline, when no other candidate authenticates.
+#[test]
+fn repeated_mtu_black_holes_keep_the_live_session_and_held_tunnel() -> Result<(), Error> {
+    let network = Network::new(54);
+    let home = network.add_site(site(HOME_PUBLIC, Ipv4Addr::new(192, 168, 1, 0), Nat44::home_router()))?;
+    let solis = network.add_host(Some(home))?;
+    let laptop = network.add_host(Some(home))?;
+    network.forward_udp(home, PORT, solis, PORT)?;
+    let mut fleet = Fleet::pair(Arc::clone(&network), &[solis, laptop])?;
+    fleet.start_all()?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_secs(30))?.ok_or("no connection at home")?;
+    add_mapped(fleet.computer(SOLIS)?, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
+    let echo = super::sim_harness::expose_echo_with_timeout(fleet.computer(SOLIS)?, "ssh", Duration::from_mins(8))?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no reconnection after exposure")?;
+    let hotel = network.add_site(site(
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(10, 20, 0, 0),
+        Nat44::symmetric(),
+    ))?;
+    fleet.stop(LAPTOP)?;
+    network.move_host(laptop, Some(hotel))?;
+    fleet.start(LAPTOP)?;
+    let remote = fleet.computer(SOLIS)?.node;
+    let forward = SocketAddr::new(IpAddr::V4(HOME_PUBLIC), PORT);
+    eventually(Duration::from_mins(1), || {
+        Ok(connection(fleet.computer(LAPTOP)?, remote)?.filter(|path| *path == forward))
+    })?
+    .ok_or("no connection from the hotel")?;
+    let mut master = open_tunnel(fleet.computer(LAPTOP)?, remote, "ssh")?;
+    master.write_all(b"before")?;
+
+    for count in 1..=3 {
+        let mut last_stats = None;
+        // Quinn waits one minute after a detected black hole before probing
+        // again, even when the path becomes clear immediately.
+        let found = eventually(Duration::from_secs(75), || {
+            master.write_all(&[b'p'; 8 * 1024])?;
+            last_stats = path_stats(fleet.computer(LAPTOP)?, remote)?;
+            Ok(last_stats.clone().filter(|stats| stats.current_mtu > 1_200))
+        })?;
+        if found.is_none() {
+            return Err(format!(
+                "PMTU discovery did not find the clear path: {last_stats:?}; network: {:?}",
+                network.stats()?
+            )
+            .into());
+        }
+        network.set_family_mtu(hotel, IpFamily::V4, Some(1_200))?;
+        eventually(Duration::from_secs(30), || {
+            master.write_all(&[b'x'; 8 * 1024])?;
+            Ok(path_stats(fleet.computer(LAPTOP)?, remote)?.filter(|stats| stats.black_holes_detected >= count))
+        })?
+        .ok_or("the live path did not report the expected MTU black hole")?;
+        assert_eq!(connection(fleet.computer(LAPTOP)?, remote)?, Some(forward));
+        network.set_family_mtu(hotel, IpFamily::V4, None)?;
+    }
+
+    std::thread::sleep(Duration::from_secs(50));
+    assert_eq!(connection(fleet.computer(LAPTOP)?, remote)?, Some(forward));
+    master.write_all(b" and after")?;
+    master.shutdown(std::net::Shutdown::Write)?;
+    let mut returned = Vec::new();
+    master.read_to_end(&mut returned)?;
+    echo.join().map_err(|_| "echo server panicked")??;
+    assert!(returned.starts_with(b"before"));
+    assert!(
+        returned.ends_with(b" and after"),
+        "the held tunnel was cut after the black holes"
+    );
     Ok(())
 }

@@ -313,12 +313,20 @@ pub(super) fn add_mapped(computer: &Computer, address: std::net::SocketAddrV4) -
 
 /// Exposes `name` on `computer`, served by a one-shot loopback echo server.
 pub(super) fn expose_echo(computer: &Computer, name: &str) -> Result<thread::JoinHandle<Result<(), String>>, Error> {
+    expose_echo_with_timeout(computer, name, Duration::from_secs(20))
+}
+
+pub(super) fn expose_echo_with_timeout(
+    computer: &Computer,
+    name: &str,
+    read_timeout: Duration,
+) -> Result<thread::JoinHandle<Result<(), String>>, Error> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let echo = thread::spawn(move || {
         let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(20)))
+            .set_read_timeout(Some(read_timeout))
             .map_err(|error| error.to_string())?;
         let mut bytes = Vec::new();
         stream.read_to_end(&mut bytes).map_err(|error| error.to_string())?;

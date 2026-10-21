@@ -144,4 +144,10 @@ impl AsyncUdpSocket for SimSocket {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), self.port))
     }
+
+    fn may_fragment(&self) -> bool {
+        // The simulated network drops oversized datagrams rather than
+        // fragmenting them, so Quinn can probe its path MTU.
+        false
+    }
 }

@@ -251,22 +251,6 @@ fn validate_config(config: &ServiceConfig) -> Result<(), ServiceError> {
     Ok(())
 }
 
-fn observe_path_quality(
-    watch: &mut path_quality::PathQualityWatch,
-    active: &mut BTreeMap<NodeId, ActiveConnection>,
-    noncanonical: &mut BTreeSet<NodeId>,
-    next_dial: tokio::time::Instant,
-    now: tokio::time::Instant,
-) -> tokio::time::Instant {
-    watch.observe(active, now);
-    if watch.retire_exhausted(active, now) {
-        noncanonical.retain(|peer| active.contains_key(peer));
-        now
-    } else {
-        next_dial
-    }
-}
-
 async fn service_loop(
     endpoint: Endpoint,
     transport_identity: TransportIdentity,
@@ -389,13 +373,7 @@ async fn service_loop(
             next_dial = now;
         }
         silence.observe(&active);
-        next_dial = observe_path_quality(
-            &mut path_quality,
-            &mut active,
-            &mut noncanonical_outbound,
-            next_dial,
-            now,
-        );
+        path_quality.observe(&active, now);
         history.observe(&active, unix_time()?);
         publish_gossip_if(
             directory_changed,
