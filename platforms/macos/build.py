@@ -5,7 +5,7 @@
 # ///
 """Build the optional native helper and place it beside a selected Supgang binary.
 
-SwiftPM products stay under target, outside the source-policy walk. Cargo never
+SwiftPM products stay in a user cache, outside the source-policy walk. Cargo never
 invokes this script. No signing identity, provisioning profile or network is used.
 """
 
@@ -29,7 +29,8 @@ def main() -> int:
     if not args.beside.is_file():
         parser.error("--beside must name an existing executable")
     package = Path(__file__).resolve().parent
-    scratch = package.parents[1] / "target" / "supgang-macos"
+    scratch = Path.home() / ".cache" / "agenxy" / "supgang-macos"
+    scratch.mkdir(parents=True, exist_ok=True)
     command = [swift, "build", "--package-path", str(package), "--scratch-path", str(scratch),
                "--cache-path", str(scratch / "cache"), "--config-path", str(scratch / "config"),
                "--security-path", str(scratch / "security"),

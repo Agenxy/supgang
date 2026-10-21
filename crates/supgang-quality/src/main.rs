@@ -14,6 +14,7 @@ const MAX_SOURCE_LINES: usize = 700;
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 
 mod acceptance;
+mod gate_cache;
 mod installation;
 
 fn main() -> ExitCode {
@@ -33,46 +34,33 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
     match mode.and_then(OsStr::to_str) {
         Some("all") => {
             policy(&root)?;
-            run_cargo(&root, &["fmt", "--all", "--", "--check"], output, error)?;
-            run_cargo(
-                &root,
-                &["check", "--workspace", "--all-targets", "--locked"],
-                output,
-                error,
-            )?;
-            run_cargo(
-                &root,
-                &[
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--all-features",
-                    "--locked",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-                output,
-                error,
-            )?;
-            let scratch = test_scratch()?;
-            let test_environment: Vec<(&str, &str)> =
-                scratch.iter().map(|directory| ("TMPDIR", directory.as_str())).collect();
-            run_cargo_with_env(
-                &root,
-                &["test", "--workspace", "--all-targets", "--locked"],
-                &test_environment,
-                output,
-                error,
-            )?;
-            run_cargo_with_env(
-                &root,
-                &["doc", "--workspace", "--no-deps", "--locked"],
-                &[("RUSTDOCFLAGS", "-D warnings")],
-                output,
-                error,
-            )?;
-            acceptance::run(&root, output, error)?;
+            writeln!(output, "quality-cache stage=policy status=run").map_err(|error| error.to_string())?;
+            let mut cache = gate_cache::GateCache::open(&root)?;
+            for stage in [
+                gate_cache::Stage::Format,
+                gate_cache::Stage::Check,
+                gate_cache::Stage::Clippy,
+                gate_cache::Stage::Test,
+                gate_cache::Stage::Doc,
+            ] {
+                let missed = cache.missed(stage, output)?;
+                if missed.is_empty() {
+                    continue;
+                }
+                if missed.len() == cache.packages().count() {
+                    run_quality_stage(&root, stage, None, output, error)?;
+                } else {
+                    for package in &missed {
+                        run_quality_stage(&root, stage, Some(package), output, error)?;
+                    }
+                }
+                cache.record_packages(stage, &missed)?;
+            }
+            if !cache.acceptance_hit(output)? {
+                acceptance::run(&root, output, error)?;
+                cache.record_acceptance();
+            }
+            cache.finish(output)?;
             writeln!(output, "Supgang quality gates passed.").map_err(|write_error| write_error.to_string())?;
             Ok(())
         }
@@ -91,6 +79,30 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
         }
         _ => Err("usage: cargo run --locked --package supgang-quality -- all|quick|policy".to_owned()),
     }
+}
+
+fn run_quality_stage(
+    root: &Path,
+    stage: gate_cache::Stage,
+    package: Option<&str>,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> Result<(), String> {
+    let arguments = stage.arguments(package);
+    let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    let scratch = if matches!(stage, gate_cache::Stage::Test) {
+        test_scratch()?
+    } else {
+        None
+    };
+    let mut environment = Vec::new();
+    if let Some(directory) = &scratch {
+        environment.push(("TMPDIR", directory.as_str()));
+    }
+    if matches!(stage, gate_cache::Stage::Doc) {
+        environment.push(("RUSTDOCFLAGS", "-D warnings"));
+    }
+    run_cargo_with_env(root, &arguments, &environment, output, error)
 }
 
 fn run_cargo(root: &Path, arguments: &[&str], output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {

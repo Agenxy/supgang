@@ -148,7 +148,8 @@ supgang --help
 `make install` replaces the current source installation in `$HOME/.local/bin`, which should precede
 package-manager paths in `PATH`. It uses Cargo's frozen mode and therefore does not refresh the
 registry or download dependencies. Milestone acceptance uses this installed command from outside
-the repository; invoking `target/release/supgang` is build evidence, not installation evidence.
+the repository; invoking a binary in Cargo's selected output directory is build evidence, not
+installation evidence.
 
 On macOS, an owner-controlled code-signing identity can give successive local builds one stable
 application identity without an Apple Developer Program subscription. Pass the exact 40-character

@@ -10,7 +10,7 @@ use std::{
 ///
 /// Reading it here rather than repeating it keeps the diagnostic honest when the script
 /// raises its floor.
-fn declared_python_floor(script: &Path) -> Option<String> {
+pub fn declared_python_floor(script: &Path) -> Option<String> {
     let text = std::fs::read_to_string(script).ok()?;
     text.lines()
         .map(str::trim_start)

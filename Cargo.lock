@@ -3114,6 +3114,8 @@ dependencies = [
 name = "supgang-quality"
 version = "0.2.0-alpha.14"
 dependencies = [
+ "serde_json",
+ "sha2 0.11.0",
  "syn 2.0.119",
 ]
 

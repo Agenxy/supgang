@@ -5,15 +5,18 @@ stores a keychain item and needs no entitlement, provisioning profile or
 developer account. `SecAccessControl` describes the key's access policy;
 using that type does not put the key in the keychain.
 
-Build Supgang with Cargo first, then explicitly build and place the helper:
+Build Supgang through the shared Cargo lane first. Ask the wrapper for that lane's path,
+then explicitly place the helper beside its `debug/supgang` binary:
 
 ```text
-uv run --offline --script platforms/macos/build.py --beside target/debug/supgang
+uv run --offline --script tools/cargo_cache.py --profile dev -- cargo build --locked --package supgang
+uv run --offline --script tools/cargo_cache.py --profile dev --print-target-dir
+uv run --offline --script platforms/macos/build.py --beside /selected/lane/debug/supgang
 ```
 
 For an installed binary, pass its absolute path after `--beside`. The
 destination is always named `supgang-secure-enclave`. Build products and
-caches stay under `target/supgang-macos`. The manifest uses Swift 6 language
+caches stay under `~/.cache/agenxy/supgang-macos`. The manifest uses Swift 6 language
 mode and treats compiler warnings as errors. Release builds omit debug
 information, like Supgang's stripped release binary. A machine without Swift
 can still build and test the Rust workspace; a missing sibling is reported
@@ -61,20 +64,20 @@ one in-flight helper operation. The standalone helper expects its pipe caller
 to enforce that deadline. It performs no networking or persistent writes.
 
 The two ignored Rust tests require this helper beside the **test executable**
-under `target/debug/deps`, not just beside `target/debug/supgang`. Build that
-test executable with `cargo test --locked -p supgang-core --lib --no-run`, pass
+under the selected lane's `debug/deps`, not just beside its `debug/supgang`. Build that
+test executable with the cache wrapper and `cargo test --locked -p supgang-core --lib --no-run`, pass
 its path to the build tool, then run the exact ignored test. The presence
 variant also requires the owner at the Mac:
 
 ```text
-cargo test --locked -p supgang-core device_key::secure_enclave::tests::real_helper_restores_and_signs -- --ignored --exact
-cargo test --locked -p supgang-core device_key::secure_enclave::tests::real_helper_requires_presence -- --ignored --exact
+uv run --offline --script tools/cargo_cache.py --profile dev -- cargo test --locked -p supgang-core device_key::secure_enclave::tests::real_helper_restores_and_signs -- --ignored --exact
+uv run --offline --script tools/cargo_cache.py --profile dev -- cargo test --locked -p supgang-core device_key::secure_enclave::tests::real_helper_requires_presence -- --ignored --exact
 ```
 
 Framing and refusal checks can run without hardware and create no keys:
 
 ```text
-uv run --offline --script platforms/macos/test_protocol.py --helper target/debug/supgang-secure-enclave
+uv run --offline --script platforms/macos/test_protocol.py --helper /selected/lane/debug/supgang-secure-enclave
 ```
 
 The helper is a custody primitive. It does not show or authorize a typed

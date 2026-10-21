@@ -33,9 +33,19 @@ Run focused tests while iterating, then the complete gate:
 ```text
 cargo test --locked --package supgang-core TEST_NAME
 make check
-cargo build --locked --workspace --release
-target/release/supgang --version
+uv run --offline --script tools/cargo_cache.py --profile release -- cargo build --locked --workspace --release
+uv run --offline --script tools/cargo_cache.py --profile release -- cargo run --locked --package supgang --release -- --version
 ```
+
+`make check` selects a shared Cargo output lane keyed to the pinned compiler, host, profile, and
+build flags. Compatible worktrees can reuse compiled dependencies. The wrapper uses sccache 0.18.0
+when it is already installed, and logs the selected lane. It does not change another project's
+toolchain. An explicit `CARGO_TARGET_DIR` overrides the lane selection. The quality gate reuses
+passing receipts for identical source, toolchain, and environment inputs for up to 24 hours, and
+runs changed packages and their dependents. Set `SUPGANG_QUALITY_CACHE=off` for a fresh full run;
+CI and release validation do this. `make cache-sweep` previews idle lanes older than 30 days.
+See [cache maintenance](docs/development/cache.md) for the bounded cleanup and optional weekly
+schedule template.
 
 Protocol or service changes also need a real multi-process test. Exercise startup order, connection,
 state-owner CLI access, interruption, restart, and the relevant failure path. Report the exact
