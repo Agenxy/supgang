@@ -3056,21 +3056,21 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "supgang"
-version = "0.2.0-alpha.15"
+version = "0.2.0-alpha.16"
 dependencies = [
  "supgang-core",
 ]
 
 [[package]]
 name = "supgang-acl"
-version = "0.2.0-alpha.15"
+version = "0.2.0-alpha.16"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "supgang-core"
-version = "0.2.0-alpha.15"
+version = "0.2.0-alpha.16"
 dependencies = [
  "async-trait",
  "clap",
@@ -3112,7 +3112,7 @@ dependencies = [
 
 [[package]]
 name = "supgang-quality"
-version = "0.2.0-alpha.15"
+version = "0.2.0-alpha.16"
 dependencies = [
  "serde_json",
  "sha2 0.11.0",

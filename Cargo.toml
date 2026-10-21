@@ -3,7 +3,7 @@ members = ["crates/supgang", "crates/supgang-acl", "crates/supgang-cli", "crates
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0-alpha.15"
+version = "0.2.0-alpha.16"
 edition = "2024"
 rust-version = "1.97.1"
 authors = ["Agenxy contributors"]
@@ -46,7 +46,7 @@ rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_r
 tokio = { version = "=1.53.1", default-features = false, features = ["io-std", "io-util", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "=0.7.19", default-features = false, features = ["io"] }
 toml = { version = "=1.1.4", default-features = false, features = ["display", "parse", "serde", "std"] }
-supgang-acl = { path = "crates/supgang-acl", version = "=0.2.0-alpha.15" }
+supgang-acl = { path = "crates/supgang-acl", version = "=0.2.0-alpha.16" }
 
 [workspace.lints.rust]
 warnings = "deny"
