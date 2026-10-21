@@ -64,6 +64,7 @@ impl InboundAdmission {
 
 pub(super) fn schedule_admitted_incoming(
     incoming: quinn::Incoming,
+    capped_server_config: Option<std::sync::Arc<quinn::ServerConfig>>,
     admission: &mut InboundAdmission,
     device: &std::sync::Arc<crate::identity::DeviceIdentity>,
     tasks: &mut tokio::task::JoinSet<super::SessionTaskResult>,
@@ -84,7 +85,7 @@ pub(super) fn schedule_admitted_incoming(
         return;
     }
     let selected = if use_priority { priority_tasks } else { tasks };
-    super::live_session::schedule_incoming_peer(incoming, device, selected, live);
+    super::live_session::schedule_incoming_peer(incoming, capped_server_config, device, selected, live);
 }
 
 fn remembered_source(directory: &crate::peer_directory::PeerDirectory, remote: IpAddr, now: u64) -> bool {

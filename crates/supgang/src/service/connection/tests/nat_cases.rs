@@ -184,7 +184,7 @@ fn dual_stack_dialer_reaches_ipv4_without_waiting_for_an_ipv6_batch_to_fail() ->
             .collect::<Vec<_>>();
         let exchange = async {
             tokio::join!(
-                super::super::dial_candidates(&client.endpoint, &auth, &candidates),
+                super::super::dial_candidates(&client.endpoint, &auth, &candidates, None),
                 server.accept(&key)
             )
         };
@@ -227,7 +227,7 @@ fn candidate_specific_transport_pin_does_not_replace_expected_device_identity() 
         let candidates = [(&wrong_device, public)];
         let exchange = async {
             tokio::join!(
-                super::super::dial_candidates(&client.endpoint, &auth, &candidates),
+                super::super::dial_candidates(&client.endpoint, &auth, &candidates, None),
                 server.accept(&key)
             )
         };

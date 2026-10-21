@@ -7,7 +7,9 @@ use std::{
     time::Duration,
 };
 
-use super::{Behavior, Discard, Firewall6, HostId, Nat44, Network, SimSocket, SiteId, SiteSpec, V4Access, V6Access};
+use super::{
+    Behavior, Discard, Firewall6, HostId, IpFamily, Nat44, Network, SimSocket, SiteId, SiteSpec, V4Access, V6Access,
+};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -376,5 +378,21 @@ fn latency_delays_off_site_delivery_by_both_uplinks_but_not_the_lan() -> TestRes
     assert!(received(&lab.server_a)?.is_none(), "arrived before its path delay");
     std::thread::sleep(Duration::from_millis(45));
     assert!(received(&lab.server_a)?.is_some(), "never arrived after its path delay");
+    Ok(())
+}
+
+#[test]
+fn an_ipv6_mtu_black_hole_drops_only_oversized_ipv6_datagrams() -> TestResult {
+    let lab = fixture(Nat44::home_router())?;
+    lab.network.set_family_mtu(lab.home, IpFamily::V6, Some(1_200))?;
+    let v6_server = SocketAddr::new(IpAddr::V6(v6_of(&lab.network, lab.server_a.host())?), PORT);
+    lab.inside.send_raw(v6_server, &[7; 1_201])?;
+    assert!(received(&lab.server_a)?.is_none());
+    assert_eq!(lab.network.stats()?.dropped(Discard::MtuBlackHole), 1);
+    lab.inside.send_raw(v6_server, &[7; 1_200])?;
+    assert!(received(&lab.server_a)?.is_some());
+    lab.inside
+        .send_raw(server_address(&lab, &lab.server_a, PORT)?, &[7; 1_201])?;
+    assert!(received(&lab.server_a)?.is_some());
     Ok(())
 }

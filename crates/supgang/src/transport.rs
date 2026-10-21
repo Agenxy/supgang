@@ -135,6 +135,12 @@ impl TransportIdentity {
     ///
     /// Returns an error for an invalid key, certificate, TLS, or QUIC setting.
     pub fn server_config(&self) -> Result<ServerConfig, TransportError> {
+        self.server_config_with_mtu_cap(false)
+    }
+
+    /// Builds the same bounded server with PMTU probing disabled for a path
+    /// that previously exceeded the black-hole threshold.
+    pub(crate) fn server_config_with_mtu_cap(&self, cap_mtu: bool) -> Result<ServerConfig, TransportError> {
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let mut tls = rustls::ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])
@@ -150,7 +156,7 @@ impl TransportIdentity {
         let crypto =
             quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(|_| TransportError::Configuration)?;
         let mut server = ServerConfig::with_crypto(Arc::new(crypto));
-        server.transport_config(Arc::new(bounded_transport()?));
+        server.transport_config(Arc::new(bounded_transport(cap_mtu)?));
         server.max_incoming(MAX_SERVER_INCOMING);
         server.incoming_buffer_size(INCOMING_BUFFER_BYTES);
         server.incoming_buffer_size_total(TOTAL_INCOMING_BUFFER_BYTES);
@@ -164,6 +170,14 @@ impl TransportIdentity {
 ///
 /// Returns an error if TLS or QUIC configuration fails.
 pub fn pinned_client_config(expected: TransportKeyId) -> Result<ClientConfig, TransportError> {
+    pinned_client_config_with_mtu_cap(expected, false)
+}
+
+/// Builds a pinned client with PMTU probing disabled after repeated black holes.
+pub(crate) fn pinned_client_config_with_mtu_cap(
+    expected: TransportKeyId,
+    cap_mtu: bool,
+) -> Result<ClientConfig, TransportError> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let verifier = PinnedServerVerifier {
         provider: Arc::clone(&provider),
@@ -179,7 +193,7 @@ pub fn pinned_client_config(expected: TransportKeyId) -> Result<ClientConfig, Tr
     tls.enable_early_data = false;
     let crypto = QuicClientConfig::try_from(tls).map_err(|_| TransportError::Configuration)?;
     let mut client = ClientConfig::new(Arc::new(crypto));
-    client.transport_config(Arc::new(bounded_transport()?));
+    client.transport_config(Arc::new(bounded_transport(cap_mtu)?));
     Ok(client)
 }
 
@@ -287,7 +301,7 @@ impl ServerCertVerifier for PinnedServerVerifier {
     }
 }
 
-fn bounded_transport() -> Result<TransportConfig, TransportError> {
+fn bounded_transport(cap_mtu: bool) -> Result<TransportConfig, TransportError> {
     let mut transport = TransportConfig::default();
     transport.max_concurrent_bidi_streams(MAX_BIDIRECTIONAL_STREAMS.into());
     transport.max_concurrent_uni_streams(MAX_UNIDIRECTIONAL_STREAMS.into());
@@ -299,6 +313,9 @@ fn bounded_transport() -> Result<TransportConfig, TransportError> {
         .map_err(|_| TransportError::Configuration)?;
     transport.max_idle_timeout(Some(idle));
     transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECONDS)));
+    if cap_mtu {
+        transport.mtu_discovery_config(None);
+    }
     // Model-based congestion control. Loss-based control reads the few
     // percent of UDP that hotel and café networks drop as congestion, and at
     // an ocean's round trip collapses to tens of kilobytes per second
@@ -315,8 +332,8 @@ mod tests {
     };
 
     use super::{
-        INCOMING_BUFFER_BYTES, MAX_SERVER_INCOMING, TOTAL_INCOMING_BUFFER_BYTES, TransportIdentity, build_runtime,
-        pinned_client_config,
+        INCOMING_BUFFER_BYTES, MAX_SERVER_INCOMING, TOTAL_INCOMING_BUFFER_BYTES, TransportIdentity, bounded_transport,
+        build_runtime, pinned_client_config,
     };
     use crate::ids::TransportKeyId;
 
@@ -352,6 +369,17 @@ mod tests {
         assert!(debug.contains("max_incoming: 64"));
         assert!(debug.contains("incoming_buffer_size: 65536"));
         assert!(debug.contains("incoming_buffer_size_total: 1048576"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_black_hole_replacement_does_not_start_pmtu_probing() -> Result<(), Box<dyn std::error::Error>> {
+        let normal = format!("{:?}", bounded_transport(false)?);
+        let capped = format!("{:?}", bounded_transport(true)?);
+        assert!(normal.contains("mtu_discovery_config: Some("));
+        assert!(capped.contains("mtu_discovery_config: None"));
+        let incoming = format!("{:?}", TransportIdentity::generate()?.server_config_with_mtu_cap(true)?);
+        assert!(incoming.contains("mtu_discovery_config: None"));
         Ok(())
     }
 

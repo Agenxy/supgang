@@ -61,8 +61,8 @@ pub(super) struct SessionTaskResult {
     superseded: Option<usize>,
 }
 
-/// Finishes a session task: a connection that authenticated over a different
-/// path from the one registered for its peer probes the registered one.
+/// Finishes a session task: a connection authenticated over another path can
+/// replace a silent, on-link-inferior, or materially slower registered path.
 async fn completed(
     origin: ConnectionOrigin,
     claimed_outbound_slot: bool,
@@ -109,8 +109,8 @@ impl LiveSessionState<'_> {
         origin: ConnectionOrigin,
         superseded: Option<usize>,
     ) -> Result<(), ServiceError> {
-        // Only the exact connection the probe found silent is retired; one
-        // registered since then, or one that answered, is left to admission.
+        // Only the exact connection selected by the path comparison is
+        // retired; one registered since then is left to admission.
         if let Some(stale) = superseded
             && self
                 .active
@@ -219,16 +219,19 @@ pub(super) fn finish_ready_sessions(
 pub(super) fn schedule_remembered_peer(
     endpoint: &Endpoint,
     dial_cursor: &mut usize,
+    quality: &mut super::path_quality::PathQualityWatch,
     device: &Arc<DeviceIdentity>,
     tasks: &mut tokio::task::JoinSet<SessionTaskResult>,
     live: &LiveSessionState<'_>,
 ) -> Option<RememberedPeerSchedule> {
+    let now = tokio::time::Instant::now();
     let networks = network::interface_networks().unwrap_or_default();
     let mut peers = BTreeMap::<NodeId, Vec<_>>::new();
     for hint in live.directory.dial_hints(unix_time().ok()?) {
         let peer = hint.contact().endpoint.record.node_id;
         if should_attempt_peer(live.active, peer)
             || super::retry_schedule::wants_on_link_path(live.active, peer, &networks)
+            || quality.wants_replacement(peer, now)
         {
             peers.entry(peer).or_default().push(hint);
         }
@@ -238,15 +241,22 @@ pub(super) fn schedule_remembered_peer(
     let (target, hints) = peers.iter().nth(round % peer_count.max(1))?;
     let peer_cycle = round / peer_count.max(1);
     let mut candidates = recovery_candidates(hints, &networks, peer_cycle);
-    if live.active.contains_key(target) {
+    let quality_replacement = quality.wants_replacement(*target, now);
+    if let Some(active) = live.active.get(target) {
         // A connected peer is dialled only over a directly attached path,
-        // which then supersedes the indirect one (`liveness::superseded`).
+        // unless its live path is measurably degraded. Never redial its same
+        // address as a candidate for a quality replacement.
+        let current = crate::candidate::canonical_socket_address(active.remote_address());
         candidates.retain(|(_, address)| {
             let ip = address.ip().to_canonical();
-            networks.iter().any(|network| network.contains(ip))
+            crate::candidate::canonical_socket_address(*address) != current
+                && (quality_replacement || networks.iter().any(|network| network.contains(ip)))
         });
     }
     *dial_cursor = dial_cursor.wrapping_add(1);
+    if quality_replacement {
+        quality.mark_attempt(*target, now);
+    }
     if candidates.is_empty() {
         return Some(RememberedPeerSchedule {
             target: *target,
@@ -255,6 +265,7 @@ pub(super) fn schedule_remembered_peer(
     }
     let endpoint = endpoint.clone();
     let snapshot = live.snapshot(device);
+    let capped_address = quality.capped_address(*target);
     tasks.spawn(async move {
         let authenticated = dial_peer(
             &endpoint,
@@ -266,6 +277,7 @@ pub(super) fn schedule_remembered_peer(
                 page: &snapshot.page,
             },
             &candidates,
+            capped_address,
         )
         .await;
         completed(ConnectionOrigin::Outbound, true, authenticated, &snapshot.registered).await
@@ -358,13 +370,24 @@ pub(super) async fn reset_network_recovery(
 
 pub(super) fn schedule_incoming_peer(
     incoming: Incoming,
+    capped_server_config: Option<Arc<quinn::ServerConfig>>,
     device: &Arc<DeviceIdentity>,
     tasks: &mut tokio::task::JoinSet<SessionTaskResult>,
     live: &LiveSessionState<'_>,
 ) {
     let snapshot = live.snapshot(device);
     tasks.spawn(async move {
-        let authenticated = match tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS), incoming).await {
+        let connecting = match capped_server_config {
+            Some(config) => incoming.accept_with(config),
+            None => incoming.accept(),
+        };
+        let handshake = async move {
+            match connecting {
+                Ok(connecting) => connecting.await,
+                Err(error) => Err(error),
+            }
+        };
+        let authenticated = match tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS), handshake).await {
             Ok(Ok(connection)) => {
                 let exchange = tokio::time::timeout(
                     Duration::from_secs(SESSION_TIMEOUT_SECONDS),

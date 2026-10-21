@@ -40,6 +40,7 @@ mod interface_refresh;
 mod live_session;
 pub(crate) mod liveness;
 mod local_control;
+mod path_quality;
 mod peer_actor;
 mod rendezvous;
 mod retry_schedule;
@@ -250,6 +251,22 @@ fn validate_config(config: &ServiceConfig) -> Result<(), ServiceError> {
     Ok(())
 }
 
+fn observe_path_quality(
+    watch: &mut path_quality::PathQualityWatch,
+    active: &mut BTreeMap<NodeId, ActiveConnection>,
+    noncanonical: &mut BTreeSet<NodeId>,
+    next_dial: tokio::time::Instant,
+    now: tokio::time::Instant,
+) -> tokio::time::Instant {
+    watch.observe(active, now);
+    if watch.retire_exhausted(active, now) {
+        noncanonical.retain(|peer| active.contains_key(peer));
+        now
+    } else {
+        next_dial
+    }
+}
+
 async fn service_loop(
     endpoint: Endpoint,
     transport_identity: TransportIdentity,
@@ -259,6 +276,7 @@ async fn service_loop(
     directory: &mut PeerDirectory,
     mut config: ServiceConfig,
 ) -> Result<(), ServiceError> {
+    let capped_server_config = Arc::new(transport_identity.server_config_with_mtu_cap(true)?);
     let initial_tunnel_policy =
         crate::tunnel_policy::load(state_directory).map_err(|_| ServiceError::InvalidConfiguration)?;
     if !initial_tunnel_policy.mapped.is_empty() {
@@ -318,6 +336,7 @@ async fn service_loop(
     let mut tunnel_tasks = tokio::task::JoinSet::new();
     let mut update_delivery = UpdateDeliveryQueue::open(state_directory, unix_time()?)?;
     let mut silence = silence::SilenceWatch::default();
+    let mut path_quality = path_quality::PathQualityWatch::default();
     let mut history = history::ConnectionHistory::default();
     loop {
         if restart_requested || stop_if_requested(&mut shutdown, &endpoint).await {
@@ -370,6 +389,13 @@ async fn service_loop(
             next_dial = now;
         }
         silence.observe(&active);
+        next_dial = observe_path_quality(
+            &mut path_quality,
+            &mut active,
+            &mut noncanonical_outbound,
+            next_dial,
+            now,
+        );
         history.observe(&active, unix_time()?);
         publish_gossip_if(
             directory_changed,
@@ -495,6 +521,7 @@ async fn service_loop(
                 && let Some(scheduled) = schedule_remembered_peer(
                     &endpoint,
                     &mut dial_cursor,
+                    &mut path_quality,
                     &network_identity,
                     &mut outbound_tasks,
                     &LiveSessionState {
@@ -569,8 +596,12 @@ async fn service_loop(
             ControlActivity::Incoming(incoming) => incoming,
         };
         if let Some(incoming) = incoming {
+            let incoming_mtu_cap = path_quality
+                .capped_source(incoming.remote_address())
+                .then(|| Arc::clone(&capped_server_config));
             admission::schedule_admitted_incoming(
                 incoming,
+                incoming_mtu_cap,
                 &mut inbound_admission,
                 &network_identity,
                 &mut inbound_tasks,

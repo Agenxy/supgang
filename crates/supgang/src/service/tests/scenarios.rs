@@ -18,7 +18,7 @@ use std::{
 use super::sim_harness::{
     Error, Fleet, PORT, add_mapped, connection, eventually, expose_echo, open_tunnel, tunnel_round_trip, wait_connected,
 };
-use crate::simnet::{Discard, Firewall6, Nat44, Network, SiteId, SiteSpec, V4Access, V6Access};
+use crate::simnet::{Discard, Firewall6, IpFamily, Nat44, Network, SiteId, SiteSpec, V4Access, V6Access};
 
 const HOME_PUBLIC: Ipv4Addr = Ipv4Addr::new(9, 9, 9, 9);
 const HOME_PREFIX: Ipv6Addr = Ipv6Addr::new(0x2600, 1, 2, 3, 0, 0, 0, 0);
@@ -42,6 +42,50 @@ const CRASH_RECOVERY: Duration = Duration::from_secs(90);
 const RETURN_HOME: Duration = ROAMING;
 /// How long an unreachable topology is watched for a false connection.
 const REFUSAL_WATCH: Duration = Duration::from_secs(25);
+/// The quality monitor and one authenticated replacement dial fit in this window.
+const QUALITY_MIGRATION: Duration = Duration::from_secs(45);
+
+#[test]
+fn a_live_but_degraded_ipv6_path_moves_to_clean_ipv4() -> Result<(), Error> {
+    let world = paired_at_home(
+        HomeGateway {
+            ipv4_forward: true,
+            ipv6: Ipv6Policy::Pinhole,
+        },
+        71,
+    )?;
+    publish_forward(&world)?;
+    let away = world.network.add_site(cellular_site())?;
+    // Make IPv6 the only usable path for the first off-network connection.
+    world.network.set_family_loss_permille(away, IpFamily::V4, 1_000)?;
+    let solis = world.fleet.computer(SOLIS)?;
+    let laptop = world.fleet.computer(LAPTOP)?;
+    world.network.move_host(laptop.host, Some(away))?;
+    eventually(ROAMING, || {
+        Ok(connection(laptop, solis.node)?.filter(SocketAddr::is_ipv6))
+    })?
+    .ok_or("the laptop did not establish the initial IPv6 session")?;
+
+    // IPv6 remains alive but becomes 1.5 seconds slower round-trip. IPv4 is
+    // available through the same previously published, signed peer record.
+    world.network.set_family_loss_permille(away, IpFamily::V4, 0)?;
+    world
+        .network
+        .set_family_latency(away, IpFamily::V6, Duration::from_millis(750))?;
+    world.network.set_family_mtu(away, IpFamily::V6, Some(1_200))?;
+    eventually(QUALITY_MIGRATION, || {
+        Ok(connection(laptop, solis.node)?.filter(SocketAddr::is_ipv4))
+    })?
+    .ok_or("the authenticated IPv4 alternative did not supersede degraded IPv6")?;
+    eventually(Duration::from_secs(5), || {
+        Ok(connection(solis, laptop.node)?.filter(SocketAddr::is_ipv4))
+    })?
+    .ok_or("the home peer did not retain the same IPv4 replacement")?;
+    std::thread::sleep(Duration::from_secs(8));
+    assert!(connection(laptop, solis.node)?.is_some_and(|path| path.is_ipv4()));
+    assert!(connection(solis, laptop.node)?.is_some_and(|path| path.is_ipv4()));
+    Ok(())
+}
 
 /// How the owner has configured the home gateway.
 #[derive(Clone, Copy)]

@@ -11,6 +11,7 @@
 //! This is test equipment. It never opens an operating-system socket and its
 //! public addresses are fixtures, never endpoints on the real Internet.
 
+mod impairment;
 mod nat;
 mod socket;
 #[cfg(test)]
@@ -28,6 +29,8 @@ use std::{
 
 use rand_chacha::{ChaCha8Rng, rand_core::SeedableRng as _};
 
+use impairment::Impairment;
+pub use impairment::IpFamily;
 pub use nat::{Behavior, Firewall6, Nat44, PortAssignment};
 
 pub use socket::SimSocket;
@@ -99,6 +102,8 @@ pub enum Discard {
     NoListener,
     /// The configured loss model discarded it.
     Loss,
+    /// A path MTU black hole silently discarded an oversized datagram.
+    MtuBlackHole,
     /// The destination socket's queue was full.
     QueueFull,
 }
@@ -121,11 +126,8 @@ struct Site {
     spec: SiteSpec,
     nat: Option<nat::Table>,
     firewall: nat::FirewallTable,
-    /// Loss probability in parts per thousand, applied to every datagram that
-    /// enters or leaves the site across its Internet uplink.
-    loss_permille: u16,
-    /// One-way delay across the site's Internet uplink.
-    latency: Duration,
+    /// Bounded per-family latency, loss, and MTU controls for this uplink.
+    impairment: [Impairment; 2],
 }
 
 #[derive(Debug)]
@@ -212,8 +214,7 @@ impl Network {
             spec,
             nat,
             firewall,
-            loss_permille: 0,
-            latency: Duration::ZERO,
+            impairment: [Impairment::default(); 2],
         });
         Ok(SiteId(state.sites.len() - 1))
     }
@@ -279,24 +280,6 @@ impl Network {
             .ok_or_else(|| io::Error::other("site has no IPv4 gateway"));
         drop(state);
         renumbered
-    }
-
-    /// Sets the one-way delay across a site's Internet uplink; a path between
-    /// two sites takes the sum of both, and on-link traffic takes none.
-    pub fn set_latency(&self, site: SiteId, one_way: Duration) -> io::Result<()> {
-        if one_way > Duration::from_secs(2) {
-            return Err(io::Error::other("simulated latency above two seconds"));
-        }
-        self.lock()?.site_mut(site)?.latency = one_way;
-        Ok(())
-    }
-
-    pub fn set_loss_permille(&self, site: SiteId, permille: u16) -> io::Result<()> {
-        if permille > 1000 {
-            return Err(io::Error::other("loss above 1000 per mille"));
-        }
-        self.lock()?.site_mut(site)?.loss_permille = permille;
-        Ok(())
     }
 
     /// The addresses the host's interfaces carry now, as an operating system
@@ -470,10 +453,22 @@ impl State {
         })
     }
 
-    fn lossy(&mut self, site: SiteId) -> bool {
+    fn lossy(&mut self, site: SiteId, family: IpFamily) -> bool {
         use rand_chacha::rand_core::RngCore as _;
-        let permille = self.sites.get(site.0).map_or(0, |site| site.loss_permille);
+        let permille = self
+            .sites
+            .get(site.0)
+            .and_then(|site| site.impairment.get(family.index()))
+            .map_or(0, |impairment| impairment.loss_permille);
         permille > 0 && self.random.next_u32() % 1000 < u32::from(permille)
+    }
+
+    fn mtu_exceeded(&self, site: SiteId, family: IpFamily, bytes: usize) -> bool {
+        self.sites
+            .get(site.0)
+            .and_then(|site| site.impairment.get(family.index()))
+            .and_then(|impairment| impairment.max_datagram_bytes)
+            .is_some_and(|limit| bytes > limit)
     }
 
     /// Routes one datagram and queues it, returning the reader to wake.
@@ -487,6 +482,7 @@ impl State {
     ) -> Result<Option<Waker>, Discard> {
         let (site, _, _) = self.site_of(sender).ok_or(Discard::NoRoute)?;
         let source_ip = self.source_for(sender, destination.ip()).ok_or(Discard::NoRoute)?;
+        let family = IpFamily::from_address(destination.ip());
         // On-link delivery never crosses the gateway, so it is neither
         // translated nor filtered nor subject to uplink loss.
         if let Some(host) = self.host_at(site, destination.ip()) {
@@ -516,7 +512,10 @@ impl State {
             }
             _ => return Err(Discard::NoRoute),
         };
-        if self.lossy(site) {
+        if self.mtu_exceeded(site, family, bytes.len()) {
+            return Err(Discard::MtuBlackHole);
+        }
+        if self.lossy(site, family) {
             return Err(Discard::Loss);
         }
         let arrival = self.inbound(outside, destination, site, now)?;
@@ -524,13 +523,17 @@ impl State {
             .site_of(arrival.host)
             .map(|(site, _, _)| site)
             .ok_or(Discard::Unaddressed)?;
-        if receiving != site && self.lossy(receiving) {
+        if receiving != site && self.mtu_exceeded(receiving, family, bytes.len()) {
+            return Err(Discard::MtuBlackHole);
+        }
+        if receiving != site && self.lossy(receiving, family) {
             return Err(Discard::Loss);
         }
         let delay = [site, receiving]
             .iter()
             .filter_map(|site| self.sites.get(site.0))
-            .map(|site| site.latency)
+            .filter_map(|site| site.impairment.get(family.index()))
+            .map(|impairment| impairment.latency)
             .sum::<Duration>();
         self.queue(now + delay, &arrival, bytes)
     }

@@ -17,6 +17,7 @@ pub(super) async fn dial_peer(
     endpoint: &Endpoint,
     authentication: &SessionAuthentication<'_>,
     candidates: &[(PeerContact, SocketAddr)],
+    capped_address: Option<SocketAddr>,
 ) -> Option<(AuthenticatedExchange, Connection)> {
     let local_networks = network::interface_networks().unwrap_or_default();
     let candidates = candidates
@@ -25,7 +26,7 @@ pub(super) async fn dial_peer(
         .map(|(expected, address)| (expected, *address))
         .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
         .collect::<Vec<_>>();
-    dial_candidates(endpoint, authentication, &candidates).await
+    dial_candidates(endpoint, authentication, &candidates, capped_address).await
 }
 
 pub(super) async fn dial_observed_peer(
@@ -56,13 +57,14 @@ async fn dial_addresses(
         .take(network::MAX_DIAL_CANDIDATES_PER_ROUND)
         .map(|address| (expected, *address))
         .collect::<Vec<_>>();
-    dial_candidates(endpoint, authentication, &candidates).await
+    dial_candidates(endpoint, authentication, &candidates, None).await
 }
 
 async fn dial_candidates(
     endpoint: &Endpoint,
     authentication: &SessionAuthentication<'_>,
     candidates: &[(&PeerContact, SocketAddr)],
+    capped_address: Option<SocketAddr>,
 ) -> Option<(AuthenticatedExchange, Connection)> {
     let mut attempts = tokio::task::JoinSet::new();
     for (index, (expected, address)) in candidates
@@ -72,7 +74,11 @@ async fn dial_candidates(
         .enumerate()
     {
         let endpoint = endpoint.clone();
-        let client_config = transport::pinned_client_config(expected.endpoint.record.transport_key_id).ok()?;
+        let cap_mtu = capped_address.is_some_and(|capped| {
+            crate::candidate::canonical_socket_address(capped) == crate::candidate::canonical_socket_address(address)
+        });
+        let client_config =
+            transport::pinned_client_config_with_mtu_cap(expected.endpoint.record.transport_key_id, cap_mtu).ok()?;
         attempts.spawn(async move {
             tokio::time::sleep(candidate_race_delay(index)).await;
             let connecting = endpoint.connect_with(client_config, address, "supgang.invalid").ok()?;

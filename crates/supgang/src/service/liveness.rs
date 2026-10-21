@@ -1,9 +1,9 @@
 //! Whether an established connection still reaches its peer.
 //!
 //! When a peer authenticates a new connection over a different path while an
-//! older one is registered, the older one is usually a path the peer has
-//! left: it stays open here until QUIC's idle timeout, and admission would
-//! otherwise refuse the new connection as a duplicate meanwhile. A one-byte
+//! older one is registered, the older one may have gone silent or become far
+//! slower. Admission would otherwise refuse the new connection as a duplicate.
+//! A one-byte
 //! datagram elicits a transport acknowledgement from any live peer without
 //! involving its application (Supgang ignores datagrams that are not
 //! rendezvous frames, as every earlier release did), so the absence of any
@@ -51,7 +51,7 @@ pub async fn is_live(connection: &Connection) -> bool {
 }
 
 /// The registered connection a newly authenticated one supersedes, if the
-/// peer has one over a different path and that path no longer answers.
+/// peer has one over a different path that went silent or is much slower.
 pub(super) async fn superseded(
     registered: &BTreeMap<NodeId, Connection>,
     peer: NodeId,
@@ -72,6 +72,11 @@ pub(super) async fn superseded(
         networks.iter().any(|network| network.contains(ip))
     };
     if on_link(offered.remote_address()) && !on_link(existing.remote_address()) {
+        return Some(existing.stable_id());
+    }
+    // A newly authenticated path that is substantially faster may replace a
+    // still-live one. A small RTT fluctuation cannot move the connection.
+    if super::path_quality::materially_better(existing.rtt(), offered.rtt()) {
         return Some(existing.stable_id());
     }
     (!is_live(existing).await).then(|| existing.stable_id())
