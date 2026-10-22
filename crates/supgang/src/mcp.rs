@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
+    time::Duration,
 };
 
 use rmcp::{
@@ -52,12 +53,13 @@ pub enum McpServeError {
     Service,
 }
 
-/// Runs the bounded local MCP server until its client closes standard input.
+/// Runs the bounded local MCP server until its client or parent disconnects.
 ///
 /// # Errors
 ///
 /// Returns a non-sensitive startup or transport classification.
 pub fn serve_stdio(state_directory: PathBuf) -> Result<(), McpServeError> {
+    let parent = rustix::process::getppid();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .thread_name("supgang-mcp")
         .enable_all()
@@ -65,16 +67,50 @@ pub fn serve_stdio(state_directory: PathBuf) -> Result<(), McpServeError> {
         .map_err(|_| McpServeError::Runtime)?;
     runtime.block_on(async move {
         let transport = BoundedStdio::new(tokio::io::stdin(), tokio::io::stdout());
-        let running = SupgangMcp::new(state_directory)
-            .serve(transport)
-            .await
-            .map_err(|_| McpServeError::Service)?;
-        running
-            .waiting()
-            .await
-            .map(|_reason| ())
-            .map_err(|_| McpServeError::Service)
+        let mut ended = transport.ended();
+        let mut startup_ended = ended.clone();
+        let running = tokio::select! {
+            biased;
+            () = transport_ended(&mut startup_ended) => return Ok(()),
+            () = parent_gone(parent) => return Ok(()),
+            result = SupgangMcp::new(state_directory).serve(transport) => match result {
+                Ok(running) => running,
+                Err(_) if *ended.borrow() => return Ok(()),
+                Err(_) => return Err(McpServeError::Service),
+            },
+        };
+        let cancellation = running.cancellation_token();
+        tokio::select! {
+            biased;
+            () = transport_ended(&mut ended) => {
+                cancellation.cancel();
+                Ok(())
+            }
+            () = parent_gone(parent) => {
+                cancellation.cancel();
+                Ok(())
+            }
+            result = running.waiting() => result.map(|_reason| ()).map_err(|_| McpServeError::Service),
+        }
     })
+}
+
+async fn transport_ended(ended: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*ended.borrow() {
+        if ended.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn parent_gone(parent: Option<rustix::process::Pid>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        if rustix::process::getppid() != parent {
+            break;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

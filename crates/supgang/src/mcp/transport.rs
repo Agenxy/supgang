@@ -10,7 +10,7 @@ use rmcp::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::Mutex,
+    sync::{Mutex, watch},
 };
 
 /// Maximum bytes accepted in one MCP request, including its newline.
@@ -23,6 +23,7 @@ pub struct BoundedStdio<R, W> {
     reader: BufReader<R>,
     line: Vec<u8>,
     writer: Arc<Mutex<Option<W>>>,
+    ended: watch::Sender<bool>,
 }
 
 impl<R, W> BoundedStdio<R, W>
@@ -32,11 +33,18 @@ where
 {
     /// Creates a bounded transport from asynchronous byte streams.
     pub fn new(reader: R, writer: W) -> Self {
+        let (ended, _) = watch::channel(false);
         Self {
             reader: BufReader::new(reader),
             line: Vec::with_capacity(4 * 1024),
             writer: Arc::new(Mutex::new(Some(writer))),
+            ended,
         }
+    }
+
+    /// Reports EOF or a fatal transport error to the process lifecycle.
+    pub fn ended(&self) -> watch::Receiver<bool> {
+        self.ended.subscribe()
     }
 }
 
@@ -52,7 +60,14 @@ where
         message: TxJsonRpcMessage<RoleServer>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
         let writer = Arc::clone(&self.writer);
-        async move { write_message(&writer, &message).await }
+        let ended = self.ended.clone();
+        async move {
+            let result = write_message(&writer, &message).await;
+            if result.is_err() {
+                ended.send_replace(true);
+            }
+            result
+        }
     }
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleServer>> {
@@ -62,11 +77,16 @@ where
                 .unwrap_or(u64::MAX)
                 .saturating_add(1);
             let mut bounded = (&mut self.reader).take(limit);
-            let read = bounded.read_until(b'\n', &mut self.line).await.ok()?;
+            let Ok(read) = bounded.read_until(b'\n', &mut self.line).await else {
+                self.ended.send_replace(true);
+                return None;
+            };
             if read == 0 {
+                self.ended.send_replace(true);
                 return None;
             }
             if self.line.len() > MAX_MCP_REQUEST_BYTES || !self.line.ends_with(b"\n") {
+                self.ended.send_replace(true);
                 return None;
             }
             let line = self.line.strip_suffix(b"\n").unwrap_or(&self.line);
@@ -81,6 +101,7 @@ where
                         .await
                         .is_err()
                     {
+                        self.ended.send_replace(true);
                         return None;
                     }
                     continue;
@@ -94,6 +115,7 @@ where
             if let Some(id) = missing_modern_capabilities(&value) {
                 let error = ErrorData::invalid_params("2026-07-28 requests require clientCapabilities metadata", None);
                 if write_protocol_error(&self.writer, error, Some(id)).await.is_err() {
+                    self.ended.send_replace(true);
                     return None;
                 }
                 continue;
@@ -105,6 +127,7 @@ where
                         .await
                         .is_err()
                     {
+                        self.ended.send_replace(true);
                         return None;
                     }
                 }
