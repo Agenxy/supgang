@@ -190,3 +190,9 @@ beyond a trusted network.
 - [Security policy](SECURITY.md)
 
 Supgang is an [Agenxy](https://github.com/Agenxy) project and is licensed under Apache-2.0.
+
+---
+
+[agenxy.org/projects/supgang](https://agenxy.org/projects/supgang/) · [Bluesky @agenxy.org](https://bsky.app/profile/agenxy.org) · [github.com/agenxy](https://github.com/agenxy)
+
+Other Agenxy projects: [Dibs](https://agenxy.org/projects/dibs/) · [Remap](https://agenxy.org/projects/remap/) · [Quarters](https://agenxy.org/projects/quarters/)
