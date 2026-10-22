@@ -35,6 +35,7 @@ const RESERVED_TAGS: &[&str] = &[
     "doctor",
     "endpoint",
     "expose",
+    "exposures",
     "forward",
     "config",
     "help",

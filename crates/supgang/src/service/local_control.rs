@@ -445,6 +445,7 @@ async fn handle_control(
             }
             reply.into_unchanged()
         }
+        Ok(Ok(ControlRequest::Exposures)) => tunnels.exposure_reply().into_unchanged(),
         Ok(Ok(ControlRequest::Connect { .. })) => unreachable_connect_reply().into_unchanged(),
         Ok(Ok(ControlRequest::Restart)) => {
             restart_reply(instance_id, restart_requested, is_supervised()).into_unchanged()

@@ -137,6 +137,69 @@ pub fn expose(
     }
 }
 
+pub fn exposures(directory: &Path, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
+    let result = (|| match control::request(directory, ControlRequest::Exposures)
+        .map_err(|failure| request_failed(&failure, "local exposure listing request failed"))?
+    {
+        Some(ControlReply::Exposures { value }) => Ok(("running-service", value)),
+        Some(ControlReply::Error { message }) => Err(message),
+        Some(_) => Err("local service does not support exposure listing; refresh its installed artifact".to_owned()),
+        None => {
+            let _state =
+                state::open_read_only(directory).map_err(|_| "protected state could not be read".to_owned())?;
+            let policy = tunnel_policy::load(directory)?;
+            Ok((
+                "saved-state",
+                tunnel_policy::ExposureSnapshot::from_policy(&policy, None),
+            ))
+        }
+    })();
+    match result {
+        Err(message) => render_error(json, &message, output, error),
+        Ok((source, snapshot)) if json => render_json(
+            &serde_json::json!({
+                "schema": "supgang.exposures/v1",
+                "status": "ok",
+                "source": source,
+                "exposures": snapshot.exposures,
+                "limits": snapshot.limits,
+            }),
+            output,
+            error,
+        ),
+        Ok((source, snapshot)) => {
+            let result = (|| -> std::io::Result<()> {
+                writeln!(output, "Exposure policy ({source}):")?;
+                if snapshot.exposures.is_empty() {
+                    writeln!(output, "  No services exposed.")?;
+                } else {
+                    for exposure in snapshot.exposures {
+                        writeln!(output, "  {}: 127.0.0.1:{}", exposure.name, exposure.loopback_port)?;
+                    }
+                }
+                let limits = snapshot.limits;
+                writeln!(
+                    output,
+                    "Limits: {} per peer, {} total, {} seconds idle.",
+                    limits.per_peer, limits.total, limits.idle_seconds
+                )?;
+                if let Some(active_total) = limits.active_total.filter(|active| *active != limits.total) {
+                    writeln!(
+                        output,
+                        "Active total: {active_total}; restart the service to apply the saved total."
+                    )?;
+                }
+                Ok(())
+            })();
+            if result.is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(3)
+            }
+        }
+    }
+}
+
 pub fn limits(
     directory: &Path,
     per_peer: usize,

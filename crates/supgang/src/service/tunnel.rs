@@ -11,7 +11,7 @@ use tokio::{
 use crate::{
     peer_stream::{self, StreamKind},
     record::ServiceName,
-    tunnel_policy::{self, TunnelPolicy},
+    tunnel_policy::{self, ExposureSnapshot, TunnelPolicy},
 };
 
 use super::{
@@ -25,14 +25,26 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) struct TunnelRuntime {
     pub(super) policy: watch::Sender<TunnelPolicy>,
     pub(super) admission: Arc<Semaphore>,
+    pub(super) admission_total: usize,
 }
 
 impl TunnelRuntime {
     pub(super) fn new(directory: &Path) -> Result<Self, String> {
         let policy = tunnel_policy::load(directory)?;
+        let admission_total = policy.total;
         let admission = Arc::new(Semaphore::new(policy.total));
         let (policy, _) = watch::channel(policy);
-        Ok(Self { policy, admission })
+        Ok(Self {
+            policy,
+            admission,
+            admission_total,
+        })
+    }
+
+    pub(super) fn exposure_reply(&self) -> crate::control::ControlReply {
+        crate::control::ControlReply::Exposures {
+            value: ExposureSnapshot::from_policy(&self.policy.borrow(), Some(self.admission_total)),
+        }
     }
 
     /// Saves new tunnel limits while the service runs. New connections take

@@ -130,6 +130,7 @@ where
         Some(Command::Unexpose { name }) => {
             crate::cli_tunnel::expose(&state_directory, &name, 0, cli.json, output, error)
         }
+        Some(Command::Exposures) => crate::cli_tunnel::exposures(&state_directory, cli.json, output, error),
         Some(Command::TunnelLimits {
             per_peer,
             total,

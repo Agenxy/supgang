@@ -30,6 +30,11 @@ that named IPv4 loopback service. `supgang connect solis ssh` carries applicatio
 stdout through the existing authenticated QUIC connection. SSH still checks its own host key and
 user credentials. `supgang unexpose ssh` removes the grant and closes existing peer sessions before
 acknowledging the change. No public TCP SSH port or arbitrary destination proxy is added.
+`supgang exposures` lists named loopback ports and tunnel limits without changing policy;
+`supgang --json exposures` emits the versioned `supgang.exposures/v1` schema. It reads the
+running service when available and protected saved state otherwise. The listing omits peer
+addresses and owner-mapped endpoints. If the saved total differs from the running admission
+ceiling, it reports both until the service restarts.
 
 For clients that need a TCP port rather than stdin and stdout, such as a browser,
 `supgang forward 14331 solis preview` listens on 127.0.0.1:14331 on this computer and carries each

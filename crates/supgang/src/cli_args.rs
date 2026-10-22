@@ -73,6 +73,8 @@ pub enum Command {
     },
     /// Remove a service exposure and end existing sessions under that policy.
     Unexpose { name: String },
+    /// List named loopback exposures and tunnel limits without changing policy.
+    Exposures,
     /// Set bounded tunnel admission and idle limits.
     TunnelLimits {
         /// Concurrent streams per peer, 1 through 64; default 4.

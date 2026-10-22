@@ -18,6 +18,54 @@ pub struct Exposure {
     pub port: u16,
 }
 
+/// Bounded owner-facing view; deliberately excludes mapped peer addresses.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposureSummary {
+    pub name: String,
+    pub loopback_port: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelLimitsSummary {
+    pub per_peer: usize,
+    pub total: usize,
+    pub idle_seconds: u64,
+    /// The running admission ceiling, absent when the service is stopped.
+    pub active_total: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposureSnapshot {
+    pub exposures: Vec<ExposureSummary>,
+    pub limits: TunnelLimitsSummary,
+}
+
+impl ExposureSnapshot {
+    pub fn from_policy(policy: &TunnelPolicy, active_total: Option<usize>) -> Self {
+        let mut exposures: Vec<_> = policy
+            .exposures
+            .iter()
+            .map(|entry| ExposureSummary {
+                name: entry.name.as_str().to_owned(),
+                loopback_port: entry.port,
+            })
+            .collect();
+        exposures.sort_by(|left, right| left.name.cmp(&right.name));
+        Self {
+            exposures,
+            limits: TunnelLimitsSummary {
+                per_peer: policy.per_peer,
+                total: policy.total,
+                idle_seconds: policy.idle_seconds,
+                active_total,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TunnelPolicy {

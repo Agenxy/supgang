@@ -13,6 +13,7 @@ fn request_encoding_is_canonical_and_bounded() -> Result<(), Box<dyn std::error:
         ControlRequest::Restart,
         ControlRequest::Status,
         ControlRequest::Peers,
+        ControlRequest::Exposures,
         ControlRequest::Resolve(NodeId::from_bytes([7_u8; 32])),
         ControlRequest::Revoke(NodeId::from_bytes([8_u8; 32])),
         ControlRequest::Update {

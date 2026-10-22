@@ -42,6 +42,50 @@ fn run_json(arguments: &[&str]) -> Result<serde_json::Value, Box<dyn std::error:
 }
 
 #[test]
+fn exposures_lists_saved_policy_without_mapped_addresses() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let state_path = temporary.path().join("state");
+    drop(crate::state::initialize(&state_path)?);
+    let mut policy = crate::tunnel_policy::TunnelPolicy::default();
+    policy.set(crate::record::ServiceName::new("ssh")?, 22)?;
+    policy.set(crate::record::ServiceName::new("preview")?, 14331)?;
+    // The policy file contains an address; the CLI summary must never copy it.
+    policy.mapped.push("8.8.8.8:4433".parse()?);
+    crate::tunnel_policy::save(&state_path, &policy)?;
+    let path = state_path.to_str().ok_or("non-UTF8 test state")?;
+    let output = run_json(&["supgang", "--state-dir", path, "--json", "exposures"])?;
+    assert_eq!(output.get("schema"), Some(&serde_json::json!("supgang.exposures/v1")));
+    assert_eq!(output.get("source"), Some(&serde_json::json!("saved-state")));
+    assert_eq!(
+        output.get("exposures"),
+        Some(&serde_json::json!([
+            {"name": "preview", "loopback_port": 14331},
+            {"name": "ssh", "loopback_port": 22}
+        ]))
+    );
+    assert_eq!(
+        output.get("limits"),
+        Some(&serde_json::json!({
+            "per_peer": 4, "total": 16, "idle_seconds": 7200, "active_total": null
+        }))
+    );
+    assert!(!output.to_string().contains("8.8.8.8"));
+    assert!(!output.to_string().contains("mapped"));
+    let mut human = Vec::new();
+    let mut error = Vec::new();
+    assert_eq!(
+        run(["supgang", "--state-dir", path, "exposures"], &mut human, &mut error),
+        std::process::ExitCode::SUCCESS
+    );
+    let human = String::from_utf8(human)?;
+    assert!(human.contains("preview: 127.0.0.1:14331"));
+    assert!(human.contains("4 per peer, 16 total, 7200 seconds idle"));
+    assert!(!human.contains("8.8.8.8"));
+    assert!(error.is_empty());
+    Ok(())
+}
+
+#[test]
 fn help_and_version_are_successful_stdout_commands() {
     for argument in ["--help", "--version"] {
         let mut output = Vec::new();

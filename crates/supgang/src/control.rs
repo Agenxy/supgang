@@ -16,7 +16,7 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 
-use crate::{cli_peer, ids::NodeId, storage};
+use crate::{cli_peer, ids::NodeId, storage, tunnel_policy::ExposureSnapshot};
 
 /// Filename of the private local-control socket inside protected state.
 pub const CONTROL_SOCKET_FILE_NAME: &str = "control.sock";
@@ -40,6 +40,7 @@ const REQUEST_CONNECT: u8 = 7;
 const REQUEST_EXPOSE: u8 = 8;
 const REQUEST_ADD_MAPPED: u8 = 9;
 const REQUEST_TUNNEL_LIMITS: u8 = 10;
+const REQUEST_EXPOSURES: u8 = 11;
 const MAX_REQUEST_BYTES: usize = 128;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
@@ -59,6 +60,8 @@ pub enum ControlRequest {
         total: u16,
         idle_seconds: u32,
     },
+    /// Read the running exposure policy and effective admission ceiling.
+    Exposures,
     /// Restart an installed supervisor payload, available only to the local owner.
     Restart,
     /// Return non-secret service and identity status.
@@ -160,6 +163,8 @@ pub enum ControlReply {
     ExposureChanged,
     /// The runtime saved tunnel limits that apply when it next starts.
     LimitsSaved,
+    /// Read-only exposure and limit summary without mapped addresses.
+    Exposures { value: ExposureSnapshot },
     /// The runtime signed and queued publication of an owner-mapped endpoint.
     EndpointChanged,
     /// The local supervisor payload has accepted a restart request.
@@ -372,6 +377,7 @@ fn encode_request(request: ControlRequest) -> Vec<u8> {
             bytes.extend_from_slice(&idle_seconds.to_be_bytes());
         }
         ControlRequest::Restart => bytes.push(REQUEST_RESTART),
+        ControlRequest::Exposures => bytes.push(REQUEST_EXPOSURES),
         ControlRequest::Status => bytes.push(REQUEST_STATUS),
         ControlRequest::Peers => bytes.push(REQUEST_PEERS),
         ControlRequest::Resolve(node_id) => {
@@ -461,6 +467,7 @@ fn decode_request(bytes: &[u8]) -> Result<ControlRequest, ControlError> {
             })
         }
         REQUEST_RESTART if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Restart),
+        REQUEST_EXPOSURES if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Exposures),
         REQUEST_STATUS if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Status),
         REQUEST_PEERS if bytes.len() == REQUEST_MAGIC.len() + 1 => Ok(ControlRequest::Peers),
         REQUEST_RESOLVE if bytes.len() == REQUEST_MAGIC.len() + 1 + 32 => {
