@@ -74,6 +74,15 @@ pub(super) struct PathQualityWatch {
 }
 
 impl PathQualityWatch {
+    /// A different local network may expose a directly attached path to a
+    /// peer. Previous-path residence and rejection backoff must not delay the
+    /// first attempt on that new network; a failed attempt gets fresh backoff.
+    pub(super) fn network_changed(&mut self, now: Instant) {
+        for entry in self.paths.values_mut() {
+            entry.next_allowed = now;
+        }
+    }
+
     pub(super) fn observe(&mut self, active: &BTreeMap<NodeId, ActiveConnection>, now: Instant) {
         self.recent_admissions
             .retain(|_, (_, at)| now.saturating_duration_since(*at) <= RECENT_ADMISSION_WINDOW);
@@ -239,5 +248,18 @@ mod tests {
         quality.backoff(peer, now);
         assert!(!quality.allows_replacement(peer, now + Duration::from_secs(30)));
         assert!(quality.allows_replacement(peer, now + REPLACEMENT_COOLDOWN));
+    }
+
+    #[test]
+    fn network_change_releases_prior_path_cooldown_then_rejection_backs_off_again() {
+        let now = Instant::now();
+        let peer = NodeId::from_bytes([8; 32]);
+        let mut quality = PathQualityWatch::default();
+        quality.paths.insert(peer, Observation::new(1, now, true));
+        assert!(!quality.allows_replacement(peer, now));
+        quality.network_changed(now);
+        assert!(quality.allows_replacement(peer, now));
+        quality.backoff(peer, now);
+        assert!(!quality.allows_replacement(peer, now + Duration::from_secs(30)));
     }
 }

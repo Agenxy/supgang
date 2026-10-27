@@ -373,6 +373,7 @@ async fn service_loop(
             candidate_refresh.interfaces_changed,
         )?;
         if candidate_refresh.interfaces_changed {
+            path_quality.network_changed(now);
             live_session::cancel_pending_replacements(
                 &mut replacements,
                 &mut replacement_tasks,
