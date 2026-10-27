@@ -14,6 +14,7 @@ use crate::{
     ids::NodeId,
     membership::{MAX_MEMBERSHIP_LIFETIME_SECONDS, MembershipRoles},
     peer_directory::{PEER_DIRECTORY_FILE_NAME, PeerDirectory},
+    peer_stream::{self, StreamKind},
     profile::PeerName,
     reachability::{ReachabilityClaim, ReachabilitySource},
     record::{Capabilities, ENDPOINT_RECORD_VERSION, EndpointRecord, SignedEndpointRecord},
@@ -117,7 +118,7 @@ fn follow_up_sync_proves_either_canonical_direction_and_rejects_close() -> Resul
                 ),
             );
             assert!(
-                client_proved && server_proved,
+                client_proved.is_some() && server_proved.is_some(),
                 "both peers must complete the follow-up sync"
             );
             client_connection.close(0_u8.into(), b"test complete");
@@ -125,7 +126,61 @@ fn follow_up_sync_proves_either_canonical_direction_and_rejects_close() -> Resul
         let (client_connection, server_connection) =
             connection_pair(&server, &client, server_identity.key_id()).await?;
         server_connection.close(2_u8.into(), b"candidate rejected");
-        assert!(!prove_replacement(&client_connection, lower, higher, &page, &root, Duration::from_secs(1)).await);
+        assert!(
+            prove_replacement(&client_connection, lower, higher, &page, &root, Duration::from_secs(1))
+                .await
+                .is_none()
+        );
+        server.close(0_u8.into(), b"test complete");
+        client.close(0_u8.into(), b"test complete");
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+}
+
+#[test]
+fn replacement_proof_preserves_service_and_update_streams_before_sync() -> Result<(), Box<dyn std::error::Error>> {
+    transport::build_runtime()?.block_on(async {
+        let temporary = tempfile::tempdir()?;
+        let local = state::initialize(temporary.path().join("state"))?;
+        let root = local.identity().root_verifying_key;
+        let page = SyncPage {
+            contacts: Vec::new(),
+            reachability: Vec::new(),
+            revocations: local.revocations().clone(),
+        };
+        let server_identity = TransportIdentity::generate()?;
+        let server = Endpoint::server(server_identity.server_config()?, SocketAddr::from(([127, 0, 0, 1], 0)))?;
+        let client_identity = TransportIdentity::generate()?;
+        let client = Endpoint::server(client_identity.server_config()?, SocketAddr::from(([127, 0, 0, 1], 0)))?;
+        let (higher_connection, lower_connection) = connection_pair(&server, &client, server_identity.key_id()).await?;
+        for (kind, payload) in [
+            (StreamKind::Service, b"service".as_slice()),
+            (StreamKind::Update, b"update".as_slice()),
+        ] {
+            let (mut send, _response) = peer_stream::open(&lower_connection, kind).await?;
+            send.write_all(payload).await?;
+            send.finish()?;
+        }
+        let lower = NodeId::from_bytes([1; 32]);
+        let higher = NodeId::from_bytes([2; 32]);
+        let (higher_proof, lower_proof) = tokio::join!(
+            prove_replacement(&higher_connection, higher, lower, &page, &root, Duration::from_secs(1)),
+            prove_replacement(&lower_connection, lower, higher, &page, &root, Duration::from_secs(1)),
+        );
+        assert!(lower_proof.is_some(), "the canonical initiator must prove Sync");
+        let mut deferred = higher_proof.ok_or("the higher-id peer must prove Sync after earlier streams")?;
+        assert_eq!(deferred.len(), 2);
+        for (expected_kind, payload) in [
+            (StreamKind::Service, b"service".as_slice()),
+            (StreamKind::Update, b"update".as_slice()),
+        ] {
+            let (kind, _send, mut receive) = deferred.pop_front().ok_or("missing deferred stream")?;
+            assert_eq!(kind, expected_kind);
+            let mut bytes = vec![0; payload.len()];
+            receive.read_exact(&mut bytes).await?;
+            assert_eq!(bytes, payload);
+        }
+        higher_connection.close(0_u8.into(), b"test complete");
         server.close(0_u8.into(), b"test complete");
         client.close(0_u8.into(), b"test complete");
         Ok::<(), Box<dyn std::error::Error>>(())

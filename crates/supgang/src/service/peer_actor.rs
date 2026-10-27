@@ -1,7 +1,7 @@
 //! Canonical long-lived connection selection and bounded background reconciliation.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -19,7 +19,9 @@ use crate::{
 use super::{
     ConnectionOrigin, PeerEvent, SESSION_TIMEOUT_SECONDS,
     active::{ActiveConnection, SessionAuthorization},
-    rendezvous, revocation_listener, sync,
+    rendezvous,
+    replacement_proof::DeferredStream,
+    revocation_listener, sync,
 };
 
 const CLOSED_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -36,7 +38,6 @@ pub(super) struct PeerActorRegistry<'a> {
     pub(super) update: Option<PeerUpdateContext>,
 }
 
-#[derive(Clone)]
 struct PeerActorContext {
     connection: Connection,
     peer: NodeId,
@@ -51,6 +52,7 @@ struct PeerActorContext {
     /// Why this session ended, shared with the registered connection so the
     /// connection history can say.
     ended: Arc<std::sync::OnceLock<&'static [u8]>>,
+    deferred: VecDeque<DeferredStream>,
 }
 
 #[derive(Clone)]
@@ -82,6 +84,7 @@ pub(super) fn register_connection(
     capabilities: crate::record::Capabilities,
     peer: NodeId,
     origin: ConnectionOrigin,
+    deferred: VecDeque<DeferredStream>,
     registry: &mut PeerActorRegistry<'_>,
 ) {
     let offered = offered_connection(registry.local, peer, origin);
@@ -137,6 +140,7 @@ pub(super) fn register_connection(
         tunnel_admission,
         draining,
         ended,
+        deferred,
     }));
 }
 
@@ -215,6 +219,7 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
         tunnel_admission,
         mut draining,
         ended: _,
+        mut deferred,
     } = context;
     let connection_id = connection.stable_id();
     let mut tunnels = tokio::task::JoinSet::new();
@@ -237,7 +242,15 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
                 let page = pages.borrow().clone();
                 exchange_outbound(&connection, &page).await
             }
-            accepted = peer_stream::accept(&connection) => {
+            accepted = async {
+                // No suspension follows the pop: a losing select branch
+                // cannot discard an already accepted peer stream.
+                if let Some(stream) = deferred.pop_front() {
+                    Ok(stream)
+                } else {
+                    peer_stream::accept(&connection).await
+                }
+            } => {
                 let Ok((kind, mut send, mut receive)) = accepted else {
                     return b"peer stream acceptance ended";
                 };
@@ -376,7 +389,7 @@ async fn send_closed_event(events: &tokio::sync::mpsc::Sender<PeerEvent>, event:
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, BTreeSet},
+        collections::{BTreeMap, BTreeSet, VecDeque},
         net::SocketAddr,
         time::Duration,
     };
@@ -525,6 +538,7 @@ mod tests {
                 Capabilities::NONE,
                 higher,
                 ConnectionOrigin::Inbound,
+                VecDeque::new(),
                 &mut PeerActorRegistry {
                     local: lower,
                     active: &mut lower_active,
@@ -543,6 +557,7 @@ mod tests {
                 Capabilities::NONE,
                 lower,
                 ConnectionOrigin::Outbound,
+                VecDeque::new(),
                 &mut PeerActorRegistry {
                     local: higher,
                     active: &mut higher_active,
@@ -625,6 +640,7 @@ mod tests {
                 tunnel_admission: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
                 draining: drain_receiver,
                 ended: std::sync::Arc::new(std::sync::OnceLock::new()),
+                deferred: VecDeque::new(),
             }));
 
             let (mut malformed, _receive) = client_connection.open_bi().await?;

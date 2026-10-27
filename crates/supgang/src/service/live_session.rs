@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     net::SocketAddr,
     sync::Arc,
     time::Duration,
@@ -80,7 +80,7 @@ pub(super) struct ReplacementResult {
     exchange: AuthenticatedExchange,
     origin: ConnectionOrigin,
     old_id: usize,
-    proven: bool,
+    deferred: Option<VecDeque<super::replacement_proof::DeferredStream>>,
 }
 
 /// Finishes a session task: a connection authenticated over another path can
@@ -193,10 +193,10 @@ impl LiveSessionState<'_> {
             }
         });
         let Some(old) = old else {
-            return self.admit_authenticated(connection, exchange, origin, None);
+            return self.admit_authenticated(connection, exchange, origin, None, VecDeque::new());
         };
         if !old.old_live {
-            return self.admit_authenticated(connection, exchange, origin, Some(old.id));
+            return self.admit_authenticated(connection, exchange, origin, Some(old.id), VecDeque::new());
         }
         if self.replacements.contains_key(&exchange.peer)
             || self.replacements.len() >= self.config.max_active_peers
@@ -218,13 +218,14 @@ impl LiveSessionState<'_> {
         let local = self.local_node;
         let retry_interval = self.config.retry_interval;
         self.replacement_tasks.spawn(async move {
-            let proven = super::replacement_proof::prove(&connection, local, peer, &page, &root, retry_interval).await;
+            let deferred =
+                super::replacement_proof::prove(&connection, local, peer, &page, &root, retry_interval).await;
             ReplacementResult {
                 connection,
                 exchange,
                 origin,
                 old_id: old.id,
-                proven,
+                deferred,
             }
         });
         Ok(())
@@ -236,6 +237,7 @@ impl LiveSessionState<'_> {
         exchange: AuthenticatedExchange,
         origin: ConnectionOrigin,
         superseded: Option<usize>,
+        deferred: VecDeque<super::replacement_proof::DeferredStream>,
     ) -> Result<(), ServiceError> {
         if self.local_state.revocations().contains(&exchange.peer) {
             connection.close(3_u8.into(), b"peer revoked");
@@ -273,6 +275,7 @@ impl LiveSessionState<'_> {
             exchange.capabilities,
             exchange.peer,
             origin,
+            deferred,
             &mut PeerActorRegistry {
                 local: self.local_node,
                 active: self.active,
@@ -361,11 +364,13 @@ pub(super) fn finish_ready_replacements(live: &mut LiveSessionState<'_>) -> Resu
         }
         live.replacements.remove(&peer);
         let current = live.active.get(&peer).map(|active| active.stable_id());
-        if result.proven && (current.is_none() || current == Some(result.old_id)) {
+        if let Some(deferred) = result.deferred
+            && (current.is_none() || current == Some(result.old_id))
+        {
             // The old route can die while both peers prove the candidate.
             // In that case admit the proved connection as a new session;
             // there is no surviving old tunnel to drain.
-            live.admit_authenticated(result.connection, result.exchange, result.origin, current)?;
+            live.admit_authenticated(result.connection, result.exchange, result.origin, current, deferred)?;
         } else {
             result.connection.close(2_u8.into(), b"replacement proof failed");
             live.quality.backoff(peer, tokio::time::Instant::now());
