@@ -385,6 +385,15 @@ fn assert_unreachable(world: &World) -> Result<(), Error> {
     Ok(())
 }
 
+fn connection_history(computer: &super::sim_harness::Computer) -> Result<Vec<crate::control::ConnectionEvent>, Error> {
+    let Some(crate::control::ControlReply::Status { value }) =
+        crate::control::request(&computer.path, crate::control::ControlRequest::Status)?
+    else {
+        return Err("no status for connection history".into());
+    };
+    Ok(value.recent_connections)
+}
+
 #[test]
 fn at_home_the_laptop_reaches_solis_on_the_lan_and_the_tunnel_carries_bytes() -> Result<(), Error> {
     let world = paired_at_home(
@@ -419,6 +428,7 @@ fn from_an_ipv4_only_hotel_the_laptop_reaches_solis_through_the_forward_then_ret
     assert_eq!(path, SocketAddr::new(IpAddr::V4(HOME_PUBLIC), PORT));
     assert_tunnel(&world)?;
 
+    let before_changes = world.fleet.interface_changes(LAPTOP)?;
     world
         .network
         .move_host(world.fleet.computer(LAPTOP)?.host, Some(world.home))?;
@@ -426,7 +436,29 @@ fn from_an_ipv4_only_hotel_the_laptop_reaches_solis_through_the_forward_then_ret
         let path = connection(world.fleet.computer(LAPTOP)?, world.fleet.computer(SOLIS)?.node)?;
         Ok(path.filter(|path| path.ip() != IpAddr::V4(HOME_PUBLIC)))
     })?;
-    assert!(back.is_some(), "the laptop did not return to the LAN path at home");
+    if back.is_none() {
+        let laptop = world.fleet.computer(LAPTOP)?;
+        let solis = world.fleet.computer(SOLIS)?;
+        let after_changes = world.fleet.interface_changes(LAPTOP)?;
+        return Err(format!(
+            "the laptop did not return to the LAN path at home; laptop history {:?}; Solis history {:?}; \
+             laptop recovery {:?}; Solis recovery {:?}; interface changes after move {}; quality dials {}; replacement attempts {}",
+            connection_history(laptop)?,
+            connection_history(solis)?,
+            world
+                .fleet
+                .recovery_snapshot(LAPTOP, solis.node)?
+                .map(|snapshot| snapshot.to_string()),
+            world
+                .fleet
+                .recovery_snapshot(SOLIS, laptop.node)?
+                .map(|snapshot| snapshot.to_string()),
+            after_changes.saturating_sub(before_changes),
+            world.fleet.quality_dials(LAPTOP)?,
+            world.fleet.replacement_attempts(LAPTOP)?,
+        )
+        .into());
+    }
     Ok(())
 }
 

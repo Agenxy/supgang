@@ -373,6 +373,8 @@ async fn service_loop(
             candidate_refresh.interfaces_changed,
         )?;
         if candidate_refresh.interfaces_changed {
+            #[cfg(test)]
+            test_controls::note_interface_change();
             path_quality.network_changed(now);
             live_session::cancel_pending_replacements(
                 &mut replacements,
@@ -582,6 +584,8 @@ async fn service_loop(
                 + aligned_retry_delay(hive_id, system_time_since_epoch()?, config.retry_interval);
         }
 
+        #[cfg(test)]
+        test_controls::record_recovery(&active, &replacements, &path_quality, outbound_in_flight, now);
         let wait = draining.bound_wait(next_service_wait(
             outbound_in_flight,
             next_dial,

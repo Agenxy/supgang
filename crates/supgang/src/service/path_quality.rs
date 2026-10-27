@@ -123,6 +123,14 @@ impl PathQualityWatch {
         self.paths.get(&peer).is_none_or(|entry| now >= entry.next_allowed)
     }
 
+    #[cfg(test)]
+    pub(super) fn diagnostic(&self, peer: NodeId, now: Instant) -> (Option<u64>, bool) {
+        let cooldown_ms = self.paths.get(&peer).map(|entry| {
+            u64::try_from(entry.next_allowed.saturating_duration_since(now).as_millis()).unwrap_or(u64::MAX)
+        });
+        (cooldown_ms, self.recent_admissions.contains_key(&peer))
+    }
+
     pub(super) fn recent_admissions(&self, now: Instant) -> BTreeMap<NodeId, usize> {
         self.recent_admissions
             .iter()

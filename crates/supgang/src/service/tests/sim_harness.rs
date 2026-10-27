@@ -180,6 +180,25 @@ impl Fleet {
         Ok(self.computer(index)?.controls.quality_dials.load(Ordering::Relaxed))
     }
 
+    pub(super) fn interface_changes(&self, index: usize) -> Result<u64, Error> {
+        Ok(self.computer(index)?.controls.interface_changes.load(Ordering::Relaxed))
+    }
+
+    pub(super) fn recovery_snapshot(
+        &self,
+        index: usize,
+        peer: NodeId,
+    ) -> Result<Option<super::super::test_controls::RecoverySnapshot>, Error> {
+        Ok(self
+            .computer(index)?
+            .controls
+            .recovery
+            .lock()
+            .map_err(|_| std::io::Error::other("recovery snapshot poisoned"))?
+            .get(&peer)
+            .copied())
+    }
+
     /// Starts every computer's service.
     pub(super) fn start_all(&mut self) -> Result<(), Error> {
         for index in 0..self.computers.len() {
