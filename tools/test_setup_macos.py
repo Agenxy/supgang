@@ -219,6 +219,22 @@ class SetupTests(unittest.TestCase):
         protected = os.stat_result((stat.S_IFDIR | 0o700, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         self.assertTrue(setup.safe_ancestor(Path("/Library/Application Support/x"), protected, 0))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux POSIX ACL regression")
+    def test_linux_default_acl_is_refused_on_objects_but_not_on_ancestors(self):
+        with tempfile.TemporaryDirectory(prefix=".supgang-acl-test-", dir=Path.home()) as directory:
+            subprocess.run(["setfacl", "-d", "-m", f"u:{os.getuid()}:rwx", directory], check=True)
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with self.assertRaises(RuntimeError):
+                    setup.descriptor_acl(fd)
+                setup.descriptor_acl(fd, ancestor=True)
+                subprocess.run(["setfacl", "-m", f"u:{os.getuid()}:rwx", directory], check=True)
+                with self.assertRaises(RuntimeError):
+                    setup.descriptor_acl(fd, ancestor=True)
+            finally:
+                os.close(fd)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS lock ancestor ACL regression")
     def test_setup_lock_rejects_replaceable_parent_and_retains_exclusion(self):
         with tempfile.TemporaryDirectory(prefix=".supgang-lock-test-", dir=Path.home()) as directory:
             parent = Path(directory)

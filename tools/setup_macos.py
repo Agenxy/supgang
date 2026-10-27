@@ -53,15 +53,18 @@ def acl_api():
     return api
 
 
-def descriptor_acl(fd: int, clear_new: bool = False) -> None:
+def descriptor_acl(fd: int, clear_new: bool = False, ancestor: bool = False) -> None:
     """Reject extended allow entries; clear ACLs only on freshly created objects.
 
     Match the native installer's conservative policy, including root-owned
     ancestors. Deny-only entries remain valid. No user-controlled helper runs.
+    On Linux an ancestor's default ACL is permitted, as natively: it shapes only
+    children created later, never access to the ancestor itself.
     """
     if sys.platform != "darwin":
         # The setup entry point is macOS-only, but its read tests also run on Linux.
-        for name in ("system.posix_acl_access", "system.posix_acl_default"):
+        names = ("system.posix_acl_access",) if ancestor else ("system.posix_acl_access", "system.posix_acl_default")
+        for name in names:
             try:
                 if clear_new:
                     os.removexattr(fd, name)
@@ -113,7 +116,7 @@ def validate_ancestor(path: Path, uid: int) -> None:
     try:
         if not safe_ancestor(path, os.fstat(fd), uid):
             raise RuntimeError("A setup path has an unsafe parent directory.")
-        descriptor_acl(fd)
+        descriptor_acl(fd, ancestor=True)
     finally:
         os.close(fd)
 
