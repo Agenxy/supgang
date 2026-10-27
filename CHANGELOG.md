@@ -12,6 +12,17 @@ that a remote refresh to this source runs under probation.
   `rustls` 0.23.46, `rustls-webpki` 0.103.16, `crypto-bigint`, `ctutils`, and `tokio` 1.53.3
   (unsound `AsyncFd` constructors). Record the unmaintained-only `atomic-polyfill` advisory, reached
   through FROST, as an exact documented exception.
+- Keep a session until its peer has accepted the replacement. One computer could judge a new path
+  better on its own and retire the old session, which carried the tunnels, while the other refused
+  the new path as a duplicate. The first then redialled every 15–30 s, and the old session died
+  at the drain deadline or after missed contact exchanges. On 27 October this dropped a shared
+  SSH master twice. A replacement now takes over only after a contact exchange over it succeeds.
+  Until then the old session keeps its tunnels and exchanges, and a refused candidate backs off.
+- Keep established sessions when a service is newly exposed. Removing or repointing an exposure
+  still ends them.
+- On Linux, accept a protected path below a directory that carries only a default ACL. A default
+  ACL shapes only children created later, which Supgang clears and checks. Ubuntu 24.04 sets one
+  on `/home`.
 - Keep a session, and every tunnel on it, through a stall. One contact exchange that missed its
   12 s bound ended the whole session, which on 20 October dropped the travelling laptop's SSH
   masters. A session now ends only after three consecutive failed exchanges or once its
