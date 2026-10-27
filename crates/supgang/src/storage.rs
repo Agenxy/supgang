@@ -543,13 +543,21 @@ pub(crate) fn validate_owner_file_metadata(file: &File) -> Result<(), StorageErr
 }
 
 pub(crate) fn validate_descriptor_acl(file: &File) -> Result<(), StorageError> {
-    supgang_acl::reject_non_owner_grants(file).map_err(|error| {
-        if error.kind() == io::ErrorKind::PermissionDenied {
-            StorageError::InsecureAcl
-        } else {
-            StorageError::Io(error)
-        }
-    })
+    supgang_acl::reject_non_owner_grants(file).map_err(acl_error)
+}
+
+/// The ACL check for a directory above protected state, which does not
+/// consider ACL entries that only shape the directory's future children.
+pub(crate) fn validate_ancestor_acl(file: &File) -> Result<(), StorageError> {
+    supgang_acl::reject_ancestor_grants(file).map_err(acl_error)
+}
+
+fn acl_error(error: io::Error) -> StorageError {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        StorageError::InsecureAcl
+    } else {
+        StorageError::Io(error)
+    }
 }
 
 pub(crate) fn no_follow_flag() -> Result<i32, StorageError> {

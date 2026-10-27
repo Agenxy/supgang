@@ -13,6 +13,19 @@ pub fn reject_non_owner_grants(file: &File) -> io::Result<()> {
     platform::reject_non_owner_grants(file)
 }
 
+/// Rejects access-control entries that can grant a non-owner access to an
+/// ancestor of protected state.
+///
+/// A Linux default ACL governs only entries created later, never access to
+/// the directory itself, and protected storage clears inherited ACL state from
+/// each child it creates before validating that child with
+/// [`reject_non_owner_grants`]. An ancestor's default ACL is therefore
+/// permitted; its access ACL is not. On macOS this is the same check as
+/// [`reject_non_owner_grants`].
+pub fn reject_ancestor_grants(file: &File) -> io::Result<()> {
+    platform::reject_ancestor_grants(file)
+}
+
 /// Removes inherited extended ACL state from a newly created descriptor.
 ///
 /// Call this before writing secret bytes or publishing the new directory.
@@ -97,6 +110,10 @@ mod platform {
         }
     }
 
+    pub(super) fn reject_ancestor_grants(file: &File) -> io::Result<()> {
+        reject_non_owner_grants(file)
+    }
+
     pub(super) fn clear_inherited_acl(file: &File) -> io::Result<()> {
         // SAFETY: `acl_init(0)` creates an owned empty ACL object.
         let acl = unsafe { acl_init(0) };
@@ -124,13 +141,21 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use std::{ffi::CString, fs::File, io, os::fd::AsRawFd, ptr};
+    use std::{ffi::CStr, fs::File, io, os::fd::AsRawFd, ptr};
 
-    const ACL_NAMES: [&str; 2] = ["system.posix_acl_access", "system.posix_acl_default"];
+    const ACCESS_ACL: &CStr = c"system.posix_acl_access";
+    const DEFAULT_ACL: &CStr = c"system.posix_acl_default";
 
     pub(super) fn reject_non_owner_grants(file: &File) -> io::Result<()> {
-        for name in ACL_NAMES {
-            let name = CString::new(name).map_err(io::Error::other)?;
+        reject_present(file, &[ACCESS_ACL, DEFAULT_ACL])
+    }
+
+    pub(super) fn reject_ancestor_grants(file: &File) -> io::Result<()> {
+        reject_present(file, &[ACCESS_ACL])
+    }
+
+    fn reject_present(file: &File, names: &[&CStr]) -> io::Result<()> {
+        for name in names {
             // SAFETY: The descriptor is live, the name is NUL-terminated, and
             // a null buffer with length zero requests only the xattr size.
             let result = unsafe { libc::fgetxattr(file.as_raw_fd(), name.as_ptr(), ptr::null_mut(), 0) };
@@ -151,8 +176,7 @@ mod platform {
     }
 
     pub(super) fn clear_inherited_acl(file: &File) -> io::Result<()> {
-        for name in ACL_NAMES {
-            let name = CString::new(name).map_err(io::Error::other)?;
+        for name in [ACCESS_ACL, DEFAULT_ACL] {
             // SAFETY: The descriptor is live and the name is NUL-terminated.
             let result = unsafe { libc::fremovexattr(file.as_raw_fd(), name.as_ptr()) };
             if result != 0 {
@@ -171,8 +195,9 @@ compile_error!("supgang-acl supports only the Supgang macOS and Linux targets");
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
     use super::clear_inherited_acl;
+    #[cfg(target_os = "linux")]
+    use super::reject_ancestor_grants;
     use super::reject_non_owner_grants;
     use std::{
         fs::{self, File, OpenOptions},
@@ -180,7 +205,6 @@ mod tests {
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
-    #[cfg(target_os = "macos")]
     use std::{path::Path, process::Command};
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
@@ -243,5 +267,48 @@ mod tests {
         let test_file = TestFile::new();
         chmod_acl(&test_file.path, "everyone deny read");
         reject_non_owner_grants(&test_file.file).unwrap_or_else(|error| panic!("deny-only ACL: {error}"));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn setfacl(path: &Path, arguments: &[&str]) {
+        let status = Command::new("setfacl")
+            .args(arguments)
+            .arg(path)
+            .status()
+            .unwrap_or_else(|error| panic!("run setfacl: {error}"));
+        assert!(status.success(), "setfacl did not apply test ACL");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_default_acl_is_refused_on_protected_state_but_not_on_an_ancestor() {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+        let serial = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("supgang-acl-dir-{}-{serial}", std::process::id()));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .unwrap_or_else(|error| panic!("create ACL test directory: {error}"));
+        let uid = fs::metadata(&path)
+            .unwrap_or_else(|error| panic!("inspect ACL test directory: {error}"))
+            .uid();
+        let entry = format!("u:{uid}:rwx");
+        let check = || -> (bool, bool) {
+            let directory = File::open(&path).unwrap_or_else(|error| panic!("open ACL test directory: {error}"));
+            (
+                reject_non_owner_grants(&directory).is_ok(),
+                reject_ancestor_grants(&directory).is_ok(),
+            )
+        };
+
+        setfacl(&path, &["-d", "-m", &entry]);
+        assert_eq!(check(), (false, true), "a default ACL shapes only future children");
+        setfacl(&path, &["-m", &entry]);
+        assert_eq!(check(), (false, false), "an access ACL grants access to the directory itself");
+        let directory = File::open(&path).unwrap_or_else(|error| panic!("open ACL test directory: {error}"));
+        clear_inherited_acl(&directory).unwrap_or_else(|error| panic!("clear ACL: {error}"));
+        assert_eq!(check(), (true, true));
+        let _cleanup = fs::remove_dir(&path);
     }
 }

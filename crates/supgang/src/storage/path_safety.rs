@@ -54,7 +54,7 @@ pub(super) fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, StorageE
 pub(super) fn validate_ancestor_chain(path: &Path, final_must_be_owner: bool) -> Result<(), StorageError> {
     let current_uid = rustix::process::getuid().as_raw();
     let mut current = PathBuf::from("/");
-    super::validate_descriptor_acl(&File::open(&current)?)?;
+    super::validate_ancestor_acl(&File::open(&current)?)?;
     let components = path.components().filter_map(|component| match component {
         Component::Normal(value) => Some(value),
         _ => None,
@@ -84,7 +84,7 @@ pub(super) fn validate_ancestor_chain(path: &Path, final_must_be_owner: bool) ->
 
 fn validate_resolved_chain(path: &Path, final_must_be_owner: bool, current_uid: u32) -> Result<(), StorageError> {
     let mut current = PathBuf::from("/");
-    super::validate_descriptor_acl(&File::open(&current)?)?;
+    super::validate_ancestor_acl(&File::open(&current)?)?;
     let components = path.components().filter_map(|component| match component {
         Component::Normal(value) => Some(value),
         _ => None,
@@ -110,7 +110,7 @@ fn validate_ancestor_access(file: &File, owner: u32, mode: u32, current_uid: u32
         return Err(StorageError::UnsafeAncestor);
     }
     // Root ownership does not override ACL grants to another account.
-    super::validate_descriptor_acl(file)
+    super::validate_ancestor_acl(file)
 }
 
 #[cfg(all(test, target_os = "macos"))]
