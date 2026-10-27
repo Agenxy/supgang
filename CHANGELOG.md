@@ -18,6 +18,11 @@ that a remote refresh to this source runs under probation.
   at the drain deadline or after missed contact exchanges. On 27 October this dropped a shared
   SSH master twice. A replacement now takes over only after a contact exchange over it succeeds.
   Until then the old session keeps its tunnels and exchanges, and a refused candidate backs off.
+- Answer the supervisor while a refresh candidate awaits activation. The service re-verified both
+  signed executables on every loop pass even with no update to deliver, which starved its control
+  socket, so on 27 October a probation install was judged unhealthy and reverted.
+- Hand streams a peer opens early on a replacement candidate to the session once it is accepted,
+  and settle simultaneous replacement attempts on the canonical preferred direction.
 - Keep established sessions when a service is newly exposed. Removing or repointing an exposure
   still ends them.
 - On Linux, accept a protected path below a directory that carries only a default ACL. A default
