@@ -75,10 +75,14 @@ A release is a **release statement**. It is canonical CBOR, signed under domain
 `supgang/release/v1` by `threshold` of the role's signers:
 
 - `role_id`, `consumer_id`, `package_format`, `channel`;
-- `version`, strictly greater than every version the consumer has accepted on that channel and
-  at least `min_version`;
+- `version`, at least `min_version` and strictly greater than every version the consumer has
+  accepted on that channel. The consumer keeps that per-channel high-water mark as durable state
+  that only root can write.
 - `artifacts`: 1 to 16 entries, each with target OS and architecture, byte length and SHA-256.
-  All of a release's artifacts appear in one statement, so mixing two releases cannot verify.
+  The consumer's `package_format` defines what one artifact is. For `remap-package-v1`, it is
+  the canonical release manifest, one per architecture, because that manifest already binds
+  every payload file's path, kind, hash, size and mode. All of a release's artifacts appear in
+  one statement, so artifacts from two different releases cannot be mixed.
 - `source_commit` and the provenance digest the consumer defines;
 - `issued_at` and `expires_at`, at most 30 days apart. A consumer refuses an expired statement
   for a new install or update, so a frozen mirror shows up as a failure instead of being
@@ -110,8 +114,21 @@ either of these holds:
 1. its pinned native key (Remap's Enclave key) signed it, the default and unchanged; or
 2. the owner opted this Mac into the hive's release role, and every check below passes.
 
-The role path is accepted beside the native key and never instead of it, and turning it off
-removes only that path. The checks:
+The role path is accepted beside the native key and never instead of it. A role-path failure
+never masks or replaces a native success, and turning the role path off removes only that path.
+
+The opt-in is the consumer's own state, which only root can write, written only by the
+in-person enrolment. It holds:
+
+- the pinned hive fingerprint;
+- the role id;
+- the accepted channels;
+- the maximum status age.
+
+The opt-in is never read from the package or its staging area. The consumer implements the
+role checks in its own verifier, with no Supgang code, against the frozen wire specification
+and test vectors listed under acceptance. A consumer that runs as root at install time cannot
+depend on a sibling program. The checks:
 
 - the role grant is root-signed on the pinned hive;
 - a root-signed status shows the role and its signer devices unrevoked. The status must be no
@@ -167,10 +184,14 @@ provider's signing operation for the CMS signature. The private key never leaves
 and the keychain is never asked. Until that signer is accepted, one stated fallback is allowed:
 trusting the role certificate once, in person, on the single release host, and on no target.
 
-**Installation.** A consumer that adopts the role ships flat, pre-signed files with a detached
-release statement. It does not ship an installer package signed with an installer certificate.
-A root-owned helper installs the files from root-owned staging after verifying them. Running
-that helper still needs `sudo` until ADR 0005 replaces it with an owner-action assertion.
+**Installation.** What the role requires is Mach-O that arrives already signed, together with a
+detached release statement. Removing the installer-certificate trust step also means not
+shipping an installer package signed with an installer certificate. Each consumer decides its
+own distribution format; Remap's lead has scoped that as a Remap ADR. The same in-process
+signer, used with a consumer's own native key, removes the local codesign trust step from the
+native path too. A root-owned helper installs the files from root-owned staging after verifying
+them. Running that helper still needs `sudo` until ADR 0005 replaces it with an owner-action
+assertion.
 
 ## Custody and sequencing
 
@@ -206,7 +227,11 @@ offers the role:
   This is unproven today (agenxy-installation.md).
 - a TCC prompt names the product, and a granted permission survives a role-signed update;
 - the application firewall keeps its decision across a role-signed update;
-- disabling the role path on a consumer leaves its native path working, with no ceremony.
+- disabling the role path on a consumer leaves its native path working, with no ceremony;
+- a frozen wire specification of the grant, status, release statement and ADR 0005 assertion,
+  published with test vectors. Each of the four comes in a valid form and in tampered forms that
+  cover every refusal below. An independent consumer verifier, such as Remap's CryptoKit
+  implementation, passes all of them.
 
 Adversarial vectors to ship as tests, one each:
 
@@ -240,6 +265,21 @@ Open for the owner:
 - the default maximum status age (7 days proposed);
 - which channels Remap installs by default.
 
-Open for Remap: confirm that `remap-package-v1`'s detached-signature verifier can take a second
-accepted authority behind an opt-in. Remap's lead will write the consumer ADR against this one
-and ADR 0005.
+Remap's lead confirmed (27 Oct) that `remap-package-v1` can take a second authority behind an
+opt-in. The single authority check, `PortableReleaseVerifier.verifySignature`, authenticates
+the canonical release manifest, and everything after it is keyed to those bytes. The five
+conditions that came with the confirmation are folded in above:
+
+- the consumer defines what an artifact is;
+- the opt-in is state that only root can write, set at enrolment;
+- the consumer has its own verifier, with frozen vectors;
+- a per-channel high-water mark;
+- the distribution format is the consumer's decision.
+
+Remap's consumer ADR decides two things of its own:
+
+- where the bundle sits in its staging area;
+- whether its native path gains the same rollback high-water mark.
+
+Before relying on it, Remap measures whether a launchd daemon loads, and a TCC prompt names the
+product, under a certificate the target Mac does not hold.
