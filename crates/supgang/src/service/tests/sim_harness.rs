@@ -12,7 +12,7 @@ use std::{
     io::{Read as _, Write as _},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    sync::{Arc, atomic::Ordering, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -49,6 +49,7 @@ pub(super) struct Computer {
     pub path: PathBuf,
     pub host: HostId,
     pub node: NodeId,
+    controls: Arc<super::super::test_controls::SimControls>,
     running: Option<Running>,
 }
 
@@ -99,6 +100,7 @@ impl Fleet {
             node: founder.identity().device.node_id(),
             path: founder_path,
             host: *first,
+            controls: Arc::new(super::super::test_controls::SimControls::default()),
             running: None,
         });
         for (index, host) in rest.iter().enumerate() {
@@ -112,6 +114,7 @@ impl Fleet {
             computers.push(Computer {
                 path,
                 host: *host,
+                controls: Arc::new(super::super::test_controls::SimControls::default()),
                 node,
                 running: None,
             });
@@ -144,6 +147,39 @@ impl Fleet {
         self.computers.get(index).ok_or_else(|| "no such computer".into())
     }
 
+    /// Makes one peer model a lower local RTT estimate and reject duplicate
+    /// admission while its counterpart considers a new path better.
+    pub(super) fn keep_old_rtt_view(&self, index: usize, drain_after: Duration) -> Result<(), Error> {
+        let controls = &self.computer(index)?.controls;
+        controls.suppress_rtt_replacement.store(true, Ordering::Relaxed);
+        controls.suppress_quality_dial.store(true, Ordering::Relaxed);
+        controls.reject_duplicate.store(true, Ordering::Relaxed);
+        controls
+            .drain_limit_seconds
+            .store(drain_after.as_secs(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub(super) fn shorten_drain(&self, index: usize, drain_after: Duration) -> Result<(), Error> {
+        self.computer(index)?
+            .controls
+            .drain_limit_seconds
+            .store(drain_after.as_secs(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub(super) fn replacement_attempts(&self, index: usize) -> Result<u64, Error> {
+        Ok(self
+            .computer(index)?
+            .controls
+            .replacement_attempts
+            .load(Ordering::Relaxed))
+    }
+
+    pub(super) fn quality_dials(&self, index: usize) -> Result<u64, Error> {
+        Ok(self.computer(index)?.controls.quality_dials.load(Ordering::Relaxed))
+    }
+
     /// Starts every computer's service.
     pub(super) fn start_all(&mut self) -> Result<(), Error> {
         for index in 0..self.computers.len() {
@@ -163,9 +199,12 @@ impl Fleet {
         let (ready, readiness) = mpsc::channel();
         let path = computer.path.clone();
         let host = computer.host;
+        let controls = Arc::clone(&computer.controls);
         let thread = thread::Builder::new()
             .name(format!("simulated-{index}"))
-            .spawn(move || run_computer(&network, host, &path, stopped, &ready).map_err(|error| error.to_string()))?;
+            .spawn(move || {
+                run_computer(&network, host, &path, controls, stopped, &ready).map_err(|error| error.to_string())
+            })?;
         if readiness.recv_timeout(START_TIMEOUT).is_ok() {
             computer.running = Some(Running { stop, thread });
             return Ok(());
@@ -215,10 +254,12 @@ fn run_computer(
     network: &Arc<Network>,
     host: HostId,
     path: &Path,
+    controls: Arc<super::super::test_controls::SimControls>,
     stopped: tokio::sync::oneshot::Receiver<()>,
     ready: &mpsc::Sender<()>,
 ) -> Result<(), Error> {
     let _view = simulated::install(Arc::new(HostView::new(Arc::clone(network), host)));
+    let _controls = super::super::test_controls::install(controls);
     let config = automatic_config()?;
     let mut local = state::open(path)?;
     let identity = transport_storage::load_or_create(path)?;
@@ -309,6 +350,27 @@ pub(super) fn add_mapped(computer: &Computer, address: std::net::SocketAddrV4) -
         Some(ControlReply::EndpointChanged) => Ok(()),
         other => Err(format!("mapped endpoint refused: {other:?}").into()),
     }
+}
+
+/// Wait until the peer's signed record contains a newly published mapping.
+pub(super) fn wait_mapped(fleet: &Fleet, from: usize, to: usize, address: std::net::SocketAddrV4) -> Result<(), Error> {
+    let source = fleet.computer(from)?;
+    let target = fleet.computer(to)?;
+    eventually(Duration::from_secs(30), || {
+        let reply = request(&source.path, ControlRequest::Resolve(target.node))?;
+        Ok(match reply {
+            Some(ControlReply::Resolve { value })
+                if value
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.address == address.to_string()) =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+    })?
+    .ok_or_else(|| "the peer never received the mapped address".into())
 }
 
 /// Exposes `name` on `computer`, served by a one-shot loopback echo server.

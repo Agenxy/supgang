@@ -64,7 +64,7 @@ fn forward_carries_concurrent_tcp_clients_from_a_hotel_and_closes_refused_ones()
     let echo = expose_echoes(fleet.computer(SOLIS)?, "web", CLIENTS)?;
     // Exposure recycles sessions; wait until the laptop holds the forward in a
     // fresh record before leaving, as the owner does before a trip.
-    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no reconnection after exposure")?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no connection after exposure")?;
     let mapped = SocketAddrV4::new(HOME_PUBLIC, PORT).to_string();
     eventually(Duration::from_secs(30), || {
         let reply = crate::control::request(

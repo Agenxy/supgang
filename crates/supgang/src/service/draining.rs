@@ -59,7 +59,16 @@ impl DrainingConnections {
                 Some(b"peer revoked".as_slice())
             } else if !drain.connection.has_tunnels() {
                 Some(b"last tunnel drained".as_slice())
-            } else if now.saturating_duration_since(drain.started) >= DRAIN_LIMIT {
+            } else if now.saturating_duration_since(drain.started) >= {
+                #[cfg(test)]
+                {
+                    super::test_controls::drain_limit(DRAIN_LIMIT)
+                }
+                #[cfg(not(test))]
+                {
+                    DRAIN_LIMIT
+                }
+            } {
                 Some(b"tunnel drain deadline".as_slice())
             } else if drain.connection.close_reason().is_some() {
                 Some(b"draining connection closed".as_slice())

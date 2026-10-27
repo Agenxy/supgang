@@ -44,8 +44,11 @@ mod local_control;
 mod path_quality;
 mod peer_actor;
 mod rendezvous;
+mod replacement_proof;
 mod retry_schedule;
 mod silence;
+#[cfg(test)]
+mod test_controls;
 mod tunnel;
 mod update_delivery;
 
@@ -61,7 +64,8 @@ use interface_refresh::{
     refresh_service_candidates,
 };
 use live_session::{
-    LiveSessionState, SessionTaskResult, finish_ready_sessions, schedule_remembered_peer, schedule_rendezvous_offers,
+    LiveSessionState, PendingReplacement, ReplacementResult, SessionTaskResult, finish_ready_replacements,
+    finish_ready_sessions, schedule_remembered_peer, schedule_rendezvous_offers,
 };
 use local_control::{
     ControlActivity, ControlView, PeerEventState, import_received, import_received_reachability,
@@ -289,6 +293,8 @@ async fn service_loop(
     let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(PEER_EVENT_QUEUE);
     let mut active = BTreeMap::<NodeId, ActiveConnection>::new();
     let mut draining = draining::DrainingConnections::default();
+    let mut replacements = BTreeMap::<NodeId, PendingReplacement>::new();
+    let mut replacement_tasks = tokio::task::JoinSet::<ReplacementResult>::new();
     let mut noncanonical_outbound = BTreeSet::<NodeId>::new();
     let mut rendezvous_intents = rendezvous::RendezvousIntents::new();
     let mut sync_mutation_budget = local_control::SyncMutationBudget::new();
@@ -337,10 +343,14 @@ async fn service_loop(
             unix_time()?,
             refresh_delay.as_secs(),
         );
-        if wall_refresh {
-            next_interface_refresh = now;
-            next_dial = now + aligned_retry_delay(hive_id, system_time_since_epoch()?, config.retry_interval);
-        }
+        retry_schedule::refresh_deadlines_if_due(
+            wall_refresh,
+            hive_id,
+            config.retry_interval,
+            now,
+            &mut next_interface_refresh,
+            &mut next_dial,
+        )?;
         let candidate_refresh = refresh_service_candidates(
             &mut router_mapping,
             &mut router_mapping_budget,
@@ -363,6 +373,12 @@ async fn service_loop(
             candidate_refresh.interfaces_changed,
         )?;
         if candidate_refresh.interfaces_changed {
+            live_session::cancel_pending_replacements(
+                &mut replacements,
+                &mut replacement_tasks,
+                b"network route changed",
+            )
+            .await;
             live_session::reset_network_recovery(
                 &mut active,
                 &mut noncanonical_outbound,
@@ -371,10 +387,7 @@ async fn service_loop(
             )
             .await;
         }
-        if silence.retire_departed(&mut active) {
-            noncanonical_outbound.retain(|peer| active.contains_key(peer));
-            next_dial = now;
-        }
+        silence.retire_departed_and_schedule(&mut active, &mut noncanonical_outbound, &mut next_dial, now);
         silence.observe(&active);
         path_quality.observe(&active, now);
         history.observe(&active, unix_time()?);
@@ -415,6 +428,9 @@ async fn service_loop(
                 local_contact: &mut local_contact,
                 active: &mut active,
                 draining: &mut draining,
+                replacements: &mut replacements,
+                replacement_tasks: &mut replacement_tasks,
+                quality: &mut path_quality,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -434,6 +450,9 @@ async fn service_loop(
                 local_contact: &mut local_contact,
                 active: &mut active,
                 draining: &mut draining,
+                replacements: &mut replacements,
+                replacement_tasks: &mut replacement_tasks,
+                quality: &mut path_quality,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -460,6 +479,9 @@ async fn service_loop(
                 local_contact: &mut local_contact,
                 active: &mut active,
                 draining: &mut draining,
+                replacements: &mut replacements,
+                replacement_tasks: &mut replacement_tasks,
+                quality: &mut path_quality,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -467,6 +489,24 @@ async fn service_loop(
                 gossip_cursor: &mut gossip_cursor,
             },
         )?;
+        finish_ready_replacements(&mut LiveSessionState {
+            update: Some(&update_context),
+            local_node,
+            local_state,
+            directory,
+            config: &mut config,
+            local_contact: &mut local_contact,
+            active: &mut active,
+            draining: &mut draining,
+            replacements: &mut replacements,
+            replacement_tasks: &mut replacement_tasks,
+            quality: &mut path_quality,
+            noncanonical_outbound: &mut noncanonical_outbound,
+            page_sender: &page_sender,
+            event_sender: &event_sender,
+            actor_tasks: &mut actor_tasks,
+            gossip_cursor: &mut gossip_cursor,
+        })?;
         rendezvous_offers.truncate(MAX_PENDING_OUTBOUND_SESSIONS.saturating_sub(outbound_tasks.len()));
         schedule_rendezvous_offers(
             &endpoint,
@@ -482,6 +522,9 @@ async fn service_loop(
                 local_contact: &mut local_contact,
                 active: &mut active,
                 draining: &mut draining,
+                replacements: &mut replacements,
+                replacement_tasks: &mut replacement_tasks,
+                quality: &mut path_quality,
                 noncanonical_outbound: &mut noncanonical_outbound,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
@@ -507,10 +550,9 @@ async fn service_loop(
                 && let Some(scheduled) = schedule_remembered_peer(
                     &endpoint,
                     &mut dial_cursor,
-                    &mut path_quality,
                     &network_identity,
                     &mut outbound_tasks,
-                    &LiveSessionState {
+                    &mut LiveSessionState {
                         update: Some(&update_context),
                         local_node,
                         local_state,
@@ -519,6 +561,9 @@ async fn service_loop(
                         local_contact: &mut local_contact,
                         active: &mut active,
                         draining: &mut draining,
+                        replacements: &mut replacements,
+                        replacement_tasks: &mut replacement_tasks,
+                        quality: &mut path_quality,
                         noncanonical_outbound: &mut noncanonical_outbound,
                         page_sender: &page_sender,
                         event_sender: &event_sender,
@@ -603,6 +648,9 @@ async fn service_loop(
                     local_contact: &mut local_contact,
                     active: &mut active,
                     draining: &mut draining,
+                    replacements: &mut replacements,
+                    replacement_tasks: &mut replacement_tasks,
+                    quality: &mut path_quality,
                     noncanonical_outbound: &mut noncanonical_outbound,
                     page_sender: &page_sender,
                     event_sender: &event_sender,
@@ -616,6 +664,7 @@ async fn service_loop(
     inbound_tasks.shutdown().await;
     priority_inbound_tasks.shutdown().await;
     outbound_tasks.shutdown().await;
+    live_session::cancel_pending_replacements(&mut replacements, &mut replacement_tasks, b"service handoff").await;
     actor_tasks.shutdown().await;
     shutdown_router_mapping(&mut router_mapping).await;
     Ok(())

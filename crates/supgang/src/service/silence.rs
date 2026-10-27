@@ -11,7 +11,10 @@
 //! retired only if the probe confirms it is gone. A starved or briefly lossy
 //! connection that still answers is kept.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use tokio::{task::JoinSet, time::Instant};
 
@@ -38,6 +41,19 @@ pub(super) struct SilenceWatch {
 }
 
 impl SilenceWatch {
+    pub(super) fn retire_departed_and_schedule(
+        &mut self,
+        active: &mut BTreeMap<NodeId, ActiveConnection>,
+        noncanonical_outbound: &mut BTreeSet<NodeId>,
+        next_dial: &mut Instant,
+        now: Instant,
+    ) {
+        if self.retire_departed(active) {
+            noncanonical_outbound.retain(|peer| active.contains_key(peer));
+            *next_dial = now;
+        }
+    }
+
     /// Starts a probe for each connection silent beyond the bound.
     pub(super) fn observe(&mut self, active: &BTreeMap<NodeId, ActiveConnection>) {
         let now = Instant::now();

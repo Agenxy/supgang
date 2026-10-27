@@ -14,6 +14,22 @@ pub(super) fn should_attempt_peer(
     !active.contains_key(&peer)
 }
 
+/// A wall-clock refresh resets network discovery and the fleet retry epoch.
+pub(super) fn refresh_deadlines_if_due(
+    due: bool,
+    hive_id: HiveId,
+    retry_interval: Duration,
+    now: tokio::time::Instant,
+    next_interface_refresh: &mut tokio::time::Instant,
+    next_dial: &mut tokio::time::Instant,
+) -> Result<(), super::ServiceError> {
+    if due {
+        *next_interface_refresh = now;
+        *next_dial = now + aligned_retry_delay(hive_id, super::system_time_since_epoch()?, retry_interval);
+    }
+    Ok(())
+}
+
 /// Whether a live connection to `peer` runs over a path that is not directly
 /// attached here, so a directly attached path to the same peer would be
 /// better: back on the home LAN, a connection through the gateway's public

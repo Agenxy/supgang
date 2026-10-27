@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, collections::BTreeSet, fs, net::SocketAddr, tim
 
 use quinn::{Connection, Endpoint};
 
+use super::super::replacement_proof::prove as prove_replacement;
 use super::{
     ActiveConnection, AuthenticatedExchange, ConnectionOrigin, LiveSessionState, ServiceConfig, SessionAuthorization,
     make_local_contact, unix_time,
@@ -10,6 +11,7 @@ use crate::{
     candidate::{CandidateKind, CandidateTransport, EndpointCandidate},
     contact::PeerContact,
     identity::DeviceIdentity,
+    ids::NodeId,
     membership::{MAX_MEMBERSHIP_LIFETIME_SECONDS, MembershipRoles},
     peer_directory::{PEER_DIRECTORY_FILE_NAME, PeerDirectory},
     profile::PeerName,
@@ -76,6 +78,60 @@ async fn connection_pair(
     Ok((outgoing, incoming))
 }
 
+#[test]
+fn follow_up_sync_proves_either_canonical_direction_and_rejects_close() -> Result<(), Box<dyn std::error::Error>> {
+    transport::build_runtime()?.block_on(async {
+        let temporary = tempfile::tempdir()?;
+        let local = state::initialize(temporary.path().join("state"))?;
+        let root = local.identity().root_verifying_key;
+        let page = SyncPage {
+            contacts: Vec::new(),
+            reachability: Vec::new(),
+            revocations: local.revocations().clone(),
+        };
+        let server_identity = TransportIdentity::generate()?;
+        let server = Endpoint::server(server_identity.server_config()?, SocketAddr::from(([127, 0, 0, 1], 0)))?;
+        let client_identity = TransportIdentity::generate()?;
+        let client = Endpoint::server(client_identity.server_config()?, SocketAddr::from(([127, 0, 0, 1], 0)))?;
+        let lower = NodeId::from_bytes([1; 32]);
+        let higher = NodeId::from_bytes([2; 32]);
+        for (client_node, server_node) in [(lower, higher), (higher, lower)] {
+            let (client_connection, server_connection) =
+                connection_pair(&server, &client, server_identity.key_id()).await?;
+            let (client_proved, server_proved) = tokio::join!(
+                prove_replacement(
+                    &client_connection,
+                    client_node,
+                    server_node,
+                    &page,
+                    &root,
+                    Duration::from_secs(1)
+                ),
+                prove_replacement(
+                    &server_connection,
+                    server_node,
+                    client_node,
+                    &page,
+                    &root,
+                    Duration::from_secs(1)
+                ),
+            );
+            assert!(
+                client_proved && server_proved,
+                "both peers must complete the follow-up sync"
+            );
+            client_connection.close(0_u8.into(), b"test complete");
+        }
+        let (client_connection, server_connection) =
+            connection_pair(&server, &client, server_identity.key_id()).await?;
+        server_connection.close(2_u8.into(), b"candidate rejected");
+        assert!(!prove_replacement(&client_connection, lower, higher, &page, &root, Duration::from_secs(1)).await);
+        server.close(0_u8.into(), b"test complete");
+        client.close(0_u8.into(), b"test complete");
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+}
+
 struct RejectedDurableSnapshot {
     events: usize,
     sequence: u64,
@@ -122,7 +178,8 @@ impl RejectedDurableSnapshot {
 }
 
 #[test]
-fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> Result<(), Box<dyn std::error::Error>> {
+fn duplicate_stale_and_capacity_rejections_precede_durable_exchange_effects() -> Result<(), Box<dyn std::error::Error>>
+{
     transport::build_runtime()?.block_on(async {
         let temporary = tempfile::tempdir()?;
         let state_path = temporary.path().join("state");
@@ -213,6 +270,7 @@ fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> 
         let client_identity = TransportIdentity::generate()?;
         let client = Endpoint::server(client_identity.server_config()?, SocketAddr::from(([127, 0, 0, 1], 0)))?;
         let (existing, _existing_remote) = connection_pair(&server, &client, server_identity.key_id()).await?;
+        let (stale, _stale_remote) = connection_pair(&server, &client, server_identity.key_id()).await?;
         let (duplicate, _duplicate_remote) = connection_pair(&server, &client, server_identity.key_id()).await?;
         let (capacity, _capacity_remote) = connection_pair(&server, &client, server_identity.key_id()).await?;
         let existing_id = existing.stable_id();
@@ -245,6 +303,15 @@ fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> 
             local_reachability: local_reachability.clone(),
         };
         let mut draining = super::super::draining::DrainingConnections::default();
+        let mut replacements = BTreeMap::new();
+        let mut replacement_tasks = tokio::task::JoinSet::new();
+        let mut quality = super::super::path_quality::PathQualityWatch::default();
+        noncanonical_outbound.insert(peer.node_id());
+        let preferred_origin = if local_state.identity().device.node_id() < peer.node_id() {
+            ConnectionOrigin::Outbound
+        } else {
+            ConnectionOrigin::Inbound
+        };
         LiveSessionState {
             update: None,
             local_node: local_state.identity().device.node_id(),
@@ -254,13 +321,47 @@ fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> 
             local_contact: &mut local_contact,
             active: &mut active,
             draining: &mut draining,
+            replacements: &mut replacements,
+            replacement_tasks: &mut replacement_tasks,
+            quality: &mut quality,
             noncanonical_outbound: &mut noncanonical_outbound,
             page_sender: &page_sender,
             event_sender: &event_sender,
             actor_tasks: &mut actor_tasks,
             gossip_cursor: &mut gossip_cursor,
         }
-        .finish_authenticated(duplicate, exchange(), ConnectionOrigin::Outbound, None)?;
+        .finish_authenticated(
+            stale,
+            exchange(),
+            preferred_origin,
+            None,
+            Some((existing_id.wrapping_add(1), true)),
+        )?;
+        assert_eq!(
+            active.get(&peer.node_id()).map(|active| active.stable_id()),
+            Some(existing_id)
+        );
+        before.assert_unchanged(&local_state, &directory, &config, &local_contact, &peer_journal)?;
+        noncanonical_outbound.remove(&peer.node_id());
+        LiveSessionState {
+            update: None,
+            local_node: local_state.identity().device.node_id(),
+            local_state: &mut local_state,
+            directory: &mut directory,
+            config: &mut config,
+            local_contact: &mut local_contact,
+            active: &mut active,
+            draining: &mut draining,
+            replacements: &mut replacements,
+            replacement_tasks: &mut replacement_tasks,
+            quality: &mut quality,
+            noncanonical_outbound: &mut noncanonical_outbound,
+            page_sender: &page_sender,
+            event_sender: &event_sender,
+            actor_tasks: &mut actor_tasks,
+            gossip_cursor: &mut gossip_cursor,
+        }
+        .finish_authenticated(duplicate, exchange(), ConnectionOrigin::Outbound, None, None)?;
         assert_eq!(
             active.get(&peer.node_id()).map(|active| active.stable_id()),
             Some(existing_id)
@@ -278,13 +379,16 @@ fn duplicate_and_capacity_rejections_precede_every_durable_exchange_effect() -> 
             local_contact: &mut local_contact,
             active: &mut active,
             draining: &mut draining,
+            replacements: &mut replacements,
+            replacement_tasks: &mut replacement_tasks,
+            quality: &mut quality,
             noncanonical_outbound: &mut noncanonical_outbound,
             page_sender: &page_sender,
             event_sender: &event_sender,
             actor_tasks: &mut actor_tasks,
             gossip_cursor: &mut gossip_cursor,
         }
-        .finish_authenticated(capacity, exchange(), ConnectionOrigin::Outbound, None)?;
+        .finish_authenticated(capacity, exchange(), ConnectionOrigin::Outbound, None, None)?;
         assert!(active.is_empty());
         before.assert_unchanged(&local_state, &directory, &config, &local_contact, &peer_journal)?;
 

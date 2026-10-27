@@ -119,20 +119,30 @@ pub(super) fn expose(
     name: [u8; 16],
     port: u16,
     active: &BTreeMap<NodeId, ActiveConnection>,
-) -> ControlReply {
+) -> (ControlReply, bool) {
     let result = crate::tunnel_policy::decoded_name(name)
         .map_err(str::to_owned)
-        .and_then(|name| tunnels.expose(state_directory, name, port));
+        .and_then(|name| {
+            let removes_grant = tunnels
+                .policy
+                .borrow()
+                .port(&name)
+                .is_some_and(|old_port| old_port != port);
+            tunnels.expose(state_directory, name, port).map(|()| removes_grant)
+        });
     match result {
-        Ok(()) => {
+        Ok(removes_grant) => {
             // End existing session authority before acknowledging a policy
-            // change. No transfer can retain a removed loopback grant.
-            for connection in active.values() {
-                connection.invalidate(b"local tunnel policy changed");
+            // removal or retarget. A newly added grant does not invalidate
+            // an unrelated live tunnel or require a new peer handshake.
+            if removes_grant {
+                for connection in active.values() {
+                    connection.invalidate(b"local tunnel policy changed");
+                }
             }
-            ControlReply::ExposureChanged
+            (ControlReply::ExposureChanged, removes_grant)
         }
-        Err(message) => ControlReply::Error { message },
+        Err(message) => (ControlReply::Error { message }, false),
     }
 }
 

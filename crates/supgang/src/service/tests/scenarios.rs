@@ -17,7 +17,8 @@ use std::{
 };
 
 use super::sim_harness::{
-    Error, Fleet, PORT, add_mapped, connection, eventually, expose_echo, open_tunnel, tunnel_round_trip, wait_connected,
+    Error, Fleet, PORT, add_mapped, connection, eventually, expose_echo, open_tunnel, tunnel_round_trip,
+    wait_connected, wait_mapped,
 };
 use crate::simnet::{Discard, Firewall6, IpFamily, Nat44, Network, SiteId, SiteSpec, V4Access, V6Access};
 
@@ -109,8 +110,78 @@ fn a_live_but_degraded_ipv6_path_moves_to_clean_ipv4() -> Result<(), Error> {
     );
     echo.join().map_err(|_| "echo server panicked")??;
     std::thread::sleep(Duration::from_secs(8));
-    assert!(connection(laptop, solis.node)?.is_some_and(|path| path.is_ipv4()));
+    let laptop_after = connection(laptop, solis.node)?;
+    assert!(
+        laptop_after.is_some_and(|path| path.is_ipv4()),
+        "laptop final path IPv4 status: {:?}",
+        laptop_after.map(|path| path.is_ipv4())
+    );
     assert!(connection(solis, laptop.node)?.is_some_and(|path| path.is_ipv4()));
+    Ok(())
+}
+
+/// The old tunnel must survive when only the dialler considers an IPv4
+/// replacement better. The receiving peer rejects that duplicate; its
+/// shortened simulator drain deadline makes the former ten-minute failure
+/// observable without a ten-minute test.
+#[test]
+fn asymmetric_rtt_rejection_preserves_the_old_tunnel_without_redial_loop() -> Result<(), Error> {
+    let world = paired_at_home(
+        HomeGateway {
+            ipv4_forward: true,
+            ipv6: Ipv6Policy::Pinhole,
+        },
+        72,
+    )?;
+    publish_forward(&world)?;
+    let echo =
+        super::sim_harness::expose_echo_with_timeout(world.fleet.computer(SOLIS)?, "ssh", Duration::from_mins(2))?;
+    let away = world.network.add_site(cellular_site())?;
+    world.network.set_family_loss_permille(away, IpFamily::V4, 1_000)?;
+    let solis = world.fleet.computer(SOLIS)?;
+    let laptop = world.fleet.computer(LAPTOP)?;
+    world.network.move_host(laptop.host, Some(away))?;
+    eventually(ROAMING, || {
+        Ok(connection(laptop, solis.node)?.filter(SocketAddr::is_ipv6))
+    })?
+    .ok_or("the initial IPv6 session did not form")?;
+    let mut master = open_tunnel(laptop, solis.node, "ssh")?;
+    master.write_all(b"before")?;
+    world.fleet.keep_old_rtt_view(SOLIS, Duration::from_secs(8))?;
+    world.fleet.shorten_drain(LAPTOP, Duration::from_secs(8))?;
+    let previous_candidates = world.fleet.replacement_attempts(SOLIS)?;
+    world.network.set_family_loss_permille(away, IpFamily::V4, 0)?;
+    world
+        .network
+        .set_family_latency(away, IpFamily::V6, Duration::from_millis(750))?;
+    eventually(QUALITY_MIGRATION, || {
+        Ok(
+            (world.fleet.quality_dials(LAPTOP)? > 0 && world.fleet.replacement_attempts(SOLIS)? > previous_candidates)
+                .then_some(()),
+        )
+    })?
+    .ok_or("the quality alternative did not dial and authenticate")?;
+    let quality_dials = world.fleet.quality_dials(LAPTOP)?;
+    assert!(quality_dials > 0, "no quality replacement was dialled");
+    // A rejected candidate cannot start a drain, and its quality retry gets
+    // a cooldown longer than this observation window.
+    std::thread::sleep(Duration::from_secs(20));
+    assert_eq!(
+        world.fleet.quality_dials(LAPTOP)?,
+        quality_dials,
+        "rejected candidate redialled"
+    );
+    assert!(connection(laptop, solis.node)?.is_some_and(|address| address.is_ipv6()));
+    assert!(connection(solis, laptop.node)?.is_some_and(|address| address.is_ipv6()));
+    master.write_all(b" and after")?;
+    master.shutdown(std::net::Shutdown::Write)?;
+    let mut returned = Vec::new();
+    master.read_to_end(&mut returned)?;
+    assert_eq!(
+        returned, b"before and after",
+        "the rejected replacement cut the held tunnel"
+    );
+    echo.join().map_err(|_| "echo server panicked")??;
     Ok(())
 }
 
@@ -204,25 +275,9 @@ fn paired_at_home(gateway: HomeGateway, seed: u64) -> Result<World, Error> {
 /// it in Solis's signed record, as `supgang endpoint add-mapped` does at home.
 fn publish_forward(world: &World) -> Result<(), Error> {
     let solis = world.fleet.computer(SOLIS)?;
-    let laptop = world.fleet.computer(LAPTOP)?;
     let mapped = SocketAddrV4::new(HOME_PUBLIC, PORT);
     add_mapped(solis, mapped)?;
-    eventually(PAIRING, || {
-        let reply = crate::control::request(&laptop.path, crate::control::ControlRequest::Resolve(solis.node))?;
-        Ok(match reply {
-            Some(crate::control::ControlReply::Resolve { value })
-                if value
-                    .candidates
-                    .iter()
-                    .any(|candidate| candidate.address == mapped.to_string()) =>
-            {
-                Some(())
-            }
-            _ => None,
-        })
-    })?
-    .ok_or("the laptop never received the mapped address")?;
-    Ok(())
+    wait_mapped(&world.fleet, LAPTOP, SOLIS, mapped)
 }
 
 /// After a move, the connection over the old network must stop being
@@ -346,9 +401,10 @@ fn a_refused_tunnel_names_its_reason_and_the_remedy() -> Result<(), Error> {
     wait_connected(&world.fleet, LAPTOP, SOLIS, PAIRING)?.ok_or("no reconnection after limits")?;
     let solis = world.fleet.computer(SOLIS)?.node;
     let echo = expose_echo(world.fleet.computer(SOLIS)?, "ssh")?;
-    wait_connected(&world.fleet, LAPTOP, SOLIS, ROAMING)?.ok_or("no reconnection after exposure")?;
-
-    let held = open_tunnel(world.fleet.computer(LAPTOP)?, solis, "ssh")?;
+    let held = eventually(ROAMING, || {
+        Ok(open_tunnel(world.fleet.computer(LAPTOP)?, solis, "ssh").ok())
+    })?
+    .ok_or("the exposed service never accepted a tunnel")?;
     let Err(full) = open_tunnel(world.fleet.computer(LAPTOP)?, solis, "ssh") else {
         return Err("a tunnel beyond the per-peer limit was admitted".into());
     };
@@ -375,8 +431,21 @@ fn assert_tunnel(world: &World) -> Result<(), Error> {
     let solis = world.fleet.computer(SOLIS)?;
     let laptop = world.fleet.computer(LAPTOP)?;
     let echo = expose_echo(solis, "ssh")?;
-    // Exposure changes close existing sessions; wait for the reconnection.
-    wait_connected(&world.fleet, LAPTOP, SOLIS, ROAMING)?.ok_or("no reconnection after exposure")?;
+    // Adding an exposure retains the established session; wait for both peers
+    // to report it before opening the newly permitted service.
+    wait_connected(&world.fleet, LAPTOP, SOLIS, ROAMING)?.ok_or("no connection after exposure")?;
+    let Some(crate::control::ControlReply::Status { value }) =
+        crate::control::request(&solis.path, crate::control::ControlRequest::Status)?
+    else {
+        return Err("no status after exposure".into());
+    };
+    assert!(
+        value
+            .recent_connections
+            .iter()
+            .all(|event| event.reason != "local tunnel policy changed"),
+        "adding an exposure invalidated an established session"
+    );
     let payload = (0..64 * 1024)
         .map(|index| u8::try_from(index % 251).unwrap_or(0))
         .collect::<Vec<_>>();
@@ -559,7 +628,7 @@ fn from_a_transatlantic_hotel_32_concurrent_tunnels_and_bulk_staging_work_throug
     let solis = world.fleet.computer(SOLIS)?;
     let laptop = world.fleet.computer(LAPTOP)?;
     let echo = super::sim_harness::expose_echoes(solis, "ssh", MASTERS + 1)?;
-    wait_connected(&world.fleet, LAPTOP, SOLIS, ROAMING)?.ok_or("no reconnection after exposure")?;
+    wait_connected(&world.fleet, LAPTOP, SOLIS, ROAMING)?.ok_or("no connection after exposure")?;
 
     // Every master is open and has carried bytes before any of them closes.
     let mut masters = Vec::new();

@@ -94,6 +94,12 @@ pub(super) fn register_connection(
         CurrentConnection::Preferred
     };
     let decision = connection_admission(offered, current, registry.active.len() >= registry.max_active_peers);
+    #[cfg(test)]
+    let decision = if current != CurrentConnection::None && super::test_controls::reject_duplicate() {
+        ConnectionAdmission::Reject
+    } else {
+        decision
+    };
     if decision == ConnectionAdmission::ReplaceFallback {
         registry.noncanonical_outbound.remove(&peer);
         if let Some(replaced) = registry.active.remove(&peer) {

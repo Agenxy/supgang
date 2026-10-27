@@ -49,8 +49,9 @@ fn a_tunnel_from_a_lossy_hotel_across_an_ocean_keeps_its_throughput() -> Result<
     fleet.start_all()?;
     wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_secs(30))?.ok_or("no connection at home")?;
     add_mapped(fleet.computer(SOLIS)?, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
+    super::sim_harness::wait_mapped(&fleet, LAPTOP, SOLIS, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
     let echo = expose_echo(fleet.computer(SOLIS)?, "ssh")?;
-    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no reconnection after exposure")?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no connection after exposure")?;
 
     let hotel = network.add_site(site(
         Ipv4Addr::new(8, 8, 8, 8),
@@ -101,8 +102,9 @@ fn a_tunnel_survives_a_stall_longer_than_one_contact_exchange() -> Result<(), Er
     fleet.start_all()?;
     wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_secs(30))?.ok_or("no connection at home")?;
     add_mapped(fleet.computer(SOLIS)?, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
+    super::sim_harness::wait_mapped(&fleet, LAPTOP, SOLIS, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
     let echo = expose_echo(fleet.computer(SOLIS)?, "ssh")?;
-    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no reconnection after exposure")?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no connection after exposure")?;
     let hotel = network.add_site(site(
         Ipv4Addr::new(8, 8, 8, 8),
         Ipv4Addr::new(10, 20, 0, 0),
@@ -156,8 +158,9 @@ fn repeated_mtu_black_holes_keep_the_live_session_and_held_tunnel() -> Result<()
     fleet.start_all()?;
     wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_secs(30))?.ok_or("no connection at home")?;
     add_mapped(fleet.computer(SOLIS)?, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
+    super::sim_harness::wait_mapped(&fleet, LAPTOP, SOLIS, SocketAddrV4::new(HOME_PUBLIC, PORT))?;
     let echo = super::sim_harness::expose_echo_with_timeout(fleet.computer(SOLIS)?, "ssh", Duration::from_mins(8))?;
-    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no reconnection after exposure")?;
+    wait_connected(&fleet, LAPTOP, SOLIS, Duration::from_mins(1))?.ok_or("no connection after exposure")?;
     let hotel = network.add_site(site(
         Ipv4Addr::new(8, 8, 8, 8),
         Ipv4Addr::new(10, 20, 0, 0),

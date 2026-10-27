@@ -25,6 +25,14 @@ const MIN_WINDOW: Duration = Duration::from_millis(500);
 const MAX_WINDOW: Duration = Duration::from_millis(2_500);
 const POLL: Duration = Duration::from_millis(20);
 
+/// Why a registered connection may yield to an authenticated candidate.
+/// A usable old path needs the peer's application-level replacement proof.
+#[derive(Clone, Copy)]
+pub(super) struct Superseded {
+    pub(super) id: usize,
+    pub(super) old_live: bool,
+}
+
 /// Returns whether `connection` still exchanges packets with its peer.
 pub async fn is_live(connection: &Connection) -> bool {
     let before = connection.stats().udp_rx.datagrams;
@@ -56,12 +64,20 @@ pub(super) async fn superseded(
     registered: &BTreeMap<NodeId, Connection>,
     peer: NodeId,
     offered: &Connection,
-) -> Option<usize> {
+) -> Option<Superseded> {
     let existing = registered.get(&peer)?;
     let canonical = |address: SocketAddr| crate::candidate::canonical_socket_address(address);
     if canonical(existing.remote_address()) == canonical(offered.remote_address()) {
-        // Same path: simultaneous dials, which the stable ranking resolves.
-        return None;
+        // A simultaneous dial on the same path keeps the live registered
+        // connection. A closed connection may be replaced even when its
+        // successor has the same remote address (for example after a local
+        // endpoint refresh).
+        return (!is_live(existing).await).then(|| Superseded {
+            id: existing.stable_id(),
+            // A missing probe reply is not proof that a still-open remote
+            // session accepted this candidate. Require the Sync proof.
+            old_live: existing.close_reason().is_none(),
+        });
     }
     // A directly attached path supersedes one that is not, even while the
     // indirect one works. Both computers see the shared LAN as attached, so
@@ -72,12 +88,25 @@ pub(super) async fn superseded(
         networks.iter().any(|network| network.contains(ip))
     };
     if on_link(offered.remote_address()) && !on_link(existing.remote_address()) {
-        return Some(existing.stable_id());
+        return Some(Superseded {
+            id: existing.stable_id(),
+            old_live: true,
+        });
     }
     // A newly authenticated path that is substantially faster may replace a
     // still-live one. A small RTT fluctuation cannot move the connection.
-    if super::path_quality::materially_better(existing.rtt(), offered.rtt()) {
-        return Some(existing.stable_id());
+    #[cfg(test)]
+    let suppress_rtt_replacement = super::test_controls::suppress_rtt_replacement();
+    #[cfg(not(test))]
+    let suppress_rtt_replacement = false;
+    if !suppress_rtt_replacement && super::path_quality::materially_better(existing.rtt(), offered.rtt()) {
+        return Some(Superseded {
+            id: existing.stable_id(),
+            old_live: true,
+        });
     }
-    (!is_live(existing).await).then(|| existing.stable_id())
+    (!is_live(existing).await).then(|| Superseded {
+        id: existing.stable_id(),
+        old_live: existing.close_reason().is_none(),
+    })
 }

@@ -439,8 +439,8 @@ async fn handle_control(
         }
         .into_unchanged(),
         Ok(Ok(ControlRequest::Expose { name, port })) => {
-            let reply = tunnel_control::expose(tunnels, state_directory, name, port, active);
-            if matches!(reply, ControlReply::ExposureChanged) {
+            let (reply, removes_grant) = tunnel_control::expose(tunnels, state_directory, name, port, active);
+            if removes_grant {
                 draining.invalidate_all(b"local tunnel policy changed");
             }
             reply.into_unchanged()

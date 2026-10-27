@@ -13,6 +13,7 @@ const BAD_RTT_SUSTAIN: Duration = Duration::from_secs(8);
 const MIN_RESIDENCE: Duration = Duration::from_secs(5);
 const ATTEMPT_COOLDOWN: Duration = Duration::from_secs(30);
 const REPLACEMENT_COOLDOWN: Duration = Duration::from_mins(1);
+const RECENT_ADMISSION_WINDOW: Duration = Duration::from_mins(2);
 pub(super) const BLACK_HOLES_BEFORE_MTU_CAP: u64 = 3;
 
 struct Observation {
@@ -67,12 +68,18 @@ impl Observation {
 #[derive(Default)]
 pub(super) struct PathQualityWatch {
     paths: BTreeMap<NodeId, Observation>,
+    recent_admissions: BTreeMap<NodeId, (usize, Instant)>,
     /// Recently observed peers whose black-holed address needs a safe redial.
     capped: BTreeMap<NodeId, (SocketAddr, Instant)>,
 }
 
 impl PathQualityWatch {
     pub(super) fn observe(&mut self, active: &BTreeMap<NodeId, ActiveConnection>, now: Instant) {
+        self.recent_admissions
+            .retain(|_, (_, at)| now.saturating_duration_since(*at) <= RECENT_ADMISSION_WINDOW);
+        for (peer, connection) in active {
+            self.note_admitted(*peer, connection.stable_id(), now);
+        }
         self.paths.retain(|peer, _| active.contains_key(peer));
         for (peer, connection) in active {
             let id = connection.stable_id();
@@ -96,7 +103,37 @@ impl PathQualityWatch {
     }
 
     pub(super) fn wants_replacement(&self, peer: NodeId, now: Instant) -> bool {
+        #[cfg(test)]
+        if super::test_controls::suppress_quality_dial() {
+            return false;
+        }
         self.paths.get(&peer).is_some_and(|entry| entry.due(now))
+    }
+
+    pub(super) fn allows_replacement(&self, peer: NodeId, now: Instant) -> bool {
+        self.paths.get(&peer).is_none_or(|entry| now >= entry.next_allowed)
+    }
+
+    pub(super) fn recent_admissions(&self, now: Instant) -> BTreeMap<NodeId, usize> {
+        self.recent_admissions
+            .iter()
+            .filter(|(_, (_, at))| now.saturating_duration_since(*at) <= RECENT_ADMISSION_WINDOW)
+            .map(|(peer, (id, _))| (*peer, *id))
+            .collect()
+    }
+
+    pub(super) fn note_admitted(&mut self, peer: NodeId, id: usize, now: Instant) {
+        if self.recent_admissions.len() >= super::MAX_ANCHOR_PEERS && !self.recent_admissions.contains_key(&peer) {
+            let oldest = self
+                .recent_admissions
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(peer, _)| *peer);
+            if let Some(oldest) = oldest {
+                self.recent_admissions.remove(&oldest);
+            }
+        }
+        self.recent_admissions.insert(peer, (id, now));
     }
 
     pub(super) fn capped_address(&self, peer: NodeId) -> Option<SocketAddr> {
@@ -113,8 +150,17 @@ impl PathQualityWatch {
     }
 
     pub(super) fn mark_attempt(&mut self, peer: NodeId, now: Instant) {
+        #[cfg(test)]
+        super::test_controls::note_quality_dial();
         if let Some(entry) = self.paths.get_mut(&peer) {
             entry.attempted(now);
+        }
+    }
+
+    /// A peer that rejected a candidate must not be redialled each round.
+    pub(super) fn backoff(&mut self, peer: NodeId, now: Instant) {
+        if let Some(entry) = self.paths.get_mut(&peer) {
+            entry.next_allowed = now + REPLACEMENT_COOLDOWN;
         }
     }
 }
@@ -129,7 +175,11 @@ pub(super) fn materially_better(old: Duration, new: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BLACK_HOLES_BEFORE_MTU_CAP, MIN_RESIDENCE, Observation, materially_better};
+    use super::{
+        BLACK_HOLES_BEFORE_MTU_CAP, MIN_RESIDENCE, Observation, PathQualityWatch, REPLACEMENT_COOLDOWN,
+        materially_better,
+    };
+    use crate::ids::NodeId;
     use std::time::Duration;
     use tokio::time::Instant;
 
@@ -175,5 +225,19 @@ mod tests {
             );
             assert!(!path.due(at + MIN_RESIDENCE));
         }
+    }
+
+    #[test]
+    fn rejected_candidate_backs_off_on_link_retries_too() {
+        let now = Instant::now();
+        let peer = NodeId::from_bytes([7; 32]);
+        let mut quality = PathQualityWatch::default();
+        quality
+            .paths
+            .insert(peer, Observation::new(1, now - MIN_RESIDENCE, false));
+        assert!(quality.allows_replacement(peer, now));
+        quality.backoff(peer, now);
+        assert!(!quality.allows_replacement(peer, now + Duration::from_secs(30)));
+        assert!(quality.allows_replacement(peer, now + REPLACEMENT_COOLDOWN));
     }
 }

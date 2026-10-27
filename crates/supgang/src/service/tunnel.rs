@@ -50,7 +50,7 @@ impl TunnelRuntime {
     /// Saves new tunnel limits while the service runs. New connections take
     /// the per-peer and idle limits at once; the runtime-wide admission budget
     /// is sized at start, so a raised total applies after the next restart.
-    /// Active tunnels are unaffected: only a changed exposure ends them.
+    /// Active tunnels are unaffected: removing or retargeting an exposure ends them.
     pub(super) fn save_limits(
         &self,
         directory: &Path,
