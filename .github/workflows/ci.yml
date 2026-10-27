@@ -36,6 +36,11 @@ jobs:
         # setup-uv only selects this version; the gate runs uv offline, so the
         # interpreter must already be installed.
         run: uv python install 3.13.13
+      - name: Record ACLs above the test scratch directory (temporary diagnostic)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$HOME/.cache"
+          getfacl -p / /home "$HOME" "$HOME/.cache" || true
       - name: Run repository gate
         env:
           SUPGANG_QUALITY_CACHE: off
