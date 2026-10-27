@@ -2,9 +2,30 @@
 
 use std::net::SocketAddr;
 
-use crate::{contact::PeerContact, network, peer_directory::PeerDialHint};
+use crate::{
+    contact::PeerContact,
+    ids::NodeId,
+    network,
+    peer_directory::{PeerDialHint, PeerDirectory},
+};
 
 use super::super::retry_schedule::candidate_batch;
+
+pub(super) fn on_link_bypass_candidates(
+    directory: &PeerDirectory,
+    peer: NodeId,
+    networks: &[network::InterfaceNetwork],
+    now: u64,
+) -> Vec<(PeerContact, SocketAddr)> {
+    let Some(contact) = directory.usable(&peer, now) else {
+        return Vec::new();
+    };
+    directory
+        .authenticated_on_link_routes(peer, networks, now)
+        .into_iter()
+        .map(|address| (contact.clone(), address))
+        .collect()
+}
 
 pub(super) fn recovery_candidates(
     hints: &[PeerDialHint<'_>],

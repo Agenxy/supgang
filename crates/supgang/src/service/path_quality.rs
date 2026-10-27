@@ -22,6 +22,7 @@ struct Observation {
     best_rtt: Option<Duration>,
     bad_since: Option<Instant>,
     next_allowed: Instant,
+    on_link_bypass_record: Option<(u64, u64)>,
 }
 
 impl Observation {
@@ -32,6 +33,7 @@ impl Observation {
             best_rtt: None,
             bad_since: None,
             next_allowed: now + if replaced { REPLACEMENT_COOLDOWN } else { MIN_RESIDENCE },
+            on_link_bypass_record: None,
         }
     }
 
@@ -80,6 +82,7 @@ impl PathQualityWatch {
     pub(super) fn network_changed(&mut self, now: Instant) {
         for entry in self.paths.values_mut() {
             entry.next_allowed = now;
+            entry.on_link_bypass_record = None;
         }
     }
 
@@ -121,6 +124,21 @@ impl PathQualityWatch {
 
     pub(super) fn allows_replacement(&self, peer: NodeId, now: Instant) -> bool {
         self.paths.get(&peer).is_none_or(|entry| now >= entry.next_allowed)
+    }
+
+    /// A fresh signed record or local interface change permits one authenticated
+    /// on-link route attempt despite the prior path's quality cooldown.
+    pub(super) fn allows_on_link_bypass(&self, peer: NodeId, record: (u64, u64)) -> bool {
+        self.paths
+            .get(&peer)
+            .is_some_and(|entry| entry.on_link_bypass_record != Some(record))
+    }
+
+    pub(super) fn mark_on_link_bypass(&mut self, peer: NodeId, record: (u64, u64), now: Instant) {
+        if let Some(entry) = self.paths.get_mut(&peer) {
+            entry.on_link_bypass_record = Some(record);
+            entry.next_allowed = entry.next_allowed.max(now + ATTEMPT_COOLDOWN);
+        }
     }
 
     #[cfg(test)]
@@ -269,5 +287,24 @@ mod tests {
         assert!(quality.allows_replacement(peer, now));
         quality.backoff(peer, now);
         assert!(!quality.allows_replacement(peer, now + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn on_link_bypass_is_once_per_signed_record_or_interface_change() {
+        let now = Instant::now();
+        let peer = NodeId::from_bytes([9; 32]);
+        let mut quality = PathQualityWatch::default();
+        quality.paths.insert(peer, Observation::new(1, now, true));
+        assert!(!quality.allows_replacement(peer, now));
+        assert!(quality.allows_on_link_bypass(peer, (0, 1)));
+        quality.mark_on_link_bypass(peer, (0, 1), now);
+        assert!(!quality.allows_on_link_bypass(peer, (0, 1)));
+        quality.backoff(peer, now);
+        assert!(!quality.allows_on_link_bypass(peer, (0, 1)));
+        assert!(quality.allows_on_link_bypass(peer, (0, 2)));
+        quality.mark_on_link_bypass(peer, (0, 2), now);
+        assert!(!quality.allows_on_link_bypass(peer, (0, 2)));
+        quality.network_changed(now);
+        assert!(quality.allows_on_link_bypass(peer, (0, 2)));
     }
 }

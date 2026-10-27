@@ -46,6 +46,55 @@ fn current_local_contact_is_a_dial_hint_before_any_connection() -> Result<(), Bo
     Ok(())
 }
 
+#[test]
+fn on_link_bypass_requires_a_locally_authenticated_route_and_current_signed_candidate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("state");
+    let mut founder = state::initialize(&path)?;
+    let peer = DeviceIdentity::generate()?;
+    let signed = contact(&mut founder, &peer, 1, 4_433)?;
+    let local = founder.identity().device.node_id();
+    let mut directory = PeerDirectory::open(
+        &path,
+        founder.identity().root_verifying_key,
+        local,
+        founder.revocations(),
+    )?;
+    directory.import(signed.clone(), 50)?;
+    let address: SocketAddr = "127.0.0.1:4433".parse()?;
+    let interface: std::net::IpAddr = "127.0.0.2".parse()?;
+    let network = crate::network::InterfaceNetwork::new(interface, "255.0.0.0".parse()?);
+    assert!(
+        directory
+            .authenticated_on_link_routes(peer.node_id(), &[network], 50)
+            .is_empty()
+    );
+    directory.remember_authenticated_route(&founder.identity().device, &signed, address, Some(interface), 50)?;
+    assert_eq!(
+        directory.authenticated_on_link_routes(peer.node_id(), &[network], 50),
+        vec![address]
+    );
+    let other_interface = crate::network::InterfaceNetwork::new("127.0.0.3".parse()?, "255.0.0.0".parse()?);
+    assert!(
+        directory
+            .authenticated_on_link_routes(peer.node_id(), &[other_interface], 50)
+            .is_empty()
+    );
+    directory.import(contact(&mut founder, &peer, 2, 4_434)?, 50)?;
+    assert!(
+        directory
+            .authenticated_on_link_routes(peer.node_id(), &[network], 50)
+            .is_empty()
+    );
+    directory.import(contact(&mut founder, &peer, 3, 4_433)?, 50)?;
+    assert_eq!(
+        directory.authenticated_on_link_routes(peer.node_id(), &[network], 50),
+        vec![address]
+    );
+    Ok(())
+}
+
 fn contact_with_ports(
     founder: &mut state::LocalState,
     device: &DeviceIdentity,

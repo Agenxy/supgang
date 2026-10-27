@@ -6,7 +6,9 @@ use std::{
 };
 
 use crate::{
+    candidate::CandidateKind,
     ids::NodeId,
+    network::InterfaceNetwork,
     reachability::{MAX_REACHABILITY_CLAIMS, ReachabilityClaim, ReachabilityError, ReachabilitySource},
 };
 
@@ -15,6 +17,33 @@ use super::{PeerDirectory, PeerDirectoryError};
 const MAX_CLAIMS_PER_REPORTER: usize = 4;
 
 impl PeerDirectory {
+    /// An on-link route this device actually authenticated to the peer, still
+    /// advertised by its fresh signed record. A self-claimed candidate alone
+    /// cannot enter this set, and a changed transport key invalidates it.
+    pub(crate) fn authenticated_on_link_routes(
+        &self,
+        peer: NodeId,
+        networks: &[InterfaceNetwork],
+        now: u64,
+    ) -> Vec<SocketAddr> {
+        let Some(contact) = self.usable(&peer, now) else {
+            return Vec::new();
+        };
+        let record = &contact.endpoint.record;
+        self.routes
+            .addresses(peer, record.transport_key_id, networks)
+            .into_iter()
+            .filter(|address| {
+                networks.iter().any(|network| network.contains(address.ip()))
+                    && record.candidates.iter().any(|candidate| {
+                        matches!(candidate.kind(), CandidateKind::Local | CandidateKind::Direct)
+                            && candidate.address() == *address
+                    })
+            })
+            .take(crate::network::MAX_DIAL_CANDIDATES_PER_ROUND)
+            .collect()
+    }
+
     pub(crate) fn remember_authenticated_route(
         &mut self,
         device: &crate::identity::DeviceIdentity,

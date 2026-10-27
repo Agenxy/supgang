@@ -28,7 +28,7 @@ use super::make_local_contact;
 mod recovery;
 #[cfg(test)]
 use recovery::eligible_hints;
-use recovery::recovery_candidates;
+use recovery::{on_link_bypass_candidates, recovery_candidates};
 
 pub(super) struct LiveSessionState<'a> {
     pub(super) update: Option<&'a PeerUpdateContext>,
@@ -460,17 +460,30 @@ pub(super) fn schedule_remembered_peer(
     live: &mut LiveSessionState<'_>,
 ) -> Option<RememberedPeerSchedule> {
     let now = tokio::time::Instant::now();
+    let unix_now = unix_time().ok()?;
     let networks = network::interface_networks().unwrap_or_default();
     let mut peers = BTreeMap::<NodeId, Vec<_>>::new();
-    for hint in live.directory.dial_hints(unix_time().ok()?) {
+    for hint in live.directory.dial_hints(unix_now) {
         let peer = hint.contact().endpoint.record.node_id;
         if live.replacements.contains_key(&peer) {
             continue;
         }
+        let wants_on_link = super::retry_schedule::wants_on_link_path(live.active, peer, &networks);
+        let bypass = wants_on_link
+            && !live.quality.allows_replacement(peer, now)
+            && live.directory.usable(&peer, unix_now).is_some_and(|contact| {
+                let record = &contact.endpoint.record;
+                live.quality
+                    .allows_on_link_bypass(peer, (record.generation, record.sequence))
+            })
+            && !live
+                .directory
+                .authenticated_on_link_routes(peer, &networks, unix_now)
+                .is_empty();
         if should_attempt_peer(live.active, peer)
             || (live.quality.allows_replacement(peer, now)
-                && (super::retry_schedule::wants_on_link_path(live.active, peer, &networks)
-                    || live.quality.wants_replacement(peer, now)))
+                && (wants_on_link || live.quality.wants_replacement(peer, now)))
+            || bypass
         {
             peers.entry(peer).or_default().push(hint);
         }
@@ -479,7 +492,19 @@ pub(super) fn schedule_remembered_peer(
     let peer_count = peers.len();
     let (target, hints) = peers.iter().nth(round % peer_count.max(1))?;
     let peer_cycle = round / peer_count.max(1);
-    let mut candidates = recovery_candidates(hints, &networks, peer_cycle);
+    let bypass_record = live.directory.usable(target, unix_now).and_then(|contact| {
+        let record = &contact.endpoint.record;
+        let version = (record.generation, record.sequence);
+        (!live.quality.allows_replacement(*target, now)
+            && super::retry_schedule::wants_on_link_path(live.active, *target, &networks)
+            && live.quality.allows_on_link_bypass(*target, version))
+        .then_some(version)
+    });
+    let mut candidates = if bypass_record.is_some() {
+        on_link_bypass_candidates(live.directory, *target, &networks, unix_now)
+    } else {
+        recovery_candidates(hints, &networks, peer_cycle)
+    };
     let quality_replacement = live.quality.wants_replacement(*target, now);
     if let Some(active) = live.active.get(target) {
         // A connected peer is dialled only over a directly attached path,
@@ -503,6 +528,9 @@ pub(super) fn schedule_remembered_peer(
             target: *target,
             direct_started: false,
         });
+    }
+    if let Some(record) = bypass_record {
+        live.quality.mark_on_link_bypass(*target, record, now);
     }
     #[cfg(test)]
     if candidates
