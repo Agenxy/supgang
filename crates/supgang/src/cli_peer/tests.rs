@@ -237,7 +237,7 @@ fn this_computer_resolves_from_its_own_signed_record() -> Result<(), Box<dyn std
             candidates: vec![EndpointCandidate::new(
                 CandidateKind::Local,
                 CandidateTransport::QuicV1,
-                SocketAddr::from(([192, 168, 1, 205], 44_330)),
+                SocketAddr::from(([10, 0, 0, 25], 44_330)),
             )?],
             capabilities: Capabilities::NONE,
             services: vec![ServiceAdvert::new("compass", 8_471, pin)?],
@@ -259,7 +259,7 @@ fn this_computer_resolves_from_its_own_signed_record() -> Result<(), Box<dyn std
         .iter()
         .map(|candidate| (candidate.address.as_str(), candidate.provenance.as_str()))
         .collect();
-    assert_eq!(addresses, vec![("192.168.1.205:44330", "device-signed")]);
+    assert_eq!(addresses, vec![("10.0.0.25:44330", "device-signed")]);
     let services: Vec<(&str, u16, &str)> = resolved
         .services
         .iter()

@@ -3,7 +3,7 @@ members = ["crates/supgang", "crates/supgang-acl", "crates/supgang-cli", "crates
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0-alpha.16"
+version = "0.2.0-alpha.17"
 edition = "2024"
 rust-version = "1.97.1"
 authors = ["Agenxy contributors"]
@@ -42,11 +42,11 @@ quinn = { version = "=0.11.11", default-features = false, features = ["bloom", "
 rcgen = { version = "=0.14.9", default-features = false, features = ["aws_lc_rs", "crypto", "zeroize"] }
 rmcp = { version = "=3.1.3", default-features = false, features = ["server"] }
 schemars = { version = "=1.2.2", default-features = false, features = ["derive", "std"] }
-rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std"] }
-tokio = { version = "=1.53.1", default-features = false, features = ["io-std", "io-util", "net", "process", "rt", "signal", "sync", "time"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["io-std", "io-util", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "=0.7.19", default-features = false, features = ["io"] }
 toml = { version = "=1.1.4", default-features = false, features = ["display", "parse", "serde", "std"] }
-supgang-acl = { path = "crates/supgang-acl", version = "=0.2.0-alpha.16" }
+supgang-acl = { path = "crates/supgang-acl", version = "=0.2.0-alpha.17" }
 
 [workspace.lints.rust]
 warnings = "deny"

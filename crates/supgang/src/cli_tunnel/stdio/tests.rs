@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{Pipe, bridge_io};
+use super::{Input, Output, bridge_io};
 
 #[tokio::test]
 async fn native_stdio_half_close_waits_for_response_and_peer_eof_cancels_input()
@@ -11,8 +11,8 @@ async fn native_stdio_half_close_waits_for_response_and_peer_eof_cancels_input()
     let (output_write, output_read) = std::os::unix::net::UnixStream::pair()?;
     input_write.set_nonblocking(true)?;
     output_read.set_nonblocking(true)?;
-    let input = Pipe::new(&input_read)?;
-    let output = Pipe::new(&output_write)?;
+    let input = Input::new(&input_read)?;
+    let output = Output::new(&output_write)?;
     let mut producer = tokio::net::UnixStream::from_std(input_write)?;
     let mut consumer = tokio::net::UnixStream::from_std(output_read)?;
     let (local, mut peer) = tokio::net::UnixStream::pair()?;
@@ -30,7 +30,7 @@ async fn native_stdio_half_close_waits_for_response_and_peer_eof_cancels_input()
     tokio::time::timeout(Duration::from_secs(2), worker).await???;
     let (local, peer) = tokio::net::UnixStream::pair()?;
     let (held_input, _held_writer) = std::os::unix::net::UnixStream::pair()?;
-    let worker = tokio::spawn(bridge_io(local, Pipe::new(&held_input)?, Pipe::new(&output_write)?));
+    let worker = tokio::spawn(bridge_io(local, Input::new(&held_input)?, Output::new(&output_write)?));
     drop(peer);
     tokio::time::timeout(Duration::from_secs(2), worker).await???;
     Ok(())

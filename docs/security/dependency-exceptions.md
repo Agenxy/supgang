@@ -60,6 +60,23 @@ remains fatal. The version and checksum remain fixed by `Cargo.lock`. This excep
 when `netlink-packet-core` replaces `paste`, and it must be reconsidered before any change to the
 ignored crate, advisory, or Linux routing dependency path.
 
+### RustSec RUSTSEC-2023-0089
+
+FROST threshold signing (`frost-core` and `frost-ed25519` 3.0.0, the current release) enables its
+`serialization` feature, which brings in `postcard` 1.1.3 with its default `heapless-cas` feature,
+then `heapless` 0.7.17 and `atomic-polyfill` 1.0.3. RustSec classifies `atomic-polyfill` as
+unmaintained; the advisory reports no vulnerability or unsoundness. On every Supgang target (64-bit
+Arm and x86 macOS and Linux), native atomics exist, and `atomic-polyfill` re-exports the standard
+library's types rather than emulating them. No newer `frost-core` or `postcard` release removes the
+path.
+
+Supgang therefore passes exactly `RUSTSEC-2023-0089` to `cargo audit --ignore`, alongside
+`RUSTSEC-2024-0436`, while retaining `--deny warnings`. Every vulnerability, unsoundness, other
+unmaintained dependency, or yanked crate remains fatal. The version and checksum remain fixed by
+`Cargo.lock`. This exception must be removed when FROST or `postcard` stops reaching
+`atomic-polyfill`, and it must be reconsidered before any change to the ignored crate, advisory, or
+threshold-signing dependency path.
+
 `jni-sys` 0.3 and 0.4 occur only under Android support in `netdev`; Android is not a Supgang target.
 `thiserror` and `thiserror-impl` 1 remain under that Android JNI path while Supgang and its current
 direct dependencies use version 2. Neither duplicate changes the macOS or Linux error boundary.

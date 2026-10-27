@@ -341,11 +341,11 @@ fn repository_with_root_rotation(seed: u8, version: &str) -> Result<SignedReposi
 #[test]
 fn target_names_bind_version_platform_and_architecture() -> Result<(), Box<dyn std::error::Error>> {
     let valid = format!(
-        "supgang-0.2.0-alpha.16-{}-{}",
+        "supgang-0.2.0-alpha.17-{}-{}",
         std::env::consts::OS,
         std::env::consts::ARCH
     );
-    assert_eq!(validate_target_name(&valid)?.to_string(), "0.2.0-alpha.16");
+    assert_eq!(validate_target_name(&valid)?.to_string(), "0.2.0-alpha.17");
     assert!(matches!(
         validate_target_name("supgang-9.9.9-linux-wrong"),
         Err(UpdateError::WrongPlatform)
@@ -635,7 +635,9 @@ fn root_authorized_bundle_crosses_real_quic_and_is_independently_verified() -> R
         let receiving_state = state.clone();
         let root_key = root.verifying_key();
         let hive_id = root.hive_id();
-        let session_authorization = crate::service::SessionAuthorization::new(now.saturating_add(60), now)
+        // Outlast this test on a loaded host: the receiver rightly rejects an
+        // expired session, and the transfer alone has taken over 60 s there.
+        let session_authorization = crate::service::SessionAuthorization::new(now.saturating_add(900), now)
             .ok_or("test session authorization expired")?;
         let update_admission = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
         let receiver = tokio::spawn(async move {

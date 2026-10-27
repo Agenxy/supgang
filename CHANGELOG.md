@@ -4,10 +4,14 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.16` so it cannot be mistaken for the published
+The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken for the published
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Patch RustSec advisories: `quinn-proto` 0.11.19 (peer-triggered panics and memory growth),
+  `rustls` 0.23.46, `rustls-webpki` 0.103.16, `crypto-bigint`, `ctutils`, and `tokio` 1.53.3
+  (unsound `AsyncFd` constructors). Record the unmaintained-only `atomic-polyfill` advisory, reached
+  through FROST, as an exact documented exception.
 - Keep a session, and every tunnel on it, through a stall. One contact exchange that missed its
   12 s bound ended the whole session, which on 20 October dropped the travelling laptop's SSH
   masters. A session now ends only after three consecutive failed exchanges or once its
