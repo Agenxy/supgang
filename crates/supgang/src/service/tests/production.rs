@@ -279,7 +279,7 @@ async fn named_tunnel_is_default_deny_and_preserves_bytes_and_half_close() -> Re
 }
 
 #[tokio::test]
-async fn two_fresh_local_only_services_connect_and_reconnect_after_restart() -> Result<(), Box<dyn std::error::Error>> {
+async fn pending_activation_does_not_starve_control_or_peer_restart() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     let left_path = temporary.path().join("left");
     let right_path = temporary.path().join("right");
@@ -300,6 +300,15 @@ async fn two_fresh_local_only_services_connect_and_reconnect_after_restart() -> 
         now,
     )?;
     let joined = state::install_join_bundle(&right_path, &bundle, founder.identity().hive_id)?;
+    let executable = temporary.path().join("test-supgang");
+    std::fs::copy(std::env::current_exe()?, &executable)?;
+    std::fs::set_permissions(&executable, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    crate::update::initialize_installed(&left_path, &executable)?;
+    // Keep a valid pending marker while exercising the service without its supervisor.
+    std::fs::copy(
+        left_path.join("updates/active.json"),
+        left_path.join("updates/pending.json"),
+    )?;
     let mut left = Peer::new(&left_path, founder, "127.0.0.1:0".parse()?)?;
     let mut right = Peer::new(&right_path, joined, "127.0.0.1:0".parse()?)?;
     left.directory.import(right.contact.clone(), now)?;
@@ -308,6 +317,13 @@ async fn two_fresh_local_only_services_connect_and_reconnect_after_restart() -> 
     let left_endpoint = left.endpoint.clone();
     let left_task = left.start()?;
     let right_task = right.start()?;
+    let status_path = left_path.clone();
+    let status = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || control::probe(&status_path, ControlRequest::Status)),
+    )
+    .await???;
+    assert!(matches!(status, Some(ControlReply::Status { .. })));
     let initial = wait_connected(&[&left_path, &right_path]).await;
     if initial.is_err() {
         left_task.abort();

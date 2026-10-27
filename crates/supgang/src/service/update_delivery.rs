@@ -82,6 +82,12 @@ impl UpdateDeliveryQueue {
                 Err(error) => return Err(error.into()),
             }
         }
+        // The pending-activation guard is for sending queued updates. With no
+        // delivery to send, validating both signed executables on every loop
+        // can starve the single-thread service and its owner control socket.
+        if self.pending.is_empty() && self.in_flight.is_none() {
+            return Ok(());
+        }
         if update::activation_pending(state_directory)? {
             return Ok(());
         }
