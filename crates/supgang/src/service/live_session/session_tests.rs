@@ -25,6 +25,30 @@ use crate::{
 };
 
 #[test]
+fn simultaneous_replacement_proofs_choose_the_same_preferred_connection() {
+    let lower = NodeId::from_bytes([1; 32]);
+    let higher = NodeId::from_bytes([2; 32]);
+    assert!(super::super::peer_actor::preferred_over_pending(
+        lower,
+        higher,
+        ConnectionOrigin::Inbound,
+        ConnectionOrigin::Outbound,
+    ));
+    assert!(super::super::peer_actor::preferred_over_pending(
+        higher,
+        lower,
+        ConnectionOrigin::Outbound,
+        ConnectionOrigin::Inbound,
+    ));
+    assert!(!super::super::peer_actor::preferred_over_pending(
+        lower,
+        higher,
+        ConnectionOrigin::Outbound,
+        ConnectionOrigin::Inbound,
+    ));
+}
+
+#[test]
 fn network_change_drains_obsolete_handshakes_in_every_lane() -> Result<(), Box<dyn std::error::Error>> {
     transport::build_runtime()?.block_on(async {
         let mut tasks = tokio::task::JoinSet::new();

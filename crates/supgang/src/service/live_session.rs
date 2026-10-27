@@ -73,6 +73,7 @@ pub(super) struct SessionTaskResult {
 pub(super) struct PendingReplacement {
     pub(super) connection: Connection,
     old_id: usize,
+    origin: ConnectionOrigin,
 }
 
 pub(super) struct ReplacementResult {
@@ -198,19 +199,35 @@ impl LiveSessionState<'_> {
         if !old.old_live {
             return self.admit_authenticated(connection, exchange, origin, Some(old.id), VecDeque::new());
         }
-        if self.replacements.contains_key(&exchange.peer)
-            || self.replacements.len() >= self.config.max_active_peers
-            || self.draining.contains(exchange.peer)
+        if self.draining.contains(exchange.peer)
+            || (self.replacements.len() >= self.config.max_active_peers
+                && !self.replacements.contains_key(&exchange.peer))
         {
             connection.close(2_u8.into(), b"replacement already in progress");
             return Ok(());
         }
         let peer = exchange.peer;
+        if let Some(pending) = self.replacements.get(&peer) {
+            if !super::peer_actor::preferred_over_pending(self.local_node, peer, pending.origin, origin)
+                || pending.old_id != old.id
+            {
+                connection.close(2_u8.into(), b"replacement already in progress");
+                return Ok(());
+            }
+            // Prefer the same connection direction on both peers when
+            // simultaneous dials start proof on different paths.
+            if let Some(fallback) = self.replacements.remove(&peer) {
+                fallback
+                    .connection
+                    .close(2_u8.into(), b"preferred replacement superseded fallback");
+            }
+        }
         self.replacements.insert(
             peer,
             PendingReplacement {
                 connection: connection.clone(),
                 old_id: old.id,
+                origin,
             },
         );
         let page = self.page_sender.borrow().clone();

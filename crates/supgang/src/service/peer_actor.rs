@@ -199,6 +199,16 @@ fn offered_connection(local: NodeId, peer: NodeId, origin: ConnectionOrigin) -> 
     }
 }
 
+pub(super) fn preferred_over_pending(
+    local: NodeId,
+    peer: NodeId,
+    pending: ConnectionOrigin,
+    offered: ConnectionOrigin,
+) -> bool {
+    offered_connection(local, peer, pending) == OfferedConnection::Fallback
+        && offered_connection(local, peer, offered) == OfferedConnection::Preferred
+}
+
 /// Consecutive failed contact exchanges a live session tolerates. One slow
 /// exchange on a lossy or loaded path is not evidence the peer is gone, and
 /// ending the session would end every tunnel on it. A dead path is retired by
