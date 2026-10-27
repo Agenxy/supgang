@@ -1,10 +1,10 @@
 # ADR 0005: Owner action authority for Agenxy tools
 
-Status: **Proposed for owner and consumer review; no protocol or API in this ADR is implemented**
+Status: **Proposed; owner-action authority is unavailable until the listed trust and physical gates pass**
 
 Date: 2026-10-14
 
-Updated: 2026-10-15
+Updated: 2026-10-27
 
 ## Problem and boundary
 
@@ -168,6 +168,15 @@ challenge table separate from the spent-assertion nonce ledger. It accepts only 
 challenge it issued and has not consumed; a restart may discard outstanding challenges and
 reject their later assertions. Issuing a challenge cannot change durable authority state.
 
+The challenge carries the canonical consumer request bytes, not only their digest, so the
+carried device can parse the exact arguments and observed preconditions before it constructs
+the approval prompt. The consumer defines and versions those bytes. The target computes the
+request digest itself and verifies it again against current local state immediately before the
+effect. Remap owns the canonical encoding of `remap-system plan`; K7 owns its versioned
+`canonical_json_v1` encoding and computes its digest in C++. Supgang must not substitute a
+human-readable summary or an unparsed target string. Both consumers may impose stricter
+limits and operation policy than the root grant.
+
 The laptop constructs its Touch ID or other presence prompt **only from parsed, validated
 structured fields**. It never renders free text supplied by the target as an approval prompt.
 The owner-presence key signs an assertion that commits to the complete canonical challenge
@@ -203,6 +212,14 @@ remotely while traveling; an at-home-only renewal path would defeat Remap's remo
 use case. A five-minute assertion expiry does **not** imply five-minute revocation freshness.
 No numeric revocation bound is endorsed by this ADR yet; until the signing and availability
 model is decided and implemented, Supgang owner-action mode remains unavailable.
+
+The present founder root secret is file-held, and the threshold signing store is a software
+prototype. Neither establishes hardware custody or fresh owner presence. Typed grant and
+assertion code may be built and tested behind a fail-closed availability gate, but privileged
+remote actions must not ship as available on the strength of those file-held keys. Package 8's
+hardware-custody work, an owner-reviewed enrollment ceremony, a status issuer with current-head
+evidence, and physical carried-device verification are release gates. A target must not infer
+hardware custody from a signature or an unverified custody label.
 
 The owner chose to permit the presence key on the traveling laptop to authorize remote lease
 renewal when an exact root grant allows it. A separate `policy` grant may permit a bounded
@@ -264,6 +281,14 @@ Remap's local policy requires `required` presence for `remap.dns.activate` and
 the root grant otherwise names it. Each consumer may impose this stricter rule for its own
 operations, and the remote assertion cannot relax it.
 
+This reconciles Remap ADR-0022 and K7 ADR 0159 at the provider boundary. Remap's two DNS
+operations require a target-issued resolver-plan challenge and fresh carried-device presence.
+K7 may consume the same Supgang envelope only under its separately pinned
+`org.agenxy.k7` grant and its own ADR 0155 policy ceiling; its native assertion remains in
+the K7 trust domain. K7 never maps a member signature to owner authority. Neither consumer
+may accept a Supgang privileged action before the signed freshness lease and local enrollment
+path are real. Each keeps its native authentication and recovery mode when Supgang is absent.
+
 The substitutable scope is an Agenxy-owned operation behind this independently verifying
 boundary: for example Remap DNS activation, K7 owner actions, or defined Supgang setup
 operations such as firewall rules and Supgang certificate trust decisions. A possible `sudo`
@@ -287,7 +312,7 @@ wedged Supgang on the target without a target-local presence prompt. If the oper
 still requires such a prompt for a particular repair, that repair remains an explicit physical
 recovery limit rather than an accepted remote action.
 
-## Open details before implementation
+## Open decisions before activation
 
 1. How will enrollment verify the carried Secure Enclave key's per-signature presence policy,
    and how will each consumer validate the root-certified enrollment and exact-action proof?
@@ -297,8 +322,9 @@ recovery limit rather than an accepted remote action.
    policy, remote-presence, and aggregate renewal counts; define authenticated current-head
    evidence, cross-issuer ledger consistency, physical recertification, availability after
    expiry, and the bound on revoked authority.
-3. Define the canonical target challenge, authentication, disclosure scope, nonce storage,
-   prompt rendering, time, and replay rules for the chosen challenge flow.
+3. Agree the exact canonical target-challenge bytes, authenticated delivery, disclosure scope,
+   nonce storage, prompt rendering, target-clock rollback checks, and replay rules. The
+   consumer-owned canonical request bytes and target-issued one-use challenge above are fixed.
 4. What are the exact per-grant lifetime, operation-count, request-size, concurrency, and
    clock-skew ceilings? Consumers may narrow them but cannot widen them.
 5. Which macOS and Linux IPC mechanisms give each consumer verifier a verifiable caller
@@ -307,8 +333,9 @@ recovery limit rather than an accepted remote action.
    Supgang is absent or broken, especially to repair Supgang itself on an unattended target?
    Which repairs still require physical intervention because of operating-system policy?
 
-The owner chose the two presence modes and target-issued challenge direction; the Supgang
-lead and owner must settle these remaining details before this ADR changes from Proposed.
+The owner chose the two presence modes and target-issued challenge direction. Typed codecs,
+root-step payload validation and negative tests can proceed while these decisions are open;
+the verifier must fail closed and no consumer may enable the mode until they are settled.
 Remap ADR-0022 and K7's Supgang authorization mode remain proposed consumers; neither should
 ship against this draft's bytes or presume the missing grant, lease, or delivery APIs exist.
 
