@@ -429,6 +429,8 @@ fn from_an_ipv4_only_hotel_the_laptop_reaches_solis_through_the_forward_then_ret
     assert_tunnel(&world)?;
 
     let before_changes = world.fleet.interface_changes(LAPTOP)?;
+    let before_laptop_events = world.fleet.recovery_events(LAPTOP)?;
+    let before_solis_events = world.fleet.recovery_events(SOLIS)?;
     world
         .network
         .move_host(world.fleet.computer(LAPTOP)?.host, Some(world.home))?;
@@ -440,9 +442,12 @@ fn from_an_ipv4_only_hotel_the_laptop_reaches_solis_through_the_forward_then_ret
         let laptop = world.fleet.computer(LAPTOP)?;
         let solis = world.fleet.computer(SOLIS)?;
         let after_changes = world.fleet.interface_changes(LAPTOP)?;
+        let laptop_events = world.fleet.recovery_events(LAPTOP)?;
+        let solis_events = world.fleet.recovery_events(SOLIS)?;
         return Err(format!(
             "the laptop did not return to the LAN path at home; laptop history {:?}; Solis history {:?}; \
-             laptop recovery {:?}; Solis recovery {:?}; interface changes after move {}; quality dials {}; replacement attempts {}",
+             laptop recovery {:?}; Solis recovery {:?}; interface changes after move {}; quality dials {}; replacement attempts {}; \
+             event order [empty candidates, on-link dial, authenticated, authentication failed, admission rejected, proof started, proof succeeded, proof failed]; laptop events {:?}; Solis events {:?}",
             connection_history(laptop)?,
             connection_history(solis)?,
             world
@@ -456,6 +461,16 @@ fn from_an_ipv4_only_hotel_the_laptop_reaches_solis_through_the_forward_then_ret
             after_changes.saturating_sub(before_changes),
             world.fleet.quality_dials(LAPTOP)?,
             world.fleet.replacement_attempts(LAPTOP)?,
+            laptop_events
+                .into_iter()
+                .zip(before_laptop_events)
+                .map(|(after, before)| after.saturating_sub(before))
+                .collect::<Vec<_>>(),
+            solis_events
+                .into_iter()
+                .zip(before_solis_events)
+                .map(|(after, before)| after.saturating_sub(before))
+                .collect::<Vec<_>>(),
         )
         .into());
     }

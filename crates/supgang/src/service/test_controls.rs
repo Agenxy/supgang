@@ -52,6 +52,24 @@ pub(super) struct SimControls {
     pub(super) drain_limit_seconds: AtomicU64,
     pub(super) interface_changes: AtomicU64,
     pub(super) recovery: Mutex<BTreeMap<NodeId, RecoverySnapshot>>,
+    pub(super) recovery_events: [AtomicU64; RecoveryEvent::COUNT],
+}
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(super) enum RecoveryEvent {
+    EmptyCandidates,
+    OnLinkDial,
+    Authenticated,
+    AuthenticationFailed,
+    AdmissionRejected,
+    ProofStarted,
+    ProofSucceeded,
+    ProofFailed,
+}
+
+impl RecoveryEvent {
+    pub(super) const COUNT: usize = 8;
 }
 
 thread_local! {
@@ -102,6 +120,16 @@ pub(super) fn note_interface_change() {
     ACTIVE.with(|active| {
         if let Some(controls) = active.borrow().as_ref() {
             controls.interface_changes.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+}
+
+pub(super) fn note_recovery_event(event: RecoveryEvent) {
+    ACTIVE.with(|active| {
+        if let Some(controls) = active.borrow().as_ref()
+            && let Some(counter) = controls.recovery_events.get(event as usize)
+        {
+            counter.fetch_add(1, Ordering::Relaxed);
         }
     });
 }

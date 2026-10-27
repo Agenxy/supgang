@@ -184,6 +184,19 @@ impl Fleet {
         Ok(self.computer(index)?.controls.interface_changes.load(Ordering::Relaxed))
     }
 
+    pub(super) fn recovery_events(
+        &self,
+        index: usize,
+    ) -> Result<[u64; super::super::test_controls::RecoveryEvent::COUNT], Error> {
+        let controls = &self.computer(index)?.controls;
+        Ok(std::array::from_fn(|index| {
+            controls
+                .recovery_events
+                .get(index)
+                .map_or(0, |counter| counter.load(Ordering::Relaxed))
+        }))
+    }
+
     pub(super) fn recovery_snapshot(
         &self,
         index: usize,

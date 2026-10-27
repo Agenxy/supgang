@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -20,12 +19,16 @@ use super::{
     dial_observed_peer, dial_peer, gossip_page, import_received, import_received_reachability, inbound_session,
     merge_received_revocations, register_connection,
     rendezvous::RendezvousOfferEvent,
-    retry_schedule::candidate_batch,
     should_attempt_peer, unix_time,
 };
 
 #[cfg(test)]
 use super::make_local_contact;
+
+mod recovery;
+#[cfg(test)]
+use recovery::eligible_hints;
+use recovery::recovery_candidates;
 
 pub(super) struct LiveSessionState<'a> {
     pub(super) update: Option<&'a PeerUpdateContext>,
@@ -93,6 +96,14 @@ async fn completed(
     registered: &BTreeMap<NodeId, Connection>,
     recent_admissions: &BTreeMap<NodeId, usize>,
 ) -> SessionTaskResult {
+    #[cfg(test)]
+    if claimed_outbound_slot {
+        super::test_controls::note_recovery_event(if authenticated.is_some() {
+            super::test_controls::RecoveryEvent::Authenticated
+        } else {
+            super::test_controls::RecoveryEvent::AuthenticationFailed
+        });
+    }
     let registered_old = authenticated
         .as_ref()
         .and_then(|(exchange, _)| registered.get(&exchange.peer))
@@ -165,12 +176,16 @@ impl LiveSessionState<'_> {
                 || crate::candidate::canonical_socket_address(current.remote_address())
                     != crate::candidate::canonical_socket_address(connection.remote_address())
         }) {
+            #[cfg(test)]
+            super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::AdmissionRejected);
             connection.close(2_u8.into(), b"stale candidate lost admission race");
             return Ok(());
         }
         if registered_old.is_some_and(|(old, _)| current.is_some_and(|current| current.stable_id() == old))
             && superseded.is_none()
         {
+            #[cfg(test)]
+            super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::AdmissionRejected);
             connection.close(2_u8.into(), b"established path kept over duplicate");
             return Ok(());
         }
@@ -230,6 +245,8 @@ impl LiveSessionState<'_> {
                 origin,
             },
         );
+        #[cfg(test)]
+        super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::ProofStarted);
         let page = self.page_sender.borrow().clone();
         let root = self.local_state.identity().root_verifying_key;
         let local = self.local_node;
@@ -384,11 +401,15 @@ pub(super) fn finish_ready_replacements(live: &mut LiveSessionState<'_>) -> Resu
         if let Some(deferred) = result.deferred
             && (current.is_none() || current == Some(result.old_id))
         {
+            #[cfg(test)]
+            super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::ProofSucceeded);
             // The old route can die while both peers prove the candidate.
             // In that case admit the proved connection as a new session;
             // there is no surviving old tunnel to drain.
             live.admit_authenticated(result.connection, result.exchange, result.origin, current, deferred)?;
         } else {
+            #[cfg(test)]
+            super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::ProofFailed);
             result.connection.close(2_u8.into(), b"replacement proof failed");
             live.quality.backoff(peer, tokio::time::Instant::now());
         }
@@ -476,10 +497,19 @@ pub(super) fn schedule_remembered_peer(
         live.quality.mark_attempt(*target, now);
     }
     if candidates.is_empty() {
+        #[cfg(test)]
+        super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::EmptyCandidates);
         return Some(RememberedPeerSchedule {
             target: *target,
             direct_started: false,
         });
+    }
+    #[cfg(test)]
+    if candidates
+        .iter()
+        .any(|(_, address)| networks.iter().any(|network| network.contains(address.ip())))
+    {
+        super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::OnLinkDial);
     }
     let endpoint = endpoint.clone();
     let snapshot = live.snapshot(device);
@@ -511,65 +541,6 @@ pub(super) fn schedule_remembered_peer(
         target: *target,
         direct_started: true,
     })
-}
-
-fn recovery_candidates(
-    hints: &[crate::peer_directory::PeerDialHint<'_>],
-    networks: &[network::InterfaceNetwork],
-    cycle: usize,
-) -> Vec<(PeerContact, SocketAddr)> {
-    let eligible = eligible_hints(hints, networks);
-    let mut addresses = eligible
-        .iter()
-        .flat_map(|(_, addresses)| addresses.iter().copied())
-        .collect::<Vec<_>>();
-    addresses.sort_by_key(|address| {
-        if networks.iter().any(|network| network.contains(address.ip())) {
-            0
-        } else if crate::candidate::EndpointCandidate::new(
-            crate::candidate::CandidateKind::Local,
-            crate::candidate::CandidateTransport::QuicV1,
-            *address,
-        )
-        .is_ok()
-        {
-            2
-        } else {
-            1
-        }
-    });
-    // Race families across record boundaries, retaining the signed authority
-    // associated with each address. History cannot replace the latest preferred
-    // path, but neither can IPv6-heavy records starve the only IPv4 alternative.
-    candidate_batch(&addresses, cycle)
-        .into_iter()
-        .filter_map(|address| {
-            eligible
-                .iter()
-                .find(|(_, addresses)| addresses.contains(&address))
-                .map(|(hint, _)| (hint.contact().clone(), address))
-        })
-        .collect()
-}
-
-fn eligible_hints<'a>(
-    hints: &'a [crate::peer_directory::PeerDialHint<'a>],
-    networks: &[network::InterfaceNetwork],
-) -> Vec<(&'a crate::peer_directory::PeerDialHint<'a>, Vec<SocketAddr>)> {
-    // Do not spend retry windows on records with no possible route. In
-    // particular, IPv6-only history must not delay older IPv4 recovery hints.
-    hints
-        .iter()
-        .filter_map(|hint| {
-            let addresses = hint
-                .addresses()
-                .iter()
-                .copied()
-                .filter(|address| network::address_is_route_compatible(*address, networks))
-                .collect::<Vec<_>>();
-            (!addresses.is_empty()).then_some((hint, addresses))
-        })
-        .collect()
 }
 
 #[cfg(test)]
