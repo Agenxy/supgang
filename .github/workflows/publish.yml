@@ -31,6 +31,10 @@ jobs:
           version: "0.11.16"
           python-version: "3.13.13"
           enable-cache: false
+      - name: Install the pinned Python interpreter
+        # setup-uv only selects this version; the gate runs uv offline, so the
+        # interpreter must already be installed.
+        run: uv python install 3.13.13
       - name: Run repository gate
         env:
           SUPGANG_QUALITY_CACHE: off

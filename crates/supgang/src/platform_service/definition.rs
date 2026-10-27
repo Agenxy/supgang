@@ -10,9 +10,11 @@ use super::ServiceError;
 /// remote sessions, so it must not run in the Background class: macOS confines
 /// that class to efficiency cores and throttles its I/O, and under sustained
 /// load the service then stops answering its control socket and its tunnels.
+#[cfg(any(target_os = "macos", test))]
 pub(super) const PROCESS_TYPE: &str = "Standard";
 /// The class earlier releases wrote. It names no authority, so an installed
 /// definition carrying it is accepted and upgraded rather than refused.
+#[cfg(any(target_os = "macos", test))]
 pub(super) const LEGACY_PROCESS_TYPE: &str = "Background";
 
 /// Returns the definition with a legacy scheduling class replaced, or `None`
