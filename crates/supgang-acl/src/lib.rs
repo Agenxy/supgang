@@ -305,7 +305,11 @@ mod tests {
         setfacl(&path, &["-d", "-m", &entry]);
         assert_eq!(check(), (false, true), "a default ACL shapes only future children");
         setfacl(&path, &["-m", &entry]);
-        assert_eq!(check(), (false, false), "an access ACL grants access to the directory itself");
+        assert_eq!(
+            check(),
+            (false, false),
+            "an access ACL grants access to the directory itself"
+        );
         let directory = File::open(&path).unwrap_or_else(|error| panic!("open ACL test directory: {error}"));
         clear_inherited_acl(&directory).unwrap_or_else(|error| panic!("clear ACL: {error}"));
         assert_eq!(check(), (true, true));
