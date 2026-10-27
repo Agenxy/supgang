@@ -15,7 +15,7 @@ use crate::{
 #[command(
     name = "supgang",
     version,
-    about = "Sovereign peer address discovery for your own computers",
+    about = "Finds the current address of your own computers",
     disable_help_subcommand = true,
     subcommand_precedence_over_arg = true
 )]
@@ -44,7 +44,7 @@ pub enum EndpointCommand {
     },
 }
 
-/// Stable local and sovereign peer command surface.
+/// Stable local and peer command surface.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
@@ -232,7 +232,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Run the sovereign peer service in the foreground.
+    /// Run the peer service in the foreground.
     Run {
         /// Owner-only endpoint configuration file.
         #[arg(long, value_name = "PATH")]

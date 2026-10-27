@@ -231,7 +231,7 @@ impl ServerHandler for SupgangMcp {
     fn get_info(&self) -> ServerInfo {
         let implementation = Implementation::new("org.agenxy.supgang", VERSION)
             .with_title("Supgang")
-            .with_description("Sovereign peer address discovery")
+            .with_description("Finds the current address of your own computers")
             .with_website_url("https://agenxy.org/projects/supgang")
             .with_icons(vec![
                 Icon::new(mark_data_uri())
