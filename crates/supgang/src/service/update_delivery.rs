@@ -9,6 +9,7 @@ use super::{ServiceError, active::ActiveConnection};
 const RETRY_DELAY: Duration = Duration::from_secs(15);
 const DELIVERY_TIMEOUT: Duration = Duration::from_mins(3);
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+const PENDING_RECHECK: Duration = Duration::from_secs(3);
 
 struct PendingDelivery {
     value: update::QueuedPeerDelivery,
@@ -29,6 +30,7 @@ pub(super) struct UpdateDeliveryQueue {
     task: tokio::task::JoinSet<DeliveryResult>,
     in_flight: Option<update::QueuedPeerDelivery>,
     cleanup_needed: bool,
+    pending_until: Option<tokio::time::Instant>,
 }
 
 impl UpdateDeliveryQueue {
@@ -53,6 +55,7 @@ impl UpdateDeliveryQueue {
             task: tokio::task::JoinSet::new(),
             in_flight: None,
             cleanup_needed: loaded.cleanup_needed,
+            pending_until: None,
         })
     }
 
@@ -88,7 +91,18 @@ impl UpdateDeliveryQueue {
         if self.pending.is_empty() && self.in_flight.is_none() {
             return Ok(());
         }
+        // A verified pending activation forbids every send. Recheck it after a
+        // short bound, but never cache an absent marker: a new activation must
+        // be observed before the next outbound delivery starts.
+        if self
+            .pending_until
+            .is_some_and(|until| tokio::time::Instant::now() < until)
+        {
+            return Ok(());
+        }
+        self.pending_until = None;
         if update::activation_pending(state_directory)? {
+            self.pending_until = Some(tokio::time::Instant::now() + PENDING_RECHECK);
             return Ok(());
         }
         self.expire_or_revoke(state_directory, local_state, now)?;
@@ -226,7 +240,10 @@ impl Drop for UpdateDeliveryQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{UpdateWireError, delivery_is_terminal};
+    use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
+
+    use super::{UpdateDeliveryQueue, UpdateWireError, delivery_is_terminal};
+    use crate::{ids::NodeId, state, update};
 
     #[test]
     fn only_acceptance_or_permanent_rejection_finishes_a_delivery() {
@@ -234,5 +251,45 @@ mod tests {
         assert!(delivery_is_terminal(Err(UpdateWireError::Rejected)));
         assert!(!delivery_is_terminal(Err(UpdateWireError::RetryLater)));
         assert!(!delivery_is_terminal(Err(UpdateWireError::Failed)));
+    }
+
+    #[test]
+    fn queued_delivery_rechecks_a_pending_activation_without_revalidating_each_pass()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("state");
+        let local = state::initialize(&path)?;
+        let executable = temporary.path().join("signed-executable");
+        fs::copy("/usr/bin/true", &executable)?;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
+        update::initialize_installed(&path, &executable)?;
+        let pending = path.join("updates/pending.json");
+        fs::copy(path.join("updates/active.json"), &pending)?;
+        let source = temporary.path().join("queued-bundle");
+        fs::write(&source, b"queued update")?;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600))?;
+        let digest = update::prepare_outbound(&path, &source)?;
+        let now = super::super::unix_time()?;
+        let _queued = update::queue_peer_delivery(&path, NodeId::from_bytes([7; 32]), digest, now)?;
+        let mut queue = UpdateDeliveryQueue::open(&path, now)?;
+        assert_eq!(queue.pending.len(), 1);
+        let admission = Arc::new(tokio::sync::Semaphore::new(1));
+        let active = BTreeMap::new();
+        queue.drive(&path, &admission, &local, &active, now)?;
+        assert!(queue.pending_until.is_some());
+
+        // A change during the bounded defer window cannot cause an update
+        // send; after the window, protected state is validated again.
+        fs::write(&pending, b"invalid pending record")?;
+        queue.drive(&path, &admission, &local, &active, now)?;
+        queue.pending_until = Some(tokio::time::Instant::now() - Duration::from_millis(1));
+        assert!(queue.drive(&path, &admission, &local, &active, now).is_err());
+
+        fs::remove_file(&pending)?;
+        queue.drive(&path, &admission, &local, &active, now)?;
+        assert!(queue.pending_until.is_none());
+        fs::write(&pending, b"invalid pending record")?;
+        assert!(queue.drive(&path, &admission, &local, &active, now).is_err());
+        Ok(())
     }
 }

@@ -300,8 +300,11 @@ async fn pending_activation_does_not_starve_control_or_peer_restart() -> Result<
         now,
     )?;
     let joined = state::install_join_bundle(&right_path, &bundle, founder.identity().hive_id)?;
+    let target = joined.identity().device.node_id();
     let executable = temporary.path().join("test-supgang");
-    std::fs::copy(std::env::current_exe()?, &executable)?;
+    // A small signed platform executable keeps the update probe realistic
+    // without making test-binary hashing dominate this timing regression.
+    std::fs::copy("/usr/bin/true", &executable)?;
     std::fs::set_permissions(&executable, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     crate::update::initialize_installed(&left_path, &executable)?;
     // Keep a valid pending marker while exercising the service without its supervisor.
@@ -336,8 +339,26 @@ async fn pending_activation_does_not_starve_control_or_peer_restart() -> Result<
     tokio::time::timeout(Duration::from_secs(5), left_endpoint.wait_idle()).await?;
     drop(left_endpoint);
     tokio::task::yield_now().await;
+    let bundle_source = temporary.path().join("queued-update");
+    std::fs::write(&bundle_source, b"queued while activation is pending")?;
+    std::fs::set_permissions(&bundle_source, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    let digest = crate::update::prepare_outbound(&left_path, &bundle_source)?;
+    let _queued = crate::update::queue_peer_delivery(&left_path, target, digest, unix_time()?)?;
     let restarted = Peer::new(&left_path, state::open(&left_path)?, listen)?.start()?;
+    let status_path = left_path.clone();
+    let status = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || control::probe(&status_path, ControlRequest::Status)),
+    )
+    .await???;
+    assert!(matches!(status, Some(ControlReply::Status { .. })));
     let recovered = wait_connected(&[&left_path, &right_path]).await;
+    assert_eq!(
+        crate::update::load_peer_deliveries(&left_path, unix_time()?)?
+            .deliveries
+            .len(),
+        1
+    );
     restarted.abort();
     right_task.abort();
     let _left = restarted.await;
