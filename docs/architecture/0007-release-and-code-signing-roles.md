@@ -50,7 +50,7 @@ Fields common to both, in canonical order:
 | --- | --- |
 | `hive_id`, `role_id` | Exact hive and a random, never-reused 16-byte role identity. |
 | `kind` | `release` or `code-signing`; a verifier refuses a kind it does not implement. |
-| `consumer_id` | Exact product, such as `org.agenxy.remap`; no wildcard. |
+| `consumer_id` | Exact product, compared byte for byte, such as Remap's `org.agenxy.Remap` (its manifest's `productIdentifier`); no wildcard. |
 | `signers` | 1 to 3 role keys (P-256 or Ed25519), each with algorithm, public key, enrolled custody label and a possession proof over the role fields above `signers`. |
 | `threshold` | k of `signers`; for `release`, also the stated presence mode below. |
 | `not_before`, `not_after` | At most 366 days. |
@@ -62,8 +62,8 @@ Extra fields per kind:
   short names; `min_version`, the floor below which nothing is accepted; and `presence`, one of
   `carried-device` or `unattended`.
 - `code-signing`: `identifiers`, a sorted set of 1 to 8 exact code-signing identifiers
-  (`org.agenxy.remap.daemon`; no prefix or wildcard), and `certificate`, the DER of the role's
-  self-issued code-signing certificate (below), whose key must be one of `signers`.
+  (each exactly as the consumer names it; no prefix or wildcard), and `certificate`, the DER
+  of the role's self-issued code-signing certificate (below), whose key must be one of `signers`.
 
 Revoking a role's signer device, or revoking the role, ends it at once. Rotating a role key is a
 new grant followed by revocation of the old one. That makes rotation an owner action at root
@@ -116,6 +116,8 @@ either of these holds:
 
 The role path is accepted beside the native key and never instead of it. A role-path failure
 never masks or replaces a native success, and turning the role path off removes only that path.
+A consumer may be stricter: Remap refuses a package outright when a staged native signature
+fails, and parses no role files after a native success (Remap ADR-0031).
 
 The opt-in is the consumer's own state, which only root can write, written only by the
 in-person enrolment. It holds:
@@ -262,8 +264,9 @@ Adversarial vectors to ship as tests, one each:
 Open for the owner:
 
 - whether `unattended` is wanted at all in the first release;
-- the default maximum status age (7 days proposed);
-- which channels Remap installs by default.
+- the default maximum status age (7 days proposed).
+
+Remap's default channel is `stable`, so an unattended role can never publish there.
 
 Remap's lead confirmed (27 Oct) that `remap-package-v1` can take a second authority behind an
 opt-in. The single authority check, `PortableReleaseVerifier.verifySignature`, authenticates
@@ -276,10 +279,17 @@ conditions that came with the confirmation are folded in above:
 - a per-channel high-water mark;
 - the distribution format is the consumer's decision.
 
-Remap's consumer ADR decides two things of its own:
+Remap's consumer ADR, ADR-0031 (Agenxy/remap#11), settles its two:
 
-- where the bundle sits in its staging area;
-- whether its native path gains the same rollback high-water mark.
+- the bundle is two optional staging entries, `release-statement.cbor` (64 KiB or less) and
+  `release-authority.cbor` (256 KiB or less: role grant, status and the ADR 0005
+  assertion-key grant), read only from staging by a root helper that never runs Supgang;
+- the role path refuses any version not strictly above both the installed generation and the
+  channel high-water mark, which advances in the commit's root transaction and never goes
+  down. The native path gains no refusal: a downgrade stays an in-person native operation.
+
+Remap vendors the frozen vectors by SHA-256. Before Remap builds anything, it needs those
+vectors and the closure of ADR 0005's status-freshness gap.
 
 Before relying on it, Remap measures whether a launchd daemon loads, and a TCC prompt names the
 product, under a certificate the target Mac does not hold.
