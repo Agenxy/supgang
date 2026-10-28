@@ -1,4 +1,4 @@
-//! Offline owner-action assertion verifier for exact Remap DNS operations.
+//! Offline owner-action assertion verifier for Remap's closed operation list.
 //!
 //! This prototype is not connected to the live service or a privileged helper.
 //! It cannot replace target-local enrollment, hardware custody, a status issuer,
@@ -28,6 +28,13 @@ const CHALLENGE_DOMAIN: &[u8] = b"supgang/owner-action-challenge/v1\0";
 const REMAP_CONSUMER: &str = "org.agenxy.remap";
 const MAX_REMAP_ASSERTION_AGE: u64 = 5 * 60;
 const MAX_REQUEST_BYTES: usize = 4 * 1024;
+
+fn remap_operation_allowed(operation: &str) -> bool {
+    matches!(
+        operation,
+        "remap.dns.activate" | "remap.dns.deactivate" | "remap.system.update" | "remap.system.recover"
+    )
+}
 
 /// Exact challenge produced and retained by the target's consumer helper.
 #[derive(Clone, Eq, PartialEq)]
@@ -331,7 +338,8 @@ pub struct RemapVerification<'a> {
     pub assertion: &'a Assertion,
     /// Challenge issued and retained by this target.
     pub challenge: &'a Challenge,
-    /// Recomputed canonical request including current resolver-plan preconditions.
+    /// Consumer-recomputed canonical request with current target-observed preconditions.
+    /// Remap owns the resolver-plan or lifecycle-preview encoding and its effect checks.
     pub current_request: &'a [u8],
     /// Local target identity, never taken from the network request.
     pub target: NodeId,
@@ -343,15 +351,17 @@ pub struct RemapVerification<'a> {
     pub member_serial_floor: u64,
 }
 
-/// Verify the two closed Remap DNS operations and durably spend a one-use nonce.
+/// Verify Remap's four closed operations and durably spend a one-use nonce.
 ///
 /// This offline prototype fails closed after root rotation until membership and
 /// revocation credentials are issued under the new authority. It is not a live
-/// privileged helper and does not establish owner hardware custody.
+/// privileged helper and does not establish owner hardware custody. The Remap
+/// helper must separately verify staged release authenticity, reject remote
+/// downgrade, and recheck the lifecycle preview before any update or recovery.
 ///
 /// # Errors
 /// Refuses any missing, mismatched, expired, revoked, replayed or stale proof.
-pub fn verify_remap_dns(
+pub fn verify_remap_action(
     input: &RemapVerification<'_>,
     ledger: &mut impl SpendLedger,
     _permit: &AvailabilityPermit,
@@ -360,10 +370,7 @@ pub fn verify_remap_dns(
     let assertion = input.assertion;
     if chain.status() != ChainStatus::Active
         || assertion.consumer != REMAP_CONSUMER
-        || !matches!(
-            assertion.operation.as_str(),
-            "remap.dns.activate" | "remap.dns.deactivate"
-        )
+        || !remap_operation_allowed(&assertion.operation)
     {
         return Err(Error::Authority);
     }
@@ -413,4 +420,30 @@ fn hash(domain: &[u8], bytes: &[u8]) -> Digest {
     hasher.update(domain);
     hasher.update(bytes);
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remap_operation_allowed;
+
+    #[test]
+    fn remap_allows_only_its_four_amended_owner_actions() {
+        for operation in [
+            "remap.dns.activate",
+            "remap.dns.deactivate",
+            "remap.system.update",
+            "remap.system.recover",
+        ] {
+            assert!(remap_operation_allowed(operation));
+        }
+        for operation in [
+            "remap.system.install",
+            "remap.system.uninstall",
+            "remap.system.downgrade",
+            "remap.system.update.release",
+            "org.agenxy.k7.update",
+        ] {
+            assert!(!remap_operation_allowed(operation));
+        }
+    }
 }

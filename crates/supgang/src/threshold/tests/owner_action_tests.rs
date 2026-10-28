@@ -91,6 +91,47 @@ fn required_remap_assertion_binds_exact_challenge_request_and_target() -> TestRe
             .verify_binding(&grant, &challenge, &request, target, 211)
             .is_err()
     );
+    for (operation, lifecycle_request) in [
+        (
+            "remap.system.update",
+            b"consumer-canonical-update-with-release-and-preview".as_slice(),
+        ),
+        (
+            "remap.system.recover",
+            b"consumer-canonical-recovery-with-journal-and-preview".as_slice(),
+        ),
+    ] {
+        let mut lifecycle_grant = grant.clone();
+        lifecycle_grant.operations.first_mut().ok_or(Error::Invalid)?.name = operation.into();
+        let mut lifecycle_challenge = challenge.clone();
+        lifecycle_challenge.operation = operation.into();
+        lifecycle_challenge.request = lifecycle_request.to_vec();
+        let mut lifecycle_assertion = decoded.clone();
+        lifecycle_assertion.operation = operation.into();
+        lifecycle_assertion.request_digest = request_digest(lifecycle_request);
+        lifecycle_assertion.challenge_digest = lifecycle_challenge.digest()?;
+        lifecycle_assertion.signature = signer
+            .sign_domain(b"supgang/owner-action/v1\0", &lifecycle_assertion.payload()?)?
+            .to_bytes();
+        lifecycle_assertion.verify_binding(&lifecycle_grant, &lifecycle_challenge, lifecycle_request, target, 160)?;
+        assert!(
+            lifecycle_assertion
+                .verify_binding(
+                    &lifecycle_grant,
+                    &lifecycle_challenge,
+                    b"same-operation-changed-preview",
+                    target,
+                    160,
+                )
+                .is_err()
+        );
+        lifecycle_grant.operations.first_mut().ok_or(Error::Invalid)?.presence = Presence::Policy;
+        assert!(
+            lifecycle_assertion
+                .verify_binding(&lifecycle_grant, &lifecycle_challenge, lifecycle_request, target, 160,)
+                .is_err()
+        );
+    }
     let mut downgraded = grant;
     downgraded.operations.first_mut().ok_or(Error::Invalid)?.presence = Presence::Policy;
     assert!(

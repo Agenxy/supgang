@@ -287,13 +287,28 @@ canonical assertion signature, target, exact operation, digest, time, and spent 
 applies the consumer's own policy. It refuses any missing or stale proof even if Supgang
 delivered the bytes successfully.
 
-Remap's local policy requires `required` presence for `remap.dns.activate` and
-`remap.dns.deactivate`; its verifier rejects a `policy` grant for either operation even if
-the root grant otherwise names it. Each consumer may impose this stricter rule for its own
-operations, and the remote assertion cannot relax it.
+Remap ADR-0022's proposed closed list now contains `remap.dns.activate`,
+`remap.dns.deactivate`, `remap.system.update`, and `remap.system.recover`. Its
+local policy requires `required` presence for all four and rejects a `policy`
+grant even if the root grant otherwise names the operation. First installation,
+uninstallation, and downgrade remain native-only. Each consumer may impose a
+stricter rule for its own operations, and the remote assertion cannot relax it.
 
-This reconciles Remap ADR-0022 and K7 ADR 0159 at the provider boundary. Remap's two DNS
-operations require a target-issued resolver-plan challenge and fresh carried-device presence.
+For lifecycle operations, Remap owns the canonical request and target-issued
+challenge. Update binds version, channel, architecture, canonical release-manifest
+SHA-256, and the lifecycle preview of one root-staged, verified candidate;
+recovery binds the interrupted transaction ID and its recovery preview digest.
+The helper rechecks that preview before the effect. An assertion authorizes the
+operation but does not authenticate the release bytes: Remap separately verifies
+its native release pin or its opt-in ADR 0007 release role, and refuses remote
+update unless the version exceeds the installed generation and channel high-water.
+Staging for a challenge changes no installed generation. These consumer checks
+cannot be replaced by a Supgang operation-name match or request-byte digest.
+
+This reconciles Remap ADR-0022 and K7 ADR 0159 at the provider boundary. Remap's DNS
+operations require a target-issued resolver-plan challenge; its lifecycle operations
+require a target-issued lifecycle-preview challenge. All four require fresh
+carried-device presence.
 K7 may consume the same Supgang envelope only under its separately pinned
 `org.agenxy.k7` grant and its own ADR 0155 policy ceiling; its native assertion remains in
 the K7 trust domain. K7 never maps a member signature to owner authority. Neither consumer
