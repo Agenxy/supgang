@@ -27,10 +27,13 @@ Today Supgang authenticates **devices**, not people. A current hive membership p
 device key belongs to the hive; it does not prove a human approved a particular action. ADR 0001
 leaves delegated administration unimplemented. The device-certified keys in ADR 0003 prove
 possession and bind a key to an audience; a device cannot grant itself owner authority by issuing
-one. The closed root-step operation set has no owner-action grant, the root-signed member
-revocation snapshot has no expiration, and peer streams have no owner-action type. Supgang's
-same-UID control socket is not a privileged local handoff. None of the interface below may be
-advertised as available until those gaps are closed and physically tested.
+one. This branch adds typed grant/revocation steps, a shared signed-status codec, and an
+offline Remap assertion verifier behind an uninhabited availability permit in the isolated
+threshold prototype. The live service has no owner-action stream, issuer, durable target
+challenge/nonce ledger, or hardware-presence gate;
+the root-signed member revocation snapshot still has no expiration. Supgang's same-UID control
+socket is not a privileged local handoff. None of this may be advertised as available until
+those gaps are closed and physically tested.
 
 The root is the authority for grants. A member, a key with an `attest` certificate, a working
 QUIC session, or arrival through a Supgang tunnel is **not** by itself an administrator. A
@@ -40,11 +43,13 @@ human presence unless a separately specified key provider enforces it.
 ## Proposed grant
 
 One common assertion format serves every consumer; grants remain separate by consumer. A
-root-authorized, canonical grant records:
+root-authorized, canonical grant shares its outer field order, issuer-head binding, and
+monotonic revocation rules with ADR 0007's release and code-signing roles. Its `kind` is
+`owner-action`; a verifier rejects a kind it does not implement. The grant records:
 
 | Field | Meaning |
 | --- | --- |
-| `hive_id`, `grant_id` | Exact hive and a random, never-reused 16-byte grant identity. |
+| `hive_id`, `grant_id`, `kind` | Exact hive, a random never-reused 16-byte grant identity, and `owner-action`. |
 | `signer` | Exact enrolled public key and algorithm, bound to a device or owner credential with a possession proof. |
 | `consumer_id` | Stable product identifier, such as `org.agenxy.remap`; no wildcard consumer. |
 | `operations` | Sorted, bounded, closed set of consumer-defined operation identifiers. |
@@ -132,7 +137,10 @@ a weaker one. Algorithms and signature encodings must reuse the strict Ed25519 a
 P-256 rules already specified for certified keys. The target compares the fields to the
 pinned grant and to **its own** identity, rather than trusting a name in the request.
 
-The digest is `SHA-256("supgang/action-request/v1\0" || canonical_consumer_request)`. Each
+The digest is `SHA-256("supgang/action-request/v1\0" || canonical_consumer_request)`. This
+assertion can bind any consumer's canonical request bytes, including ADR 0007's
+`org.agenxy.supgang` / `release.sign` release statement (computed without its assertion field);
+there is no DNS-specific field or verifier rule in the shared format. Each
 consumer defines one versioned, bounded canonical request encoding, which may be canonical JSON
 or another unambiguous format. It includes the exact arguments and target-observed
 preconditions checked immediately before the effect. For Remap DNS activation, that includes
@@ -197,9 +205,10 @@ become fresh merely because it arrived over a live session. The certified-key au
 manifest has its own `next_update` check, but it does not supply owner-grant or membership
 freshness. Remap and K7 must not infer a freshness bound from either mechanism.
 
-Version 1 therefore needs a **status lease** signed by the root, approved threshold, or an
+Version 1 therefore needs one **shared status lease** for owner-action grants and ADR 0007's
+release and code-signing roles, signed by the root, approved threshold, or an
 explicitly root-delegated status issuer. It binds the hive, current root-chain head,
-member-revocation serial, grant-revocation serial, issuance, and expiry. Its issuer must have
+member-revocation serial, grant-and-role-revocation serial, issuance, and expiry. Its issuer must have
 the actual authority and current-state evidence to state that no newer root operation is
 effective as of issuance. A target retains monotonic heads and serials, refuses rollback or
 equivocation, and requires a lease within the owner-approved maximum age at the moment it
@@ -210,8 +219,10 @@ takes effect at a disconnected target, not instantaneous global revocation.
 The owner must decide the maximum lease lifetime and which authorized signers can renew it
 remotely while traveling; an at-home-only renewal path would defeat Remap's remote recovery
 use case. A five-minute assertion expiry does **not** imply five-minute revocation freshness.
-No numeric revocation bound is endorsed by this ADR yet; until the signing and availability
-model is decided and implemented, Supgang owner-action mode remains unavailable.
+The common status codec imposes a seven-day protocol ceiling so neither owner actions nor
+ADR 0007 roles can accept an older status. This is not the owner-approved operating maximum:
+consumers may require less, and the renewal budget, issuer, and availability model remain open.
+Until those are decided and implemented, Supgang owner-action mode remains unavailable.
 
 The present founder root secret is file-held, and the threshold signing store is a software
 prototype. Neither establishes hardware custody or fresh owner presence. Typed grant and
