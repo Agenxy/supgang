@@ -93,8 +93,6 @@ async fn dial_candidates(
         let Ok(Some((index, connection))) = joined else {
             continue;
         };
-        #[cfg(test)]
-        super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::TransportConnected);
         let (expected, _) = candidates.get(index)?;
         let result = tokio::time::timeout(
             Duration::from_secs(SESSION_TIMEOUT_SECONDS),
@@ -130,8 +128,6 @@ async fn outbound_session(
     )
     .await
     .map_err(|_| ())?;
-    #[cfg(test)]
-    super::test_controls::note_recovery_event(super::test_controls::RecoveryEvent::SessionAuthenticated);
     let synchronized = sync::exchange_outbound(connection, authentication.page)
         .await
         .map_err(|_| ())?;

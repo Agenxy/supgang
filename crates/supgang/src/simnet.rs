@@ -112,8 +112,6 @@ pub enum Discard {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Stats {
     pub delivered: u64,
-    /// Delivered on-link datagrams keyed by sender and receiver host IDs.
-    pub on_link_delivered: BTreeMap<(HostId, HostId), u64>,
     pub dropped: BTreeMap<Discard, u64>,
 }
 
@@ -488,7 +486,7 @@ impl State {
         // On-link delivery never crosses the gateway, so it is neither
         // translated nor filtered nor subject to uplink loss.
         if let Some(host) = self.host_at(site, destination.ip()) {
-            let queued = self.queue(
+            return self.queue(
                 now,
                 &Arrival {
                     host,
@@ -498,10 +496,6 @@ impl State {
                 },
                 bytes,
             );
-            if queued.is_ok() {
-                *self.stats.on_link_delivered.entry((sender, host)).or_default() += 1;
-            }
-            return queued;
         }
         let outside = match (source_ip, destination) {
             (IpAddr::V4(source), SocketAddr::V4(destination)) => {
