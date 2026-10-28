@@ -147,6 +147,53 @@ native path. Nothing ever falls back to accepting.
 ADR 0005 already records the gap this depends on: the root-signed revocation snapshot has no
 expiry. This ADR needs it closed, and status freshness is the same work for both ADRs.
 
+## Release statement wire format, version 1
+
+The encoding rules are those of `authority.rs`:
+
+- definite lengths;
+- shortest unsigned integers;
+- every field present;
+- no tags.
+
+Decoders re-encode and compare bytes, and refuse trailing data. In the layouts below, `bN` is a
+byte string of exactly N bytes and times are UNIX seconds. A field this ADR does not list is a
+decoding failure, never an extension.
+
+- **Version triple.** `[major:u64, minor:u64, patch:u64]`, ordered lexicographically, used for
+  both `version` and the grant's `min_version`. Pre-releases use their own channel and their
+  own numbers. The role path has no pre-release suffix to compare.
+- **Artifact.** `[os:text, arch:text, length:u64, sha256:b32]`. `os` and `arch` are 1 to 16
+  bytes of lowercase ASCII letters, digits and `-`. The list holds 1 to 16 artifacts, strictly
+  ascending by `(os, arch)` byte order, so no two artifacts share a target.
+- **Content.** `[1, hive:b32, role_id:b16, consumer_id:text, package_format:text, channel:text,
+  version, [artifact...], source_commit:bytes, provenance:b32-or-null, issued_at:u64,
+  expires_at:u64]`. Further bounds:
+  - `consumer_id` is 1 to 128 bytes, compared byte for byte;
+  - `package_format` is 1 to 64 bytes;
+  - `channel` is 1 to 32 bytes of lowercase ASCII letters, digits and `-`;
+  - `source_commit` is exactly 20 or 32 bytes;
+  - `issued_at` is no later than `expires_at`, and `expires_at` is at most 2 592 000 seconds
+    (30 days) later.
+- **Statement digest.** SHA-256 of `supgang/release/v1\0` followed by the content bytes. The
+  role signers sign the same prefixed bytes. The ADR 0005 assertion binds this digest.
+- **Signed statement.** `[1, content:bytes, assertion:bytes-or-null, [[signer:u8, signature:b64]...]]`,
+  at most 16 384 bytes in total. Further bounds:
+  - `signer` is the index of a key in the grant's `signers`, strictly ascending and unique;
+  - there are at least `threshold` signatures and no more signatures than signers;
+  - P-256 signatures are SHA-256 with a low-s `r || s`, and Ed25519 signatures use strict
+    verification, exactly as in ADR 0003;
+  - `assertion` is null exactly when the grant's presence is `unattended`;
+  - otherwise `assertion` holds the ADR 0005 assertion encoding, for consumer
+    `org.agenxy.supgang`, operation `release.sign` and this statement digest.
+
+The role-grant encoding is the shared typed-grant codec of ADR 0005, with kinds `release` and
+`code-signing`. It is not redefined here. Frozen vectors for grant, status, signed statement and
+assertion are published together, each with a valid form and one tampered form per refusal
+listed under acceptance. They come with a manifest of their SHA-256 hashes, which consumers
+vendor by hash. A vector set is frozen only after the owner has settled the open values in
+ADR 0005 and in this ADR. Until then it is labelled draft.
+
 ## Code-signing role
 
 **The measurement this rests on** (agenxy-installation.md, 24 Sep): a binary signed on one Mac
