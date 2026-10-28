@@ -60,6 +60,8 @@ pub(super) struct SimControls {
 pub(super) enum RecoveryEvent {
     EmptyCandidates,
     OnLinkDial,
+    TransportConnected,
+    SessionAuthenticated,
     Authenticated,
     AuthenticationFailed,
     AdmissionRejected,
@@ -69,7 +71,7 @@ pub(super) enum RecoveryEvent {
 }
 
 impl RecoveryEvent {
-    pub(super) const COUNT: usize = 8;
+    pub(super) const COUNT: usize = 10;
 }
 
 thread_local! {

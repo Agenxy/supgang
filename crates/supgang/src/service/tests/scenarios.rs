@@ -448,7 +448,7 @@ fn from_an_ipv4_only_hotel_the_laptop_reaches_solis_through_the_forward_then_ret
         return Err(format!(
             "the laptop did not return to the LAN path at home; laptop history {:?}; Solis history {:?}; \
              laptop recovery {:?}; Solis recovery {:?}; interface changes after move {}; quality dials {}; replacement attempts {}; network stats before {:?} after {:?}; \
-             event order [empty candidates, on-link dial, authenticated, authentication failed, admission rejected, proof started, proof succeeded, proof failed]; laptop events {:?}; Solis events {:?}",
+             event order [empty candidates, on-link dial, transport connected, session authenticated, authenticated with sync, authentication failed, admission rejected, proof started, proof succeeded, proof failed]; laptop events {:?}; Solis events {:?}",
             connection_history(laptop)?,
             connection_history(solis)?,
             world
