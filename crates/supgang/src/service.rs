@@ -389,6 +389,7 @@ async fn service_loop(
                 &mut outbound_in_flight,
             )
             .await;
+            next_dial = retry_schedule::on_link_retry_deadline(&active, directory, unix_time()?, now, next_dial);
         }
         silence.retire_departed_and_schedule(&mut active, &mut noncanonical_outbound, &mut next_dial, now);
         silence.observe(&active);
