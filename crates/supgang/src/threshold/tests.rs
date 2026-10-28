@@ -24,6 +24,7 @@ mod founding_tests;
 mod grant_tests;
 mod owner_action_tests;
 mod policy_tests;
+mod release_statement_tests;
 mod review_tests;
 mod session_tests;
 mod storage_tests;

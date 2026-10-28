@@ -1,0 +1,47 @@
+{
+  "ed25519_public_key_hex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+  "files": [
+    {
+      "bytes": 264,
+      "expectation": "accept: canonical release content",
+      "file": "content.cbor",
+      "sha256": "2bbe26721e030d0777e3fb423d3153e84f9119e3cd6115d85ff99970df67872e"
+    },
+    {
+      "bytes": 780,
+      "expectation": "accept: two role signatures and carried assertion",
+      "file": "statement.cbor",
+      "sha256": "2c9ed4c1b75254005d1a145dbdf5b0caf3f43dbffe1331d23eb4c10413c56e29"
+    },
+    {
+      "bytes": 780,
+      "expectation": "reject: malformed role signature",
+      "file": "statement-bad-signature.cbor",
+      "sha256": "86f788db082c22dd45c6a0b62a4c831f506fef765c2b48f949ba91e5d97fd890"
+    },
+    {
+      "bytes": 780,
+      "expectation": "reject: changed statement digest",
+      "file": "statement-changed-content.cbor",
+      "sha256": "c6457e56bd46ee51da86c6a510a51e205412c3fba2c7123a6531ce7ae5d6b735"
+    },
+    {
+      "bytes": 780,
+      "expectation": "reject: valid carried signature bound to another digest",
+      "file": "statement-wrong-assertion.cbor",
+      "sha256": "15232631aee4209ac193981508a33fc42819a9d53ad39525313da7742337704d"
+    },
+    {
+      "bytes": 264,
+      "expectation": "reject: non-lowercase channel",
+      "file": "content-wrong-channel.cbor",
+      "sha256": "3e39badfbc03cb673cdab4ea5ca32f575d79b341ecb738fb8c394d24d22dca2d"
+    }
+  ],
+  "note": "Disposable public test keys only. Root role grant, status, challenge, replay state and artifact bytes are not included or verified.",
+  "p256_public_key_hex": "027135fa4fd93a09dce98bbf681b4bfcf50e7c0d6354e62afb0bff2a3429617865",
+  "presence": "carried-device",
+  "protocol": "release-statement-v1-proposal",
+  "state": "DRAFT - NOT FROZEN",
+  "threshold": 2
+}
