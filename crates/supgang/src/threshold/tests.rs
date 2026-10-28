@@ -27,6 +27,7 @@ mod policy_tests;
 mod review_tests;
 mod session_tests;
 mod storage_tests;
+mod vector_tests;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Machines = BTreeMap<frost::Identifier, Session<FileSessionStore>>;

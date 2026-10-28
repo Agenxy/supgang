@@ -4,6 +4,7 @@ use crate::{
     threshold::{
         owner_action::{Assertion, Challenge},
         status::{DOMAIN as STATUS_DOMAIN, Scope, SignedStatus, Status as RootStatus},
+        status_renewal::{Counts, Ledger, Mode, POLICY_DOMAIN, Policy, SignedPolicy},
         step::grant::{AllowedOperation, Grant, Kind, Presence, SignerRole, TargetScope},
     },
 };
@@ -153,6 +154,24 @@ fn required_remap_assertion_binds_exact_challenge_request_and_target() -> TestRe
 fn shared_status_requires_root_signature_current_head_serial_and_bounded_age() -> TestResult {
     let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
     let hive = crate::ids::HiveId::from_root_verifying_key(&key.verifying_key().to_bytes());
+    let policy = Policy {
+        hive,
+        root_head: [3; 32],
+        budget_id: [7; 16],
+        epoch: 1,
+        maximum_age: 60,
+        policy_cap: 0,
+        presence_cap: 4,
+        total_cap: 4,
+    };
+    let mut policy_message = POLICY_DOMAIN.to_vec();
+    policy_message.extend_from_slice(&policy.encode()?);
+    let signed_policy = SignedPolicy {
+        policy,
+        signature: key.sign(&policy_message).to_bytes(),
+    };
+    assert!(SignedPolicy::decode(&signed_policy.encode()?)? == signed_policy);
+    let ledger = Ledger::draft_new(&policy)?;
     let status = RootStatus {
         hive,
         root_head: [3; 32],
@@ -160,6 +179,11 @@ fn shared_status_requires_root_signature_current_head_serial_and_bounded_age() -
         grant_serial: 5,
         issued_at: 100,
         expires_at: 160,
+        policy_digest: policy.content_digest()?,
+        budget_id: policy.budget_id,
+        epoch: policy.epoch,
+        mode: Mode::Initial,
+        counts: Counts::default(),
     };
     let mut message = STATUS_DOMAIN.to_vec();
     message.extend_from_slice(&status.encode()?);
@@ -175,8 +199,45 @@ fn shared_status_requires_root_signature_current_head_serial_and_bounded_age() -
         grant_floor: 5,
         now: 130,
         maximum_age: 60,
+        policy: &signed_policy,
+        ledger: &ledger,
     };
-    signed.verify(&key.verifying_key().to_bytes(), &scope)?;
+    let advanced = signed.verify(&key.verifying_key().to_bytes(), &scope)?;
+    assert_ne!(advanced.status_digest(), [0; 32]);
+    let mut repeated = scope;
+    repeated.ledger = &advanced;
+    assert!(signed.verify(&key.verifying_key().to_bytes(), &repeated)? == advanced);
+    let mut equivocation = signed;
+    equivocation.status.expires_at = 159;
+    let mut changed_message = STATUS_DOMAIN.to_vec();
+    changed_message.extend_from_slice(&equivocation.status.encode()?);
+    equivocation.signature = key.sign(&changed_message).to_bytes();
+    assert!(matches!(
+        equivocation.verify(&key.verifying_key().to_bytes(), &repeated),
+        Err(Error::Halted)
+    ));
+    let mut wrong_budget = signed;
+    wrong_budget.status.budget_id = [9; 16];
+    let mut changed_message = STATUS_DOMAIN.to_vec();
+    changed_message.extend_from_slice(&wrong_budget.status.encode()?);
+    wrong_budget.signature = key.sign(&changed_message).to_bytes();
+    assert!(wrong_budget.verify(&key.verifying_key().to_bytes(), &scope).is_err());
+    let mut over_cap = signed;
+    over_cap.status.mode = Mode::Presence;
+    over_cap.status.counts = Counts {
+        policy: 0,
+        presence: 5,
+        total: 5,
+    };
+    let mut changed_message = STATUS_DOMAIN.to_vec();
+    changed_message.extend_from_slice(&over_cap.status.encode()?);
+    over_cap.signature = key.sign(&changed_message).to_bytes();
+    assert!(over_cap.verify(&key.verifying_key().to_bytes(), &scope).is_err());
+    let mut forged_policy = signed_policy;
+    forged_policy.signature = [0; 64];
+    let mut wrong = scope;
+    wrong.policy = &forged_policy;
+    assert!(signed.verify(&key.verifying_key().to_bytes(), &wrong).is_err());
     let mut wrong = scope;
     wrong.head = [9; 32];
     assert!(signed.verify(&key.verifying_key().to_bytes(), &wrong).is_err());

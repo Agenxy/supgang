@@ -1,0 +1,3 @@
+docs/vectors/**/*.cbor binary
+docs/vectors/**/*.sig binary
+docs/vectors/**/*.bin binary

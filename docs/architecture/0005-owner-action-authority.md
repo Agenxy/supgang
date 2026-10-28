@@ -224,6 +224,13 @@ ADR 0007 roles can accept an older status. This is not the owner-approved operat
 consumers may require less, and the renewal budget, issuer, and availability model remain open.
 Until those are decided and implemented, Supgang owner-action mode remains unavailable.
 
+**Proposed, pending owner:** the first operating maximum is seven days per lease and at
+execution; consumers may narrow it. **Proposed, pending owner:** only the current root
+(the approved threshold root once operational) issues status, after checking its
+authenticated current chain head and both revocation serials; version 1 has no delegated
+issuer. These proposals do not make a file-held root or a disconnected signer a live
+remote status service.
+
 The present founder root secret is file-held, and the threshold signing store is a software
 prototype. Neither establishes hardware custody or fresh owner presence. Typed grant and
 assertion code may be built and tested behind a fail-closed availability gate, but privileged
@@ -248,6 +255,39 @@ each signed lease carries the budget identity, epoch, mode, and cumulative count
 can enforce its own durable monotonic high-water marks and reject over-budget, rollback, or
 equivocating leases. A compromised action key can request or present renewals within the
 remaining counts but cannot raise a root-signed ceiling, reset a count, or mint a new epoch.
+
+**Proposed, pending owner:** one epoch allows zero unattended `policy` renewals, four
+fresh carried-device-presence renewals, and four renewals total. **Proposed, pending
+owner:** a new monotonic epoch and random budget ID require an in-person, root-authorized
+recertification ceremony; a remote signer cannot reset them. **Proposed, pending owner:**
+one authoritative atomic, rollback-resistant issuer ledger serves version 1, with no
+independent issuer. A later issuer must share that linear ledger and current-head evidence
+or require a new physical epoch; equivocation halts. The offline codec and ledger model
+are draft until those choices and their physical enforcement are approved and proved.
+
+The **draft, not frozen** version-1 policy content is the canonical CBOR array
+`[1, hive, root_head, budget_id, epoch, maximum_age, policy_cap,
+presence_cap, total_cap]`, signed by the current root under
+`supgang/status-policy/v1\0`; the signed envelope is `[1, content, signature]`.
+The budget ID is 16 random bytes and the epoch starts at one. The policy's
+exact content digest binds a status lease to that policy, while a second
+terms digest omits `root_head` while retaining the hive, budget, epoch and
+ceilings so a head refresh cannot silently
+raise limits within an epoch. A lease is the canonical array
+`[1, hive, root_head, member_serial, grant_serial, issued_at, expires_at,
+policy_digest, budget_id, epoch, mode, policy_count, presence_count,
+total_count]`, with `mode` one of `initial`, `policy`, or `presence` and a
+current-root signature under `supgang/root-status/v1\0`. Initial issue
+consumes no renewal count; every later issue consumes exactly one mode count
+and the total. The issuer and target both retain a canonical high-water
+record of the budget, epoch, exact policy terms, counts, issuance time, and
+last signed-status digest. A repeated count with different signed bytes is
+equivocation and halts; lower counts or older time are rollback. The target
+must compare the previously read high-water record and persist its advance
+atomically with the action nonce
+before a privileged effect. These codecs and transition checks alone do not
+provide the required durable issuer store, authenticated global current-head
+evidence, or physical recertification proof.
 If a ceiling is exhausted, no further renewal in that mode is accepted; the total ceiling
 blocks all further remote renewal until **physical re-certification** creates a new
 root-authorized epoch. An independent issuer may provide the new lease only after the

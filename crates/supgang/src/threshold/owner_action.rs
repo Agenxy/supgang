@@ -15,6 +15,7 @@ use crate::{
     threshold::{
         Digest, Error, array, canonical, fixed,
         status::{Scope as StatusScope, SignedStatus},
+        status_renewal::{Ledger as StatusLedger, SignedPolicy},
         step::{
             Chain, Status as ChainStatus,
             grant::{Grant, Presence, SignerRole, TargetScope},
@@ -310,14 +311,25 @@ impl Assertion {
     }
 }
 
-/// Target-owned storage must atomically confirm issue, mark challenge used and
-/// durably spend the assertion nonce before the consumer operation executes.
+/// Target-owned storage must atomically confirm issue and spend the action.
+///
+/// The one transaction compares the previously read status high-water mark,
+/// marks the challenge used, durably spends the assertion nonce, and advances
+/// status high-water state before the consumer effect.
 pub trait SpendLedger {
     /// Redeem once, with a retained spent record through expiry plus clock skew.
     ///
     /// # Errors
-    /// Refuses unknown/used challenges, duplicate nonces or an unsafe write.
-    fn redeem(&mut self, challenge: &Challenge, signer_node: NodeId, retain_until: u64) -> Result<(), Error>;
+    /// Refuses unknown/used challenges, duplicate nonces, a changed previous
+    /// status mark, or an unsafe write.
+    fn redeem(
+        &mut self,
+        challenge: &Challenge,
+        signer_node: NodeId,
+        retain_until: u64,
+        expected_status: StatusLedger,
+        next_status: StatusLedger,
+    ) -> Result<(), Error>;
 }
 
 /// An uninhabited runtime gate. Package 8 custody, a current-head status
@@ -331,6 +343,10 @@ pub struct RemapVerification<'a> {
     pub chain: &'a Chain,
     /// Root-signed shared status at the current head.
     pub status: &'a SignedStatus,
+    /// Root-signed draft renewal policy at the same head.
+    pub status_policy: &'a SignedPolicy,
+    /// Protected target high-water state to advance atomically with nonce spend.
+    pub status_ledger: &'a StatusLedger,
     /// Root-signed signer-device membership.
     pub membership: &'a SignedMembership,
     /// Root-signed member revocation snapshot.
@@ -394,7 +410,7 @@ pub fn verify_remap_action(
     {
         return Err(Error::Authority);
     }
-    input.status.verify(
+    let next_status = input.status.verify(
         &chain.group().public_key,
         &StatusScope {
             hive: chain.hive(),
@@ -403,6 +419,8 @@ pub fn verify_remap_action(
             grant_floor: chain.grant_revocation_serial(),
             now: input.now,
             maximum_age: input.maximum_status_age,
+            policy: input.status_policy,
+            ledger: input.status_ledger,
         },
     )?;
     assertion.verify_binding(grant, input.challenge, input.current_request, input.target, input.now)?;
@@ -410,7 +428,13 @@ pub fn verify_remap_action(
         .expires_at
         .checked_add(MAX_REMAP_ASSERTION_AGE)
         .ok_or(Error::Bound)?;
-    ledger.redeem(input.challenge, assertion.signer_node, retain_until)
+    ledger.redeem(
+        input.challenge,
+        assertion.signer_node,
+        retain_until,
+        *input.status_ledger,
+        next_status,
+    )
 }
 
 fn hash(domain: &[u8], bytes: &[u8]) -> Digest {

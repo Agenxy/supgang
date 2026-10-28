@@ -2,14 +2,17 @@
 //!
 //! No live issuer exists yet. A valid signature bounds staleness; it cannot by
 //! itself prove that an isolated issuer knew about a newer root operation.
-//! The owner-approved renewal budget and monotonic issuer ledger are not yet
-//! represented, so this codec alone cannot enable privileged actions.
+//! Renewal policy and ledger fields are draft, pending owner decisions and
+//! physically proven atomic storage. This codec cannot enable privileged actions.
 
 use minicbor::{Decoder, Encoder};
 
 use crate::{
     ids::HiveId,
-    threshold::{Digest, Error, array, canonical, fixed},
+    threshold::{
+        Digest, Error, array, canonical, fixed,
+        status_renewal::{Counts, Ledger, Mode, SignedPolicy},
+    },
 };
 
 /// Fixed protocol ceiling; a consumer or owner policy can require less.
@@ -19,7 +22,7 @@ pub const DOMAIN: &[u8] = b"supgang/root-status/v1\0";
 
 /// Protected local constraints against which a signed status is checked.
 #[derive(Clone, Copy)]
-pub struct Scope {
+pub struct Scope<'a> {
     /// Pinned founding hive.
     pub hive: HiveId,
     /// Current authenticated root-chain head.
@@ -32,6 +35,10 @@ pub struct Scope {
     pub now: u64,
     /// Owner-approved age further narrowed by consumer policy.
     pub maximum_age: u64,
+    /// Root-signed renewal terms for this exact status head.
+    pub policy: &'a SignedPolicy,
+    /// Target's protected monotonic high-water state.
+    pub ledger: &'a Ledger,
 }
 
 /// Root-authorized status at one exact chain head.
@@ -49,6 +56,16 @@ pub struct Status {
     pub issued_at: u64,
     /// Last UNIX second at which this status can be used.
     pub expires_at: u64,
+    /// Domain-separated identity of the exact root-signed renewal policy.
+    pub policy_digest: Digest,
+    /// Random renewal-budget identity.
+    pub budget_id: [u8; 16],
+    /// Physical recertification epoch.
+    pub epoch: u64,
+    /// How this lease consumed its renewal budget.
+    pub mode: Mode,
+    /// Cumulative counts under the policy's three independent caps.
+    pub counts: Counts,
 }
 
 impl Status {
@@ -61,14 +78,21 @@ impl Status {
             return Err(Error::Bound);
         }
         let mut e = Encoder::new(Vec::new());
-        e.array(7)?
+        e.array(14)?
             .u8(1)?
             .bytes(self.hive.as_bytes())?
             .bytes(&self.root_head)?
             .u64(self.member_serial)?
             .u64(self.grant_serial)?
             .u64(self.issued_at)?
-            .u64(self.expires_at)?;
+            .u64(self.expires_at)?
+            .bytes(&self.policy_digest)?
+            .bytes(&self.budget_id)?
+            .u64(self.epoch)?
+            .str(self.mode.text())?
+            .u64(self.counts.policy)?
+            .u64(self.counts.presence)?
+            .u64(self.counts.total)?;
         Ok(e.into_writer())
     }
 
@@ -81,7 +105,7 @@ impl Status {
             return Err(Error::Bound);
         }
         let mut d = Decoder::new(bytes);
-        array(&mut d, 7)?;
+        array(&mut d, 14)?;
         if d.u8()? != 1 {
             return Err(Error::Invalid);
         }
@@ -92,6 +116,15 @@ impl Status {
             grant_serial: d.u64()?,
             issued_at: d.u64()?,
             expires_at: d.u64()?,
+            policy_digest: fixed(&mut d)?,
+            budget_id: fixed(&mut d)?,
+            epoch: d.u64()?,
+            mode: Mode::parse(d.str()?)?,
+            counts: Counts {
+                policy: d.u64()?,
+                presence: d.u64()?,
+                total: d.u64()?,
+            },
         };
         canonical(bytes, &status.encode()?)?;
         Ok(status)
@@ -101,14 +134,28 @@ impl Status {
     ///
     /// # Errors
     /// Refuses stale/future status, an unknown head, rollback, or a weaker policy.
-    pub fn check(&self, scope: &Scope) -> Result<(), Error> {
-        if scope.maximum_age == 0 || scope.maximum_age > MAX_STATUS_AGE {
+    pub fn check(&self, scope: &Scope<'_>) -> Result<(), Error> {
+        let policy = &scope.policy.policy;
+        if scope.maximum_age == 0 || scope.maximum_age > policy.maximum_age {
             return Err(Error::Bound);
         }
-        if self.hive != scope.hive {
+        if self.hive != scope.hive || self.hive != policy.hive {
             return Err(Error::Authority);
         }
-        if self.root_head != scope.head {
+        if self.root_head != scope.head || scope.head != policy.root_head {
+            return Err(Error::Authority);
+        }
+        if self.policy_digest != policy.content_digest()?
+            || self.budget_id != policy.budget_id
+            || self.epoch != policy.epoch
+        {
+            return Err(Error::Authority);
+        }
+        self.counts.check(policy)?;
+        if (self.mode == Mode::Initial && self.counts != Counts::default())
+            || (self.mode == Mode::Policy && self.counts.policy == 0)
+            || (self.mode == Mode::Presence && self.counts.presence == 0)
+        {
             return Err(Error::Authority);
         }
         if self.member_serial < scope.member_floor || self.grant_serial < scope.grant_floor {
@@ -179,7 +226,8 @@ impl SignedStatus {
     ///
     /// # Errors
     /// Refuses weak keys, invalid signatures, stale status, or rollback.
-    pub fn verify(&self, root_key: &[u8; 32], scope: &Scope) -> Result<(), Error> {
+    pub fn verify(&self, root_key: &[u8; 32], scope: &Scope<'_>) -> Result<Ledger, Error> {
+        scope.policy.verify(root_key, scope.hive, scope.head)?;
         self.status.check(scope)?;
         let key = ed25519_dalek::VerifyingKey::from_bytes(root_key).map_err(|_| Error::Proof)?;
         if key.is_weak() {
@@ -188,6 +236,14 @@ impl SignedStatus {
         let mut message = DOMAIN.to_vec();
         message.extend_from_slice(&self.status.encode()?);
         key.verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&self.signature))
-            .map_err(|_| Error::Proof)
+            .map_err(|_| Error::Proof)?;
+        let digest = crate::threshold::hash(&self.encode()?);
+        scope.ledger.draft_observe(
+            &scope.policy.policy,
+            self.status.mode,
+            self.status.counts,
+            self.status.issued_at,
+            digest,
+        )
     }
 }
