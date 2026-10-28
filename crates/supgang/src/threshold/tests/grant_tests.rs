@@ -13,7 +13,7 @@ fn owner_grant(chain: &Chain, id: u8) -> Result<Grant, Error> {
         hive: chain.hive(),
         id: [id; 16],
         kind: Kind::OwnerAction,
-        consumer: "org.agenxy.remap".into(),
+        consumer: "org.agenxy.Remap".into(),
         signer: signer.public_key(),
         signer_node: device_node_id(signer.public_key()),
         signer_role: SignerRole::OwnerPresence,
@@ -53,6 +53,7 @@ fn typed_grant_and_monotonic_revocation_advance_only_under_root() -> TestResult 
     let f = fixture(3)?;
     let mut chain = f.chain;
     let grant = owner_grant(&chain, 1)?;
+    assert_eq!(Grant::decode(&grant.encode()?)?.consumer, "org.agenxy.Remap");
     let signed = sign(&f.root, &grant_step(&chain, &grant)?, &[1, 2])?;
     assert_eq!(chain.accept(signed)?, Outcome::Accepted);
     assert!(chain.grant(&grant.id).is_some());
@@ -91,6 +92,9 @@ fn grant_refuses_cross_hive_stale_head_bad_proof_and_presence_downgrade() -> Tes
     assert!(grant_step(&chain, &bad).is_err());
     bad = grant.clone();
     bad.possession = [0; 64];
+    assert!(bad.encode().is_err());
+    bad = grant.clone();
+    bad.operations.first_mut().ok_or(Error::Invalid)?.name = "remap.dns.Activate".into();
     assert!(bad.encode().is_err());
     bad = grant;
     bad.signer_role = SignerRole::Device;

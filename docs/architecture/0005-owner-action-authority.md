@@ -51,7 +51,7 @@ monotonic revocation rules with ADR 0007's release and code-signing roles. Its `
 | --- | --- |
 | `hive_id`, `grant_id`, `kind` | Exact hive, a random never-reused 16-byte grant identity, and `owner-action`. |
 | `signer` | Exact enrolled public key and algorithm, bound to a device or owner credential with a possession proof. |
-| `consumer_id` | Stable product identifier, such as `org.agenxy.remap`; no wildcard consumer. |
+| `consumer_id` | Exact, case-sensitive product identifier, such as Remap's `org.agenxy.Remap`; no wildcard consumer. |
 | `operations` | Sorted, bounded, closed set of consumer-defined operation identifiers. |
 | `presence` | Per-operation `required` or `policy`; the assertion cannot choose or downgrade it. |
 | `target_scope` | Tagged `node(NodeId)` or `hive_nodes(HiveId)`; no implicit wildcard or name lookup. |

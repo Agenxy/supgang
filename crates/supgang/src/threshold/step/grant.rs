@@ -155,7 +155,7 @@ impl Grant {
     /// # Errors
     /// Refuses an invalid consumer, ID, or unimplemented grant kind.
     pub fn possession_message(&self) -> Result<Vec<u8>, Error> {
-        if self.kind != Kind::OwnerAction || self.id == [0; 16] || !valid_name(&self.consumer, 96) {
+        if self.kind != Kind::OwnerAction || self.id == [0; 16] || !valid_consumer_id(&self.consumer) {
             return Err(Error::Invalid);
         }
         let mut e = Encoder::new(Vec::new());
@@ -413,5 +413,16 @@ fn valid_name(value: &str, maximum: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.' || byte == b'-')
+        && !value.contains("..")
+}
+
+fn valid_consumer_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && !value.starts_with(['.', '-'])
+        && !value.ends_with(['.', '-'])
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'.' || byte == b'-')
         && !value.contains("..")
 }

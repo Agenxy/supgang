@@ -28,7 +28,7 @@ fn required_remap_assertion_binds_exact_challenge_request_and_target() -> TestRe
         hive,
         id: [5; 16],
         kind: Kind::OwnerAction,
-        consumer: "org.agenxy.remap".into(),
+        consumer: "org.agenxy.Remap".into(),
         signer: signer_key,
         signer_node,
         signer_role: SignerRole::OwnerPresence,
@@ -76,6 +76,13 @@ fn required_remap_assertion_binds_exact_challenge_request_and_target() -> TestRe
         .to_bytes();
     let decoded = Assertion::decode(&assertion.encode()?)?;
     decoded.verify_binding(&grant, &challenge, &request, target, 160)?;
+    let mut wrong_case_grant = grant.clone();
+    wrong_case_grant.consumer = "org.agenxy.remap".into();
+    assert!(
+        decoded
+            .verify_binding(&wrong_case_grant, &challenge, &request, target, 160)
+            .is_err()
+    );
     assert!(
         decoded
             .verify_binding(&grant, &challenge, b"changed-plan", target, 160)

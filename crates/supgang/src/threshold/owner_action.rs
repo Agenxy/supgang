@@ -25,15 +25,16 @@ use crate::{
 const ACTION_DOMAIN: &[u8] = b"supgang/owner-action/v1\0";
 const REQUEST_DOMAIN: &[u8] = b"supgang/action-request/v1\0";
 const CHALLENGE_DOMAIN: &[u8] = b"supgang/owner-action-challenge/v1\0";
-const REMAP_CONSUMER: &str = "org.agenxy.remap";
+const REMAP_CONSUMER: &str = "org.agenxy.Remap";
 const MAX_REMAP_ASSERTION_AGE: u64 = 5 * 60;
 const MAX_REQUEST_BYTES: usize = 4 * 1024;
 
-fn remap_operation_allowed(operation: &str) -> bool {
-    matches!(
-        operation,
-        "remap.dns.activate" | "remap.dns.deactivate" | "remap.system.update" | "remap.system.recover"
-    )
+fn remap_scope_allowed(consumer: &str, operation: &str) -> bool {
+    consumer == REMAP_CONSUMER
+        && matches!(
+            operation,
+            "remap.dns.activate" | "remap.dns.deactivate" | "remap.system.update" | "remap.system.recover"
+        )
 }
 
 /// Exact challenge produced and retained by the target's consumer helper.
@@ -368,10 +369,7 @@ pub fn verify_remap_action(
 ) -> Result<(), Error> {
     let chain = input.chain;
     let assertion = input.assertion;
-    if chain.status() != ChainStatus::Active
-        || assertion.consumer != REMAP_CONSUMER
-        || !remap_operation_allowed(&assertion.operation)
-    {
+    if chain.status() != ChainStatus::Active || !remap_scope_allowed(&assertion.consumer, &assertion.operation) {
         return Err(Error::Authority);
     }
     let grant = chain.grant(&assertion.grant_id).ok_or(Error::Authority)?;
@@ -424,7 +422,7 @@ fn hash(domain: &[u8], bytes: &[u8]) -> Digest {
 
 #[cfg(test)]
 mod tests {
-    use super::remap_operation_allowed;
+    use super::remap_scope_allowed;
 
     #[test]
     fn remap_allows_only_its_four_amended_owner_actions() {
@@ -434,7 +432,7 @@ mod tests {
             "remap.system.update",
             "remap.system.recover",
         ] {
-            assert!(remap_operation_allowed(operation));
+            assert!(remap_scope_allowed("org.agenxy.Remap", operation));
         }
         for operation in [
             "remap.system.install",
@@ -443,7 +441,9 @@ mod tests {
             "remap.system.update.release",
             "org.agenxy.k7.update",
         ] {
-            assert!(!remap_operation_allowed(operation));
+            assert!(!remap_scope_allowed("org.agenxy.Remap", operation));
         }
+        assert!(!remap_scope_allowed("org.agenxy.remap", "remap.dns.activate"));
+        assert!(!remap_scope_allowed("org.agenxy.remap", "remap.system.update"));
     }
 }
