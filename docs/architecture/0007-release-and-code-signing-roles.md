@@ -1,6 +1,8 @@
 # ADR 0007: Release and code-signing roles
 
-Status: Proposed for owner and consumer review; no protocol or API in this ADR is implemented.
+Status: Accepted by the owner, 28 and 29 Oct 2026. No runtime path is enabled. The release-statement
+codec is in progress, stacked on ADR 0005's PR. Nothing is advertised before the acceptance gates
+below pass.
 
 Date: 2026-10-27
 
@@ -185,7 +187,9 @@ decoding failure, never an extension.
     verification, exactly as in ADR 0003;
   - `assertion` is null exactly when the grant's presence is `unattended`;
   - otherwise `assertion` holds the ADR 0005 assertion encoding, for consumer
-    `org.agenxy.supgang`, operation `release.sign` and this statement digest.
+    `org.agenxy.supgang` and operation `release.sign`. Its request digest is
+    SHA-256(`supgang/action-request/v1\0` || statement digest): the release domain sits inside
+    ADR 0005's generic owner-action request domain.
 
 The role-grant encoding is the shared typed-grant codec of ADR 0005, with kinds `release` and
 `code-signing`. It is not redefined here. Frozen vectors for grant, status, signed statement and
@@ -242,6 +246,21 @@ native path too. A root-owned helper installs the files from root-owned staging 
 them. Running that helper still needs `sudo` until ADR 0005 replaces it with an owner-action
 assertion.
 
+## K7 deck signers
+
+K7 ADR 0166 (kassettes/kassette#2235) grants scoped deck signers natively. Its terms:
+
+- a grant covers `deck.run` only;
+- a grant lasts at most 90 days;
+- each `image_prefixes` entry ends at a `/`, `:` or `@` boundary;
+- the issuer is directly trusted, and grants never chain.
+
+These plug into this ADR as a third role kind, `deck-signing`, for consumer `org.agenxy.k7`, under
+the same terms. The root issues them directly and no role key can issue another. K7's native
+signer stays its default, and K7 verifies the role with its own verifier against frozen
+vectors. The kind's exact fields and vectors are a later amendment to this ADR, written with
+K7.
+
 ## Custody and sequencing
 
 Both roles rest on the root and on the role keys staying where the owner put them.
@@ -254,6 +273,11 @@ Both roles rest on the root and on the role keys staying where the owner put the
 - Root grants are signed by the hive root. Until ADR 0004's threshold root is operational, that
   root is a single file-held key. Each role grant then carries that limitation in its prompt,
   and consumers keep the role path off by default.
+- The end state, shared with K7 (kassettes/kassette#2260), is hardware-rooted custody for
+  every root share and role key: a P-256 Secure Enclave key, or an Ed25519 key sealed by the
+  Secure Enclave (package 8's sealed blob). Every root-scope signature requires user presence.
+  Unattended role keys are the only hardware keys that sign without presence, and only within
+  their grant.
 
 Order of work:
 
@@ -308,10 +332,9 @@ Adversarial vectors to ship as tests, one each:
 
 ## Review
 
-Open for the owner:
-
-- whether `unattended` is wanted at all in the first release;
-- the default maximum status age (7 days proposed).
+Owner decisions (28 Oct): `unattended` is in the first release, within the bounds above. The
+maximum status age is 7 days, and a consumer may require shorter. ADR 0005's status-issuer,
+renewal and ledger defaults are accepted as proposed.
 
 Remap's default channel is `stable`, so an unattended role can never publish there.
 
