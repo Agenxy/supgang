@@ -1,8 +1,8 @@
 # ADR 0007: Release and code-signing roles
 
-Status: Accepted by the owner, 28 and 29 Oct 2026. No runtime path is enabled. The release-statement
-codec is in progress, stacked on ADR 0005's PR. Nothing is advertised before the acceptance gates
-below pass.
+Status: Accepted by the owner, 28 and 29 Oct 2026; amended 29 Oct (release binding, check
+times, authority bundle). No runtime path is enabled. The release-statement codec is in progress,
+stacked on ADR 0005's PR. Nothing is advertised before the acceptance gates below pass.
 
 Date: 2026-10-27
 
@@ -90,8 +90,9 @@ A release is a **release statement**. It is canonical CBOR, signed under domain
   for a new install or update, so a frozen mirror shows up as a failure instead of being
   accepted.
 - for `presence: carried-device`, an ADR 0005 owner-action assertion. The assertion names
-  consumer `org.agenxy.supgang`, operation `release.sign`, and the statement's digest without
-  this field. It is signed by an owner-held key on a device the owner carries, under that
+  consumer `org.agenxy.supgang` and operation `release.sign`, and binds the statement's content,
+  the statement without this field. The carried device shows that parsed content before it asks
+  for presence, so the owner never approves a bare digest. It is signed by an owner-held key on a device the owner carries, under that
   device's own presence prompt.
 
 **Presence modes.** `carried-device` is the default. It moves the Touch ID from the signing Mac
@@ -134,12 +135,45 @@ role checks in its own verifier, with no Supgang code, against the frozen wire s
 and test vectors listed under acceptance. A consumer that runs as root at install time cannot
 depend on a sibling program. The checks:
 
-- the role grant is root-signed on the pinned hive;
-- a root-signed status shows the role and its signer devices unrevoked. The status must be no
-  older than the consumer's stated maximum age, at most 7 days.
-- the statement and its assertion verify;
+- the role grant is root-signed on the pinned hive and valid at verification time, and the
+  statement's `issued_at` lies within the grant's validity;
+- a root-signed status names the role among its active grants and every signer device among
+  its active members. A serial alone cannot show this. The status must be no older than the
+  consumer's stated maximum age, at most 7 days.
+- the statement verifies. For `carried-device`, its assertion verifies as of signing, not as of
+  install (below);
 - version, channel and expiry rules hold;
 - the artifact bytes match.
+
+**Time of each check.** A consumer may install a release days after it was signed. The
+statement's own expiry, at most 30 days, governs installation. The assertion is short-lived and
+records one approval at signing time, so the consumer judges it at that time:
+
+- the assertion's `issued_at` is no earlier than the statement's `issued_at`;
+- its window obeys ADR 0005's maximum;
+- the owner-action grant was valid at the assertion's `issued_at`, and the current status lists
+  it as active.
+
+The consumer never compares the assertion's expiry with install time. A revoked owner-presence
+key or owner-action grant still refuses every release it approved, because the status no
+longer lists it. Challenge freshness and nonce consumption are the signing host's checks. A
+later consumer cannot repeat them, and only requires a non-null `challenge_digest`.
+
+**Release authority bundle.** The role path's root evidence travels as one canonical CBOR file,
+at most 262 144 bytes:
+
+```text
+[1, role_step:bytes, role_signature:b64, owner_step:bytes-or-null,
+ owner_signature:b64-or-null, status:bytes]
+```
+
+- Each step is an ADR 0004 `RootStep/v1` that issues a grant, signed by the current root under
+  `supgang/root-step/v1\0`.
+- The owner fields are null exactly when the role's presence is `unattended`.
+- `status` is the ADR 0005 signed status lease.
+- After a root succession, the bundle would also need the succession steps. Until ADR 0004
+  specifies those for consumers, a succession fails the role path closed and leaves the native
+  path.
 
 The consumer obtains the grant and status bundle from Supgang when it is present. It can also
 take the bundle as a file shipped beside the package, because the root signatures make the
@@ -185,7 +219,8 @@ decoding failure, never an extension.
   - `issued_at` is no later than `expires_at`, and `expires_at` is at most 2 592 000 seconds
     (30 days) later.
 - **Statement digest.** SHA-256 of `supgang/release/v1\0` followed by the content bytes. The
-  role signers sign the same prefixed bytes. The ADR 0005 assertion binds this digest.
+  role signers sign the same prefixed bytes. The ADR 0005 assertion binds the same content
+  bytes (below).
 - **Signed statement.** `[1, content:bytes, assertion:bytes-or-null, [[signer:u8, signature:b64]...]]`,
   at most 16 384 bytes in total. Further bounds:
   - `signer` is the index of a key in the grant's `signers`, strictly ascending and unique;
@@ -194,9 +229,16 @@ decoding failure, never an extension.
     verification, exactly as in ADR 0003;
   - `assertion` is null exactly when the grant's presence is `unattended`;
   - otherwise `assertion` holds the ADR 0005 assertion encoding, for consumer
-    `org.agenxy.supgang` and operation `release.sign`. Its request digest is
-    SHA-256(`supgang/action-request/v1\0` || statement digest): the release domain sits inside
-    ADR 0005's generic owner-action request domain.
+    `org.agenxy.supgang` and operation `release.sign`. Its signer is an `owner-presence` signer
+    of a root-signed owner-action grant whose operations include `release.sign` with presence
+    `required`.
+  - The canonical consumer request for `release.sign` is the content bytes, so the request
+    digest is SHA-256(`supgang/action-request/v1\0` || content), ADR 0005's generic rule
+    unchanged.
+  - The target-issued challenge carries those content bytes. The carried device decodes them
+    with this codec and builds its prompt only from the parsed fields: consumer, channel,
+    version, each artifact's target, length and SHA-256, the source commit, and expiry. It
+    refuses content that does not decode, and never shows a digest alone for approval.
 
 **Role grant.** Every grant kind, ADR 0005's owner action included, shares one top-level array
 of exactly 12 elements:
@@ -212,6 +254,9 @@ The shared fields:
   joins it by amendment.
 - `consumer` is 1 to 128 bytes, compared byte for byte.
 - `not_after - not_before` is at most 31 622 400 seconds (366 days).
+- `issuer_head` and `issuer_sequence` are the digest and sequence of the root step just before
+  the issuing step. The issuing step's predecessor equals `issuer_head`, and its sequence is
+  `issuer_sequence + 1`.
 - A signer is `[algorithm:text, key:bytes, node:b32, class:text, custody:text, possession:b64]`.
   - `algorithm` is `p256` (a 33-byte compressed key) or `ed25519` (a 32-byte key).
   - `node` is the member device that holds the key. Revoking that device ends the grant.
@@ -220,6 +265,9 @@ The shared fields:
     `owner-presence`. Release and code-signing grants allow only `role-key`.
   - `custody` is ADR 0003's closed set, `hardware`, `file` or `synced`. It is enrolled and
     labelled, never proven, and role signers refuse `synced`.
+  - An `owner-presence` signer is `p256` with custody `hardware`. The class means a Secure
+    Enclave key that prompts for each signature. Any other algorithm or label contradicts the
+    class, so the grant does not decode.
   - `possession` is the key's own signature over `supgang/role-possession/v1\0` followed by
     the canonical array `[1, hive, id, kind, consumer, algorithm, key, node, class, custody]`.
 - There are 1 to 3 signers, strictly ascending by `(algorithm, key)` byte order, and no key
@@ -252,7 +300,17 @@ The owner-action payload is `[target, operations]`, as ADR 0005 defines.
 
 Frozen vectors for grant, status, signed statement and
 assertion are published together, each with a valid form and one tampered form per refusal
-listed under acceptance. They come with a manifest of their SHA-256 hashes, which consumers
+listed under acceptance. Rules for the tampered forms:
+
+- Each tampered form has exactly one fault. Every signature, possession proof and binding is
+  recomputed after the tampering, so a verifier that checks signatures first still reaches
+  the named check.
+- Each of the four records also has encoding refusals: a non-shortest integer, an
+  indefinite length, a tag, trailing bytes, and one extra field.
+- The verification time lies after the assertion's and the owner-action grant's expiry, so
+  the time rules above are exercised rather than hidden.
+
+They come with a manifest of their SHA-256 hashes, which consumers
 vendor by hash. A vector set is frozen only after the owner has settled the open values in
 ADR 0005 and in this ADR. Until then it is labelled draft.
 
