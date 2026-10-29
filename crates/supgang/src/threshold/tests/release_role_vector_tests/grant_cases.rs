@@ -2,6 +2,43 @@
 
 use super::*;
 
+pub(super) fn write_pairings(
+    output: &Path,
+    records: &mut Vec<serde_json::Value>,
+    release_bytes: &[u8],
+    code_bytes: &[u8],
+) -> TestResult {
+    save(
+        output,
+        records,
+        "refuse-release-with-code-signing-grant.cbor",
+        code_bytes,
+        "reject: pair with release-statement.cbor; code-signing kind cannot authorize release",
+    )?;
+    save(
+        output,
+        records,
+        "refuse-code-signing-with-release-grant.cbor",
+        release_bytes,
+        "reject: check against code-signing-grant.cbor; release kind cannot authorize code-signing identifier",
+    )?;
+    save(
+        output,
+        records,
+        "code-signing-identifier-exact.txt",
+        b"org.agenxy.Remap",
+        "accept: check against code-signing-grant.cbor; exact code-signing identifier",
+    )?;
+    save(
+        output,
+        records,
+        "refuse-code-signing-prefix-identifier.txt",
+        b"org.agenxy.Remap.helper",
+        "reject: check against code-signing-grant.cbor; prefix extension is not exact identifier",
+    )?;
+    Ok(())
+}
+
 pub(super) fn write(
     output: &Path,
     records: &mut Vec<serde_json::Value>,

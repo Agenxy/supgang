@@ -43,6 +43,7 @@ const NOW: u64 = 1_780_000_000;
 const VERIFY_AT: u64 = NOW + 2 * 60 * 60;
 
 mod adversarial;
+mod auxiliary;
 mod bounds;
 mod certificate;
 mod encoding;
@@ -186,34 +187,7 @@ fn generate_release_role_vectors() -> TestResult {
         &certificate,
         "accept: public test certificate used by code-signing role",
     )?;
-    save(
-        &output,
-        &mut records,
-        "refuse-release-with-code-signing-grant.cbor",
-        &code_bytes,
-        "reject: pair with release-statement.cbor; code-signing kind cannot authorize release",
-    )?;
-    save(
-        &output,
-        &mut records,
-        "refuse-code-signing-with-release-grant.cbor",
-        &release_bytes,
-        "reject: check against code-signing-grant.cbor; release kind cannot authorize code-signing identifier",
-    )?;
-    save(
-        &output,
-        &mut records,
-        "code-signing-identifier-exact.txt",
-        b"org.agenxy.Remap",
-        "accept: check against code-signing-grant.cbor; exact code-signing identifier",
-    )?;
-    save(
-        &output,
-        &mut records,
-        "refuse-code-signing-prefix-identifier.txt",
-        b"org.agenxy.Remap.helper",
-        "reject: check against code-signing-grant.cbor; prefix extension is not exact identifier",
-    )?;
+    grant_cases::write_pairings(&output, &mut records, &release_bytes, &code_bytes)?;
 
     let owner = owner_grant(hive, 12, code_head, 3, target, NOW + 3600)?;
     let owner_bytes = owner.encode()?;
@@ -241,66 +215,10 @@ fn generate_release_role_vectors() -> TestResult {
         "accept: root signature over owner-action grant step",
     )?;
 
-    let multi_base = role_grant(
-        hive,
-        24,
-        (owner_head, 4),
-        (9, SubjectCustody::File),
-        release_policy(ReleasePresence::CarriedDevice, 4),
-        (NOW - 1000, NOW + 90 * 24 * 60 * 60 - 1000),
-    )?;
-    let multi_role = bounds::three_signers(&multi_base)?;
-    let multi_bytes = multi_role.encode()?;
-    let (multi_step, multi_signature) = root_step(&root, owner_head, 5, multi_bytes.clone(), proposer)?;
-    let multi_head = multi_step.digest()?;
-    save(
-        &output,
-        &mut records,
-        "multi-signer-role.cbor",
-        &multi_bytes,
-        "accept: root-issued threshold-three release role",
-    )?;
-    save(
-        &output,
-        &mut records,
-        "multi-signer-role-step.cbor",
-        &multi_step.encode()?,
-        "accept: root step enrolling all three release signers",
-    )?;
-    save(
-        &output,
-        &mut records,
-        "multi-signer-role-step.sig",
-        &multi_signature,
-        "accept: root signature over multi-signer role step",
-    )?;
-
-    let owner_expiry = owner_grant(hive, 13, multi_head, 5, target, VERIFY_AT + 3600)?;
-    let owner_expiry_bytes = owner_expiry.encode()?;
-    let (owner_expiry_step, owner_expiry_signature) =
-        root_step(&root, multi_head, 6, owner_expiry_bytes.clone(), proposer)?;
-    let head = owner_expiry_step.digest()?;
-    save(
-        &output,
-        &mut records,
-        "owner-expiry-grant.cbor",
-        &owner_expiry_bytes,
-        "accept: second owner-action grant valid at verification time",
-    )?;
-    save(
-        &output,
-        &mut records,
-        "owner-expiry-grant-step.cbor",
-        &owner_expiry_step.encode()?,
-        "accept: root-issued second owner-action grant step",
-    )?;
-    save(
-        &output,
-        &mut records,
-        "owner-expiry-grant-step.sig",
-        &owner_expiry_signature,
-        "accept: root signature over second owner-action grant step",
-    )?;
+    let auxiliary = auxiliary::write(&output, &mut records, &root, hive, owner_head, target, proposer)?;
+    let multi_role = auxiliary.multi_role;
+    let owner_expiry = auxiliary.owner_expiry;
+    let head = auxiliary.head;
 
     let policy = Policy {
         hive,
@@ -595,12 +513,14 @@ fn generate_release_role_vectors() -> TestResult {
     statement_cases::write(
         &output,
         &mut records,
-        &carried,
-        &unattended_statement,
-        &assertion,
-        &owner_expiry,
-        &release_key,
-        &presence_key,
+        &statement_cases::Context {
+            carried: &carried,
+            unattended_statement: &unattended_statement,
+            assertion: &assertion,
+            owner_expiry: &owner_expiry,
+            release_key: &release_key,
+            presence_key: &presence_key,
+        },
     )?;
     grant_cases::write(
         &output,

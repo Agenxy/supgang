@@ -2,16 +2,24 @@
 
 use super::*;
 
-pub(super) fn write(
-    output: &Path,
-    records: &mut Vec<serde_json::Value>,
-    carried: &SignedStatement,
-    unattended_statement: &SignedStatement,
-    assertion: &Assertion,
-    owner_expiry: &Grant,
-    release_key: &FileDeviceKey,
-    presence_key: &FileDeviceKey,
-) -> TestResult {
+pub(super) struct Context<'a> {
+    pub carried: &'a SignedStatement,
+    pub unattended_statement: &'a SignedStatement,
+    pub assertion: &'a Assertion,
+    pub owner_expiry: &'a Grant,
+    pub release_key: &'a FileDeviceKey,
+    pub presence_key: &'a FileDeviceKey,
+}
+
+pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, context: &Context<'_>) -> TestResult {
+    let Context {
+        carried,
+        unattended_statement,
+        assertion,
+        owner_expiry,
+        release_key,
+        presence_key,
+    } = *context;
     let mut bad_signature = carried.clone();
     bad_signature
         .signatures
