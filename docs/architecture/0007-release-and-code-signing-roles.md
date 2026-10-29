@@ -212,13 +212,16 @@ The shared fields:
   joins it by amendment.
 - `consumer` is 1 to 128 bytes, compared byte for byte.
 - `not_after - not_before` is at most 31 622 400 seconds (366 days).
-- A signer is `[algorithm:text, key:bytes, node:b32, custody:text, possession:b64]`.
+- A signer is `[algorithm:text, key:bytes, node:b32, class:text, custody:text, possession:b64]`.
   - `algorithm` is `p256` (a 33-byte compressed key) or `ed25519` (a 32-byte key).
   - `node` is the member device that holds the key. Revoking that device ends the grant.
+  - `class` is the root-enrolled signer class, a closed set. An owner-action grant allows
+    `device` and `owner-presence`, and ADR 0005's required presence accepts only
+    `owner-presence`. Release and code-signing grants allow only `role-key`.
   - `custody` is ADR 0003's closed set, `hardware`, `file` or `synced`. It is enrolled and
     labelled, never proven, and role signers refuse `synced`.
   - `possession` is the key's own signature over `supgang/role-possession/v1\0` followed by
-    the canonical array `[1, hive, id, kind, consumer, algorithm, key, node, custody]`.
+    the canonical array `[1, hive, id, kind, consumer, algorithm, key, node, class, custody]`.
 - There are 1 to 3 signers, strictly ascending by `(algorithm, key)` byte order, and no key
   repeats. A statement's `signer` index refers to this order.
 - The threshold k satisfies 1 <= k <= the number of signers.
