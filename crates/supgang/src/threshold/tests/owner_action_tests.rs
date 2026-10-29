@@ -34,7 +34,7 @@ fn required_remap_assertion_binds_exact_challenge_request_and_target() -> TestRe
         signer: signer_key,
         signer_node,
         signer_role: SignerRole::OwnerPresence,
-        signer_custody: SubjectCustody::File,
+        signer_custody: SubjectCustody::Hardware,
         possession: [0; 64],
         not_before: 100,
         not_after: 600,
@@ -179,6 +179,8 @@ fn shared_status_requires_root_signature_current_head_serial_and_bounded_age() -
         root_head: [3; 32],
         member_serial: 4,
         grant_serial: 5,
+        active_grants: vec![[1; 16]],
+        active_members: vec![crate::ids::NodeId::from_bytes([2; 32])],
         issued_at: 100,
         expires_at: 160,
         policy_digest: policy.content_digest()?,
@@ -209,7 +211,7 @@ fn shared_status_requires_root_signature_current_head_serial_and_bounded_age() -
     let mut repeated = scope;
     repeated.ledger = &advanced;
     assert!(signed.verify(&key.verifying_key().to_bytes(), &repeated)? == advanced);
-    let mut equivocation = signed;
+    let mut equivocation = signed.clone();
     equivocation.status.expires_at = 159;
     let mut changed_message = STATUS_DOMAIN.to_vec();
     changed_message.extend_from_slice(&equivocation.status.encode()?);
@@ -218,13 +220,13 @@ fn shared_status_requires_root_signature_current_head_serial_and_bounded_age() -
         equivocation.verify(&key.verifying_key().to_bytes(), &repeated),
         Err(Error::Halted)
     ));
-    let mut wrong_budget = signed;
+    let mut wrong_budget = signed.clone();
     wrong_budget.status.budget_id = [9; 16];
     let mut changed_message = STATUS_DOMAIN.to_vec();
     changed_message.extend_from_slice(&wrong_budget.status.encode()?);
     wrong_budget.signature = key.sign(&changed_message).to_bytes();
     assert!(wrong_budget.verify(&key.verifying_key().to_bytes(), &scope).is_err());
-    let mut over_cap = signed;
+    let mut over_cap = signed.clone();
     over_cap.status.mode = Mode::Presence;
     over_cap.status.counts = Counts {
         policy: 0,

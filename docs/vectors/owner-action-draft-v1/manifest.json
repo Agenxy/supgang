@@ -1,34 +1,34 @@
 {
   "files": [
     {
-      "bytes": 451,
+      "bytes": 455,
       "expectation": "accept: typed grant payload",
       "file": "grant.cbor",
-      "sha256": "6a930b2d2d12c896f94ac02aa8b097792fee16fdd0b4636f57f305cb9ecb39f5"
+      "sha256": "6ae51bae942aade7387642aef2f8f4f936b4270b13dc8fdb61da0f79e989389e"
     },
     {
-      "bytes": 569,
+      "bytes": 573,
       "expectation": "accept: root step content",
       "file": "grant-step.cbor",
-      "sha256": "1c065b5deb97f7b3f09afbed6ca633ba734f0cdece75e324fa781af4879d50f3"
+      "sha256": "426a22e7acaecf9dcf114b5844592bd8eb746ca929f2d2fa9796264416f09784"
     },
     {
       "bytes": 64,
       "expectation": "accept: root signature over step domain and content",
       "file": "grant-step.sig",
-      "sha256": "b71c5f0c0a77ca2e05d9cf44bfa263317d95a386ef8d2527134b2c3f42616fbc"
+      "sha256": "c397e3cc98e5147544ccbfd45a2796c637863851108744df99137efd0826403c"
     },
     {
       "bytes": 166,
       "expectation": "accept: root-signed draft renewal terms",
       "file": "status-policy.cbor",
-      "sha256": "b4601f888d39a656b6057f09677e973878ea0da1687d0b886dc641fa46890805"
+      "sha256": "ddba32553d6034affbd5308851d579c85bb9c6e3e0f21f97196ba979277f43c1"
     },
     {
-      "bytes": 211,
+      "bytes": 264,
       "expectation": "accept: root-signed initial lease at time 1020",
       "file": "status.cbor",
-      "sha256": "9ae688f730f2490911db357d9ba8507b8ab0bbff862874a6ba38d1161752c285"
+      "sha256": "6a6eadc26f48ec76056eeecc666648602f545437c2268580fe3ec349f0d29923"
     },
     {
       "bytes": 156,
@@ -61,16 +61,16 @@
       "sha256": "9007fe2022d7c0982f9071d168e0d7a174908da72f5e4148bc289c60373fe8b4"
     },
     {
-      "bytes": 211,
+      "bytes": 264,
       "expectation": "reject: invalid root signature",
       "file": "status-bad-signature.cbor",
-      "sha256": "e0b0f1d3bdadb08ff799b231e0b89a92624d0455faa974bc861220352d0fe7fc"
+      "sha256": "315e76bde479e59327272dbb215c8ad0c8c2b73f0844d7369c4edd6e3ac39c78"
     },
     {
-      "bytes": 211,
+      "bytes": 264,
       "expectation": "reject: signed lease names another budget",
       "file": "status-wrong-budget.cbor",
-      "sha256": "3792541005b8aaa6778dee8423d12372810b5cd20f665472e7e2def49c6f1e1a"
+      "sha256": "af74e8dbd50ac8735dffde80d9b641ecddc73deb4c20e48dc4a3cd35481e9992"
     }
   ],
   "hive_hex": "e9089bac250fcc592a3a3578a962c256a1c4fc2c5be326066dfd693a1fb0f8f0",
@@ -81,7 +81,7 @@
     "physical hardware proof"
   ],
   "protocol": "owner-action-v1-proposal",
-  "root_head_hex": "1c065b5deb97f7b3f09afbed6ca633ba734f0cdece75e324fa781af4879d50f3",
+  "root_head_hex": "426a22e7acaecf9dcf114b5844592bd8eb746ca929f2d2fa9796264416f09784",
   "root_public_key_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
   "signer_public_key_hex": "031e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896e",
   "source_commit": "regenerate from current source; no immutable commit pin yet",

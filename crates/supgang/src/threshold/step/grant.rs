@@ -262,6 +262,9 @@ impl Grant {
         {
             return Err(Error::Bound);
         }
+        if self.signer_role == SignerRole::OwnerPresence && self.signer_custody != SubjectCustody::Hardware {
+            return Err(Error::Authority);
+        }
         let mut previous = "";
         for operation in &self.operations {
             if !valid_name(&operation.name, 64)

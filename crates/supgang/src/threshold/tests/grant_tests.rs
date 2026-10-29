@@ -23,7 +23,7 @@ fn owner_grant(chain: &Chain, id: u8) -> Result<Grant, Error> {
         signer: signer.public_key(),
         signer_node: device_node_id(signer.public_key()),
         signer_role: SignerRole::OwnerPresence,
-        signer_custody: SubjectCustody::File,
+        signer_custody: SubjectCustody::Hardware,
         possession: [0; 64],
         not_before: 100,
         not_after: 200,
@@ -104,7 +104,7 @@ fn grant_refuses_cross_hive_stale_head_bad_proof_and_presence_downgrade() -> Tes
     bad.operations.first_mut().ok_or(Error::Invalid)?.name = "remap.dns.Activate".into();
     assert!(bad.encode().is_err());
     bad = grant.clone();
-    bad.signer_custody = SubjectCustody::Hardware;
+    bad.signer_custody = SubjectCustody::File;
     assert!(bad.encode().is_err());
     bad = grant;
     bad.signer_role = SignerRole::Device;

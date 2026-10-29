@@ -212,7 +212,7 @@ fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
         signer: signer_key,
         signer_node,
         signer_role: SignerRole::OwnerPresence,
-        signer_custody: SubjectCustody::File,
+        signer_custody: SubjectCustody::Hardware,
         possession: [0; 64],
         not_before: 100,
         not_after: 1_000_000,
@@ -271,6 +271,8 @@ fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
         root_head: head,
         member_serial: 0,
         grant_serial: 0,
+        active_grants: vec![grant.id],
+        active_members: vec![signer_node],
         issued_at: 1000,
         expires_at: 1600,
         policy_digest: policy.content_digest()?,
@@ -400,7 +402,7 @@ fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
         &wrong_digest.encode()?,
         "reject: changed canonical request digest",
     )?;
-    let mut bad_status = signed_status;
+    let mut bad_status = signed_status.clone();
     bad_status.signature[0] ^= 1;
     save(
         output,
