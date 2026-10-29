@@ -45,6 +45,32 @@ pub(super) fn wants_on_link_path(
     })
 }
 
+/// A changed interface can advance the next bounded retry when it exposes an
+/// authenticated local route to a peer still reached indirectly. This evidence
+/// gate does not treat a self-claimed address as observed reachability; normal
+/// candidate policy still decides which address the retry may use.
+pub(super) fn on_link_retry_deadline(
+    active: &std::collections::BTreeMap<crate::ids::NodeId, super::active::ActiveConnection>,
+    directory: &crate::peer_directory::PeerDirectory,
+    observed_at: u64,
+    now: tokio::time::Instant,
+    next_dial: tokio::time::Instant,
+) -> tokio::time::Instant {
+    let Ok(networks) = crate::network::interface_networks() else {
+        return next_dial;
+    };
+    if active.keys().any(|peer| {
+        wants_on_link_path(active, *peer, &networks)
+            && !directory
+                .authenticated_on_link_routes(*peer, &networks, observed_at)
+                .is_empty()
+    }) {
+        now
+    } else {
+        next_dial
+    }
+}
+
 /// Keeps the preferred path and the other address family in every mixed batch.
 /// Rotates the remaining hints within the same fixed packet-attempt budget.
 pub(super) fn candidate_batch(addresses: &[std::net::SocketAddr], cycle: usize) -> Vec<std::net::SocketAddr> {
