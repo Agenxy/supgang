@@ -138,8 +138,9 @@ depend on a sibling program. The checks:
 - the role grant is root-signed on the pinned hive and valid at verification time, and the
   statement's `issued_at` lies within the grant's validity;
 - a root-signed status names the role among its active grants and every signer device among
-  its active members. A serial alone cannot show this. The status must be no older than the
-  consumer's stated maximum age, at most 7 days.
+  its active members. Active means issued and not revoked. Expiry is never part of it: each
+  check below judges `not_after` at its own time. A serial alone cannot show this. The status
+  must be no older than the consumer's stated maximum age, at most 7 days.
 - the statement verifies. For `carried-device`, its assertion verifies as of signing, not as of
   install (below);
 - version, channel and expiry rules hold;
@@ -149,10 +150,12 @@ depend on a sibling program. The checks:
 statement's own expiry, at most 30 days, governs installation. The assertion is short-lived and
 records one approval at signing time, so the consumer judges it at that time:
 
-- the assertion's `issued_at` is no earlier than the statement's `issued_at`;
+- the assertion's `issued_at` is no earlier than the statement's `issued_at`, and earlier than
+  the statement's `expires_at`. An approval outside the statement's own window approves
+  nothing.
 - its window obeys ADR 0005's maximum;
 - the owner-action grant was valid at the assertion's `issued_at`, and the current status lists
-  it as active.
+  it as active. Its `not_after` is judged at that time, not at install.
 
 The consumer never compares the assertion's expiry with install time. A revoked owner-presence
 key or owner-action grant still refuses every release it approved, because the status no
@@ -169,7 +172,8 @@ at most 262 144 bytes:
 
 - Each step is an ADR 0004 `RootStep/v1` that issues a grant, signed by the current root under
   `supgang/root-step/v1\0`.
-- The owner fields are null exactly when the role's presence is `unattended`.
+- The owner fields are null together, exactly when the role's presence is `unattended`. One
+  null without the other does not decode.
 - `status` is the ADR 0005 signed status lease.
 - After a root succession, the bundle would also need the succession steps. Until ADR 0004
   specifies those for consumers, a succession fails the role path closed and leaves the native
@@ -306,7 +310,10 @@ listed under acceptance. Rules for the tampered forms:
   recomputed after the tampering, so a verifier that checks signatures first still reaches
   the named check.
 - Each of the four records also has encoding refusals: a non-shortest integer, an
-  indefinite length, a tag, trailing bytes, and one extra field.
+  indefinite length, a tag, trailing bytes, and one extra field. The authority bundle also has
+  a refusal for each mixed null of its owner fields.
+- The time rules each have a tampered assertion: `issued_at` one second before the
+  statement's `issued_at`, and `issued_at` equal to the statement's `expires_at`.
 - The verification time lies after the assertion's and the owner-action grant's expiry, so
   the time rules above are exercised rather than hidden.
 
