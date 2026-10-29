@@ -423,6 +423,10 @@ pub fn verify_remap_action(
             ledger: input.status_ledger,
         },
     )?;
+    input
+        .status
+        .status
+        .check_active_grant(&grant.id, &[grant.signer_node])?;
     assertion.verify_binding(grant, input.challenge, input.current_request, input.target, input.now)?;
     let retain_until = assertion
         .expires_at

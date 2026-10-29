@@ -76,7 +76,11 @@ treat an ordinary device signature as presence when the grant says `required`. `
 requires a grant-named signer, an exact signed assertion, freshness, and replay protection.
 
 The proposed `owner_presence_key` signer kind is a Secure Enclave P-256 key on a computer the
-owner carries. It reuses ADR 0003's provider and strict low-S P-256 signature rules. Creation
+owner carries. It reuses ADR 0003's provider and strict low-S P-256 signature rules.
+An `owner-presence` grant decodes only with algorithm `p256` and root-enrolled
+custody label `hardware`; a `file` or `synced` label contradicts that class and
+is refused. The label remains an enrollment claim, never remote attestation.
+Key creation
 must set a private-key-use access control that requires biometry or user presence for each
 signature; implementation must demonstrate that no reused authentication context silently
 authorizes another assertion. The hive root enrolls and certifies the exact public key and
@@ -130,8 +134,12 @@ The payload is this ordered array:
 ]
 ```
 
-`signer_ref` has distinct tags for a member device key, an enrolled subordinate key, and an
-enrolled `owner_presence_key`. It binds the signer `NodeId` and exact key identity. The grant
+The implemented `required` assertion's `algorithm` is `p256`, and its
+`signer_ref` is exactly `["owner-presence", node:b32, compressed_key:b33]`.
+The signed envelope is `[1, payload:bytes, signature:b64]`, at most 1,024 bytes.
+Member-device and subordinate-key signer forms remain reserved for a later
+`policy` assertion codec; a consumer cannot infer them from this version's
+owner-presence form. The signer reference binds the `NodeId` and exact key identity. The grant
 fixes the acceptable algorithm and per-operation presence mode; the assertion cannot choose
 a weaker one. Algorithms and signature encodings must reuse the strict Ed25519 and low-S
 P-256 rules already specified for certified keys. The target compares the fields to the
@@ -139,7 +147,7 @@ pinned grant and to **its own** identity, rather than trusting a name in the req
 
 The digest is `SHA-256("supgang/action-request/v1\0" || canonical_consumer_request)`. This
 assertion can bind any consumer's canonical request bytes, including ADR 0007's
-`org.agenxy.supgang` / `release.sign` release statement (computed without its assertion field);
+`org.agenxy.supgang` / `release.sign` canonical release content bytes;
 there is no DNS-specific field or verifier rule in the shared format. Each
 consumer defines one versioned, bounded canonical request encoding, which may be canonical JSON
 or another unambiguous format. It includes the exact arguments and target-observed
@@ -148,8 +156,9 @@ the operation's arguments and the resolver plan the target last reported. For K7
 approval policy may narrow a Supgang grant and must bind the exact operation it executes.
 A generic digest of a human-readable description is not sufficient. The target rejects a
 changed plan or arguments even with a valid signature. For `required`, `challenge_digest` is
-`SHA-256("supgang/owner-action-challenge/v1\0" || canonical_challenge)`; for `policy` it is
-null. The target rejects a mode/digest mismatch with the root grant, or a request digest that
+`SHA-256("supgang/owner-action-challenge/v1\0" || canonical_challenge)`. The implemented
+assertion always carries this non-null digest. A later `policy` assertion must define its own
+closed wire form before use. The target rejects a mode/digest mismatch with the root grant, or a request digest that
 does not match the canonical arguments and preconditions in the challenge.
 
 The assertion has a short validity interval; the consumer may impose a shorter one (Remap
@@ -164,9 +173,12 @@ assertion bytes enter command arguments, ordinary logs, URLs, or crash reports.
 
 The owner chose a target-issued challenge for presence-required actions. The target's
 consumer-owned verifier, a root helper where the operation needs one, issues a bounded
-canonical challenge containing `target_node_id`, `consumer_id`, exact operation, `grant_id`,
-the grant's `required` presence mode, canonical arguments, target-observed preconditions,
-fresh random target nonce, and expiry. Its own bytes bind the grant and action independently
+canonical challenge `[1, target_node_id:b32, consumer_id:text, operation:text,
+grant_id:b16, canonical_request:bytes, nonce:b16, expires_at:u64]`.
+The request is 1 to 4,096 bytes; the consumer and operation are at most 96 and
+64 bytes respectively. The `required` presence mode comes from the root grant,
+not a self-claimed challenge field. The request contains the exact arguments and
+target-observed preconditions. Its own bytes bind the grant and action independently
 of the assertion fields. For Remap, the preconditions may contain private resolver upstream
 addresses. The requester authenticates the target and
 verifies the challenge matches its intended grant and action before asking for presence.
@@ -208,7 +220,8 @@ freshness. Remap and K7 must not infer a freshness bound from either mechanism.
 Version 1 therefore needs one **shared status lease** for owner-action grants and ADR 0007's
 release and code-signing roles, signed by the current root (the approved threshold root once
 operational). Version 1 has no delegated status issuer. It binds the hive, current root-chain head,
-member-revocation serial, grant-and-role-revocation serial, issuance, and expiry. Its issuer must have
+member-revocation serial, grant-and-role-revocation serial, sorted active grant IDs and member
+device IDs, issuance, and expiry. Its issuer must have
 the actual authority and current-state evidence to state that no newer root operation is
 effective as of issuance. A target retains monotonic heads and serials, refuses rollback or
 equivocation, and requires a lease within the owner-approved maximum age at the moment it
@@ -266,10 +279,28 @@ exact content digest binds a status lease to that policy, while a second
 terms digest omits `root_head` while retaining the hive, budget, epoch and
 ceilings so a head refresh cannot silently
 raise limits within an epoch. A lease is the canonical array
-`[1, hive, root_head, member_serial, grant_serial, issued_at, expires_at,
-policy_digest, budget_id, epoch, mode, policy_count, presence_count,
-total_count]`, with `mode` one of `initial`, `policy`, or `presence` and a
-current-root signature under `supgang/root-status/v1\0`. Initial issue
+`[1, hive:b32, root_head:b32, member_serial:u64, grant_serial:u64,
+active_grants:[b16...], active_members:[b32...], issued_at:u64, expires_at:u64,
+policy_digest:b32, budget_id:b16, epoch:u64, mode:text, policy_count:u64,
+presence_count:u64, total_count:u64]`. Each active set has at most 256 entries,
+strictly ascending and unique by byte order. The status content is at most 16 KiB;
+the signed envelope `[1, content:bytes, signature:b64]` is at most 16 KiB plus
+128 bytes. A consumer requires the role or owner grant ID and every signer device
+in the corresponding active sets at verification time; serials alone are
+insufficient. The mode is one of `initial`, `policy`, or `presence`, and the
+current-root signature covers `supgang/root-status/v1\0` followed by canonical
+status content. The `policy_digest` is SHA-256 of
+`supgang/status-policy/v1\0` followed by exact canonical policy content.
+An active entry means issued and not revoked; it does not mean the grant or
+member credential remains within its original validity interval. The consumer
+checks each interval at the time relevant to its use. The issuer may prune an
+unrevoked grant only after its `not_after` plus 2,592,000 seconds (the maximum
+statement lifetime) plus 300 seconds (the maximum assertion window), and only
+if no unexpired statement can still depend on it. A signer device remains in
+the member set for at least as long as any unrevoked grant or unexpired
+statement may depend on it. Hitting either 256-entry ceiling fails issuance
+closed; pruning cannot happen early merely to make room.
+Initial issue
 consumes no renewal count; every later issue consumes exactly one mode count
 and the total. The issuer and target both retain a canonical high-water
 record of the budget, epoch, exact policy terms, counts, issuance time, and
