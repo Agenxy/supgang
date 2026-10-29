@@ -162,9 +162,16 @@ Decoders re-encode and compare bytes, and refuse trailing data. In the layouts b
 byte string of exactly N bytes and times are UNIX seconds. A field this ADR does not list is a
 decoding failure, never an extension.
 
-- **Version triple.** `[major:u64, minor:u64, patch:u64]`, ordered lexicographically, used for
-  both `version` and the grant's `min_version`. Pre-releases use their own channel and their
-  own numbers. The role path has no pre-release suffix to compare.
+- **Version.** `[major:u64, minor:u64, patch:u64, pre]`, used for both `version` and the
+  grant's `min_version`. `pre` is null for a release, or `[label:text, number:u64]` for the
+  SemVer pre-release `MAJOR.MINOR.PATCH-label.number`, where `label` is 1 to 32 bytes of
+  lowercase ASCII letters. Versions compare as SemVer for exactly this form:
+  - first by `(major, minor, patch)`;
+  - then a release (null `pre`) ranks above every pre-release of the same triple;
+  - then pre-releases compare by `label` byte order, then by `number`.
+
+  So Remap's `0.3.0-preview.4` encodes as `[0, 3, 0, ["preview", 4]]` and ranks below
+  `0.3.0`. No other pre-release or build-metadata form is encodable.
 - **Artifact.** `[os:text, arch:text, length:u64, sha256:b32]`. `os` and `arch` are 1 to 16
   bytes of lowercase ASCII letters, digits and `-`. The list holds 1 to 16 artifacts, strictly
   ascending by `(os, arch)` byte order, so no two artifacts share a target.
