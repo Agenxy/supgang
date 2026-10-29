@@ -1,7 +1,7 @@
 # ADR 0008: Scoped guest credentials for untrusted hosts
 
-Status: Proposed. Requirements are open with K7 (gpt-k7-3). No protocol or API in this ADR is
-implemented.
+Status: Proposed. The owner decided the approval model on 28 Oct (below). K7's remaining
+requirements are open with gpt-k7-3. No protocol or API in this ADR is implemented.
 
 Date: 2026-10-28
 
@@ -54,25 +54,62 @@ Every bound below must hold with the guest's key in an attacker's hands. Damage 
 - until its expiry or revocation, whichever comes first;
 - at the bounded rate and volume of its admission class.
 
+## Authority: an issuer role and a configured policy
+
+The owner, 28 Oct 2026, on how guests are approved:
+
+> the point is that it shouldnt be blocked by my intervention, and supgang should provide the
+> authority, the policies are config settings
+
+So the owner approves no individual guest. Two layers make that bounded.
+
+**The guest-issuer role.** The root grants it once, in person or through an ADR 0005
+carried-device approval. It is a typed root operation in the same family as ADR 0005's
+owner-action grants and ADR 0007's roles, and it shares their field order, `issuer_head`,
+never-reused identity and monotonic revocation. It names:
+
+- the `consumer_id`;
+- one issuer key, held in hardware (package 8) on one sponsor member;
+- the sponsors the issuer may name;
+- ceilings: the services a guest may be given, the maximum guest lifetime, guests per day,
+  concurrent guests per sponsor, and streams per guest;
+- a lifetime of at most 366 days.
+
+Revoking the issuer role, or its sponsor's membership, ends every guest it issued.
+
+**The issuer policy.** These are owner configuration settings on the issuing sponsor
+(`supgang config`). Each setting may only narrow the role's ceilings, never widen them. A
+setting above its ceiling is refused when written and again when used. Changing a setting
+needs no ceremony. It applies to new issuance at once, and lowering a ceiling also ends any
+existing guest that the new ceiling would not have admitted.
+
+**Issuance is automatic.** The consumer, here K7's coordinator on the sponsor, passes Supgang a
+guest's request over the same-user local control socket. Supgang issues a guest grant if the
+request is within policy and refuses it otherwise, with no prompt. Consequence, stated: any
+same-user process on the issuing sponsor can obtain guest grants, but only within the policy:
+only the configured services, for the configured lifetime, up to the daily count. The issuer
+key's hardware custody means the power cannot be copied off the sponsor.
+
 ## The guest grant
 
-A guest grant is a typed root operation in the same family as ADR 0005's owner-action grants
-and ADR 0007's roles. It shares their field order, `issuer_head`, never-reused identity and
-monotonic revocation.
+A guest grant is signed by the issuer key under domain `supgang/guest-grant/v1`. It is not a
+root step.
 
 | Field | Meaning |
 | --- | --- |
 | `hive_id`, `grant_id` | Exact hive and a random, never-reused 16-byte identity. |
 | `kind` | `guest`. |
+| `issuer_role_id`, `issuer_serial` | The issuer role, and a serial that only ever increases per role, kept in the issuer's rollback-resistant ledger. |
 | `consumer_id` | Exact product, for example `org.agenxy.k7`; no wildcard. |
 | `guest_key` | The guest's public key, generated on the guest, with a possession proof over the fields above it. Custody is always `untrusted`. |
-| `sponsors` | 1 to 4 exact member `NodeId`s that may admit this guest. A guest reaches no other member. |
+| `sponsors` | 1 to 4 exact member `NodeId`s that may admit this guest, all within the role. A guest reaches no other member. |
 | `services` | Per sponsor, a sorted set of 1 to 4 exact service names the guest may open, plus the direction (below). |
-| `not_before`, `not_after` | Lifetime, bounded by the decision below. |
-| `issuer_head` | Root-chain predecessor and sequence. |
+| `not_before`, `not_after` | Lifetime, within policy. |
 
-Revoking a guest is a typed root operation. A sponsor can also deny a guest at once in its own
-local state, without the root. That local deny only narrows access and is never synchronised as
+A sponsor admits a guest only under a grant whose issuer role is unrevoked on that sponsor's
+own root chain, and only within the role's ceilings. The issuer can revoke a guest without the
+owner; the consumer asks for this and the issuer signs it. A sponsor can also deny a guest at
+once in its own local state. That local deny only narrows access and is never synchronised as
 authority.
 
 ## Admission and what a guest sees
@@ -95,7 +132,7 @@ authority.
 - **Exposure is explicit.** A guest never matches a member exposure. A service is reachable by
   guests only if the sponsor's owner exposed it to guests of that consumer, for example
   `supgang expose k7-coord 7443 --guests org.agenxy.k7`. Default deny holds for every guest.
-- **Authority ends together.** Authorization covers the grant's lifetime, root revocation, local
+- **Authority ends together.** Authorization covers the grant's lifetime, issuer-role and guest revocation, local
   deny, exposure removal and session loss. Any one of these cancels the guest's streams at once,
   as `SessionAuthorization` already does for members.
 - **Strict mode.** Admitting guests opens no public connection that the sponsor would not
@@ -107,12 +144,11 @@ The flow mirrors member enrolment but stays separate from it:
 
 1. The guest runs `supgang guest request`. It generates its own key and a recipient-bound
    request.
-2. The issuer signs the grant.
+2. The consumer passes the request to the issuing sponsor, which issues the grant within policy.
 3. The guest installs the resulting bundle.
 
-Who the issuer is, and whether the owner is present, is the open decision below. Remote
-issuance without the owner at Solis depends on two things: ADR 0005's carried-device approval,
-or a standing issuer role; and package 8 custody for whichever key holds that power.
+Nobody needs to be present at any step. The owner's presence is spent once: on granting the
+issuer role, and on setting the policy.
 
 ## Open decisions
 
@@ -124,10 +160,9 @@ least-privilege candidate.
 | Direction | The guest opens streams to the sponsor's granted services only. The sponsor sends work back over those guest-opened streams and opens none of its own to the guest. |
 | Guest-to-guest reachability | None. Two guests never connect, even if sponsored by the same member and consumer. |
 | Lifetime | 24 hours or less, renewed by a fresh grant, never by the guest itself. |
-| Revocation bound | The lifetime is the outer bound. A sponsor's local deny is immediate. A root-signed guest status, if wanted, at most 1 hour old. That needs an unattended status issuer and so waits on ADR 0005's issuer decision. |
+| Revocation bound | The lifetime is the outer bound. The issuer's revocation and a sponsor's local deny are immediate on that sponsor. For other sponsors, an issuer-signed guest status at most 1 hour old. The issuer can sign that status unattended, so it does not wait on the root. |
 | Isolation | K7's decision: VM or kassette. Supgang needs only the boundary at which the tunnel ends: a sponsor-side loopback service, and on the guest a socket reachable only by the isolated K7 instance. |
-| Approval | Per-guest owner approval on a carried device (ADR 0005), or a standing owner-granted issuer role held in hardware on one sponsor and bounded by consumer, services, lifetime and a daily count (for example 8). The owner chooses. |
-| Guest bandwidth and streams | Per guest: 4 streams or fewer, the member idle bound, and a total-guest ceiling per sponsor (for example 32). |
+| Policy defaults | These are configuration settings (decided above). Shipped defaults: 8 guests per day, 24-hour lifetime, 4 streams per guest, 32 concurrent guests per sponsor. Each can be narrowed. |
 
 ## Acceptance before anything is advertised
 
@@ -152,7 +187,11 @@ Adversarial vectors to ship as tests, one each:
 
 - a cross-hive grant;
 - a reused `grant_id`;
-- a stale `issuer_head`;
+- a guest grant from a revoked or expired issuer role;
+- a guest grant above a role ceiling, or above the configured policy;
+- the daily count exceeded;
+- an issuer serial replayed or rolled back;
+- a policy setting written above its ceiling;
 - possession bound to another grant;
 - a guest key presented as a member key, and the reverse;
 - a guest opening a forbidden stream type;
