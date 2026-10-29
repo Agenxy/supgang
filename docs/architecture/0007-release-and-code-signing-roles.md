@@ -53,7 +53,7 @@ Fields common to both, in canonical order:
 | `hive_id`, `role_id` | Exact hive and a random, never-reused 16-byte role identity. |
 | `kind` | `release` or `code-signing`; a verifier refuses a kind it does not implement. |
 | `consumer_id` | Exact product, compared byte for byte, such as Remap's `org.agenxy.Remap` (its manifest's `productIdentifier`); no wildcard. |
-| `signers` | 1 to 3 role keys (P-256 or Ed25519), each with algorithm, public key, enrolled custody label and a possession proof over the role fields above `signers`. |
+| `signers` | 1 to 3 role keys (P-256 or Ed25519), each with algorithm, public key, holding device, enrolled custody label and a possession proof binding them to this grant (wire format below). |
 | `threshold` | k of `signers`; for `release`, also the stated presence mode below. |
 | `not_before`, `not_after` | At most 366 days. |
 | `issuer_head` | Root-chain predecessor and sequence. |
@@ -198,8 +198,56 @@ decoding failure, never an extension.
     SHA-256(`supgang/action-request/v1\0` || statement digest): the release domain sits inside
     ADR 0005's generic owner-action request domain.
 
-The role-grant encoding is the shared typed-grant codec of ADR 0005, with kinds `release` and
-`code-signing`. It is not redefined here. Frozen vectors for grant, status, signed statement and
+**Role grant.** Every grant kind, ADR 0005's owner action included, shares one top-level array
+of exactly 12 elements:
+
+```text
+[1, hive:b32, id:b16, kind:text, consumer:text, [signer...], threshold:u8,
+ not_before:u64, not_after:u64, issuer_head:b32, issuer_sequence:u64, payload]
+```
+
+The shared fields:
+
+- `kind` is one of the closed set `owner-action`, `release` and `code-signing`. `deck-signing`
+  joins it by amendment.
+- `consumer` is 1 to 128 bytes, compared byte for byte.
+- `not_after - not_before` is at most 31 622 400 seconds (366 days).
+- A signer is `[algorithm:text, key:bytes, node:b32, custody:text, possession:b64]`.
+  - `algorithm` is `p256` (a 33-byte compressed key) or `ed25519` (a 32-byte key).
+  - `node` is the member device that holds the key. Revoking that device ends the grant.
+  - `custody` is ADR 0003's closed set, `hardware`, `file` or `synced`. It is enrolled and
+    labelled, never proven, and role signers refuse `synced`.
+  - `possession` is the key's own signature over `supgang/role-possession/v1\0` followed by
+    the canonical array `[1, hive, id, kind, consumer, algorithm, key, node, custody]`.
+- There are 1 to 3 signers, strictly ascending by `(algorithm, key)` byte order, and no key
+  repeats. A statement's `signer` index refers to this order.
+- The threshold k satisfies 1 <= k <= the number of signers.
+
+The `release` payload is `[package_format:text, [channel...], min_version, presence:text]`:
+
+- `package_format` is 1 to 64 bytes.
+- The channels are 1 to 4, each 1 to 32 bytes of lowercase ASCII letters, digits and `-`,
+  strictly ascending and unique.
+- `min_version` uses the version form above.
+- `presence` is `carried-device` or `unattended`. An unattended grant decodes only if every
+  signer is `hardware` and `not_after - not_before` is at most 7 776 000 seconds (90 days).
+
+The `code-signing` payload is `[[identifier...], certificate:bytes]`:
+
+- The identifiers are 1 to 8, each 1 to 255 bytes of ASCII letters, digits, `.` and `-`,
+  strictly ascending and unique.
+- `certificate` is the role certificate's DER, at most 4 096 bytes. Before any use, an
+  X.509 parser must confirm all of the following:
+  - its key equals a `p256` signer's key. Apple code signatures do not use Ed25519, so a
+    code-signing role needs at least one P-256 signer.
+  - it is self-issued;
+  - key usage is exactly `digitalSignature`;
+  - extended key usage is exactly `codeSigning`;
+  - its validity lies within the grant.
+
+The owner-action payload is `[target, operations]`, as ADR 0005 defines.
+
+Frozen vectors for grant, status, signed statement and
 assertion are published together, each with a valid form and one tampered form per refusal
 listed under acceptance. They come with a manifest of their SHA-256 hashes, which consumers
 vendor by hash. A vector set is frozen only after the owner has settled the open values in
