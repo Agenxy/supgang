@@ -326,6 +326,66 @@
       "expectation": "reject: certificate-bytes just past maximum",
       "file": "edge-certificate-bytes-over.cbor",
       "sha256": "d62fe5675a36f919e5155b59f68d931d07ec2e44d2e3fd7ef61d30f0fb0bdd01"
+    },
+    {
+      "bytes": 336,
+      "expectation": "reject: grant hive differs from pinned hive",
+      "file": "refuse-cross-hive-grant.cbor",
+      "sha256": "b9fb350d24af91ef1175d6057ba4758804b0241ceb63925a33b7f1df12c2366d"
+    },
+    {
+      "bytes": 332,
+      "expectation": "reject: unattended role with file custody",
+      "file": "refuse-unattended-file-signer.cbor",
+      "sha256": "1aeeb47bfceef05f6e3182fb8e64c7d6b4c1df544a715c9fd24254da8d551e4b"
+    },
+    {
+      "bytes": 335,
+      "expectation": "reject: independently protected stable default channel intersects unattended role",
+      "file": "refuse-unattended-default-channel.cbor",
+      "sha256": "00f065f39f9c31afdf96123efb7635a3e09e9c101eba6882e5981e916d43bd4e"
+    },
+    {
+      "bytes": 646,
+      "expectation": "reject: pair with release-statement.cbor, which has one signature and this grant requires three",
+      "file": "refuse-fewer-than-threshold-grant.cbor",
+      "sha256": "891336ebeb8fd6f947f17b8fd48f17c635314eb9c4645537100b5f5b48370622"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: signed statement consumer differs from exact root grant consumer",
+      "file": "refuse-wrong-consumer-statement.cbor",
+      "sha256": "534be4155ab5cd30fcaba14c05083daddad0d5b1482e773eff19505a3edc2337"
+    },
+    {
+      "bytes": 215,
+      "expectation": "reject: valid root signature but status older than consumer 600-second maximum",
+      "file": "refuse-stale-status.cbor",
+      "sha256": "a54e469511a15ff71779bd261ea22f219b0b70e0cca3499c089011c9e043a59e"
+    },
+    {
+      "bytes": 457,
+      "expectation": "reject: pair with accepted four-step chain, role id is already spent",
+      "file": "refuse-reused-role-id-step.cbor",
+      "sha256": "e5cb237678179ea726b44850077d164ed1bff645a0142bc8e44c864c1f575fb1"
+    },
+    {
+      "bytes": 64,
+      "expectation": "reject: valid root signature does not permit a spent role id",
+      "file": "refuse-reused-role-id-step.sig",
+      "sha256": "0292a93954c2dd0a1867a05e01f98493be4121896c98f3b4dde98dddb9dc5059"
+    },
+    {
+      "bytes": 457,
+      "expectation": "reject: signed step predecessor differs from grant issuer head",
+      "file": "refuse-stale-issuer-head-step.cbor",
+      "sha256": "4ffd465ed9e6e358191adc782a3da66601f0ea894958bf284a3497fa178ef141"
+    },
+    {
+      "bytes": 64,
+      "expectation": "reject: root signature cannot repair a stale issuer head",
+      "file": "refuse-stale-issuer-head-step.sig",
+      "sha256": "05a38ee53a34cd0c6dbe8c40993d0f4440e58be05265391b6b764accb29e9cea"
     }
   ],
   "final_root_head_hex": "45b20c43e3ca8c5ca5226a37fd6253f05bdc5c6b6ecfc084e3f57c6ca2eda468",

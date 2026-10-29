@@ -26,3 +26,11 @@ verify the pinned root chain and status, its own opt-in and default channels,
 persisted version high-water, the complete owner assertion and nonce, and the
 actual artifact bytes. This provider bundle establishes none of those runtime
 or physical acceptance claims.
+
+Contextual refusal pairs use the pinned values in `manifest.json`: the
+`refuse-fewer-than-threshold-grant.cbor` requires three signatures while
+`release-statement.cbor` carries one; the `refuse-reused-role-id-step` follows
+the four accepted steps and repeats the release role ID; and
+`refuse-stale-status.cbor` is checked at `verification_time` with a 600-second
+maximum age. The stale-issuer step has a valid root signature over canonical
+CBOR but is refused because its payload names a different predecessor.

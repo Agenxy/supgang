@@ -39,6 +39,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const OUTPUT: &str = "docs/vectors/release-roles-v1";
 const NOW: u64 = 1_780_000_000;
 
+mod adversarial;
 mod bounds;
 mod certificate;
 
@@ -570,7 +571,7 @@ fn generate_release_role_vectors() -> TestResult {
         &expired.encode()?,
         "reject: statement expired before verification time",
     )?;
-    let mut wrong_channel = carried;
+    let mut wrong_channel = carried.clone();
     wrong_channel.content.channel = "stable".into();
     save(
         &output,
@@ -641,6 +642,19 @@ fn generate_release_role_vectors() -> TestResult {
     )?;
 
     bounds::write_edge_fixtures(&output, &mut records, &release, &unattended, &code_signing)?;
+    adversarial::write(
+        &output,
+        &mut records,
+        &adversarial::Base {
+            root: &root,
+            hive,
+            head,
+            release: &release,
+            unattended: &unattended,
+            status: &signed_status,
+            statement: &carried,
+        },
+    )?;
 
     let manifest = json!({
         "state": "DRAFT - NOT FROZEN",

@@ -16,7 +16,7 @@ use crate::{
 };
 use std::path::Path;
 
-fn raw_role(role: &RoleGrant) -> Result<Vec<u8>, Error> {
+pub(super) fn raw_role(role: &RoleGrant) -> Result<Vec<u8>, Error> {
     let mut e = Encoder::new(Vec::new());
     e.array(12)?
         .u8(1)?
@@ -122,7 +122,7 @@ fn resign_one(role: &mut RoleGrant, secret: u8) -> TestResult {
     Ok(())
 }
 
-fn three_signers(role: &RoleGrant) -> Result<RoleGrant, Box<dyn std::error::Error>> {
+pub(super) fn three_signers(role: &RoleGrant) -> Result<RoleGrant, Box<dyn std::error::Error>> {
     let mut pairs = Vec::new();
     for secret in [9_u8, 10, 12] {
         let key = FileDeviceKey::from_secret_bytes(&[secret; 32])?;

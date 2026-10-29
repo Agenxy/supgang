@@ -16,7 +16,7 @@ use crate::{
         status::{Scope, SignedStatus},
         status_renewal::{Ledger, SignedPolicy},
         step::{
-            RootStep, SignedStep,
+            DOMAIN as STEP_DOMAIN, RootStep, SignedStep,
             grant::{Grant, Kind},
             role_grant::RoleGrant,
         },
@@ -29,6 +29,18 @@ const NOW: u64 = 1_780_000_000;
 
 fn output_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(OUTPUT)
+}
+
+fn fixture_root(output: &Path) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(output.join("manifest.json"))?)?;
+    Ok(hex::decode(
+        manifest
+            .get("root_public_key_hex")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| std::io::Error::other("missing root key"))?,
+    )?
+    .try_into()
+    .map_err(|_| std::io::Error::other("wrong root key length"))?)
 }
 
 #[test]
@@ -44,7 +56,7 @@ fn committed_release_role_bundle_has_exact_hashes_and_one_cbor_item() -> TestRes
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?
         .as_array()
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?;
-    assert!(files.len() >= 54);
+    assert_eq!(files.len(), 64);
     for file in files {
         let name = file
             .get("file")
@@ -82,15 +94,7 @@ fn committed_release_role_bundle_has_exact_hashes_and_one_cbor_item() -> TestRes
 #[test]
 fn committed_release_role_bundle_verifies_and_refuses_named_mutations() -> TestResult {
     let output = output_dir();
-    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(output.join("manifest.json"))?)?;
-    let root: [u8; 32] = hex::decode(
-        manifest
-            .get("root_public_key_hex")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| std::io::Error::other("missing root key"))?,
-    )?
-    .try_into()
-    .map_err(|_| std::io::Error::other("wrong root key length"))?;
+    let root = fixture_root(&output)?;
     let hive = HiveId::from_root_verifying_key(&root);
     let mut predecessor = [4; 32];
     for (name, signature_name) in [
@@ -199,5 +203,80 @@ fn committed_release_role_bundle_verifies_and_refuses_named_mutations() -> TestR
         let changed = SignedStatement::decode(&fs::read(output.join(name))?)?;
         assert!(changed.check_role_policy(&release, &["stable"], NOW, None).is_err());
     }
+    Ok(())
+}
+
+#[test]
+fn committed_release_role_bundle_refuses_contextual_role_and_statement_cases() -> TestResult {
+    let output = output_dir();
+    let release = RoleGrant::decode(&fs::read(output.join("release-grant.cbor"))?)?;
+    let carried = SignedStatement::decode(&fs::read(output.join("release-statement.cbor"))?)?;
+    let cross_hive = RoleGrant::decode(&fs::read(output.join("refuse-cross-hive-grant.cbor"))?)?;
+    assert_ne!(cross_hive.hive, release.hive);
+    assert!(RoleGrant::decode(&fs::read(output.join("refuse-unattended-file-signer.cbor"))?).is_err());
+    let default_channel = RoleGrant::decode(&fs::read(output.join("refuse-unattended-default-channel.cbor"))?)?;
+    assert!(default_channel.check_default_channels(&["stable"]).is_err());
+    let threshold_three = RoleGrant::decode(&fs::read(output.join("refuse-fewer-than-threshold-grant.cbor"))?)?;
+    assert_eq!(threshold_three.threshold, 3);
+    assert!(
+        carried
+            .check_role_policy(&threshold_three, &["stable"], NOW, None)
+            .is_err()
+    );
+    let wrong_consumer = SignedStatement::decode(&fs::read(output.join("refuse-wrong-consumer-statement.cbor"))?)?;
+    assert!(
+        wrong_consumer
+            .check_role_policy(&release, &["stable"], NOW, None)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn committed_release_role_bundle_refuses_stale_status_and_issuer_steps() -> TestResult {
+    let output = output_dir();
+    let root = fixture_root(&output)?;
+    let hive = HiveId::from_root_verifying_key(&root);
+    let release = RoleGrant::decode(&fs::read(output.join("release-grant.cbor"))?)?;
+    let policy = SignedPolicy::decode(&fs::read(output.join("status-policy.cbor"))?)?;
+    let ledger = Ledger::draft_new(&policy.policy)?;
+    let stale_status = SignedStatus::decode(&fs::read(output.join("refuse-stale-status.cbor"))?)?;
+    assert!(
+        stale_status
+            .verify(
+                &root,
+                &Scope {
+                    hive,
+                    head: policy.policy.root_head,
+                    member_floor: 0,
+                    grant_floor: 0,
+                    now: NOW,
+                    maximum_age: 600,
+                    policy: &policy,
+                    ledger: &ledger,
+                }
+            )
+            .is_err()
+    );
+    let reused = RootStep::decode(&fs::read(output.join("refuse-reused-role-id-step.cbor"))?)?;
+    let reused_signature: [u8; 64] = fs::read(output.join("refuse-reused-role-id-step.sig"))?
+        .try_into()
+        .map_err(|_| std::io::Error::other("wrong reused-step signature size"))?;
+    SignedStep {
+        step: reused.clone(),
+        signature: reused_signature,
+    }
+    .verify(&root)?;
+    assert_eq!(RoleGrant::decode(&reused.payload)?.id, release.id);
+    assert_eq!(reused.predecessor, policy.policy.root_head);
+    let stale_issuer = fs::read(output.join("refuse-stale-issuer-head-step.cbor"))?;
+    let stale_signature: [u8; 64] = fs::read(output.join("refuse-stale-issuer-head-step.sig"))?
+        .try_into()
+        .map_err(|_| std::io::Error::other("wrong stale-step signature size"))?;
+    let mut message = STEP_DOMAIN.to_vec();
+    message.extend_from_slice(&stale_issuer);
+    ed25519_dalek::VerifyingKey::from_bytes(&root)?
+        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&stale_signature))?;
+    assert!(RootStep::decode(&stale_issuer).is_err());
     Ok(())
 }
