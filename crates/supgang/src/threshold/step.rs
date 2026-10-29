@@ -9,6 +9,7 @@ use crate::ids::{HiveId, NodeId};
 
 mod chain;
 pub mod grant;
+pub mod role_grant;
 pub use chain::{Chain, Conflict, Outcome, Status};
 
 /// Domain prepended to canonical step bytes for ordinary Ed25519 signing.
@@ -35,7 +36,7 @@ pub enum Operation {
     SetRecoveryGroup,
     /// Admit a pending roster to an isolated DKG, not application membership.
     AdmitRoster,
-    /// Issue one typed grant; currently only owner-action policy is implemented.
+    /// Issue one typed owner-action, release or code-signing grant.
     Grant,
     /// Monotonically revoke one typed grant.
     RevokeGrant,

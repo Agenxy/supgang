@@ -1,0 +1,338 @@
+{
+  "default_install_channels": [
+    "stable"
+  ],
+  "files": [
+    {
+      "bytes": 336,
+      "expectation": "accept: carried-device release role",
+      "file": "release-grant.cbor",
+      "sha256": "4cd96502f8f3dde44729c4b99360c6a7b72962cc72d235e1e9fff41d9d99caa0"
+    },
+    {
+      "bytes": 457,
+      "expectation": "accept: root-issued release role step",
+      "file": "release-grant-step.cbor",
+      "sha256": "7d30753bf3acbbfb21109a1ace5b92238e264de9af920cdece8e7e0562045d39"
+    },
+    {
+      "bytes": 64,
+      "expectation": "accept: root signature over release role step",
+      "file": "release-grant-step.sig",
+      "sha256": "d04f7fde015058ba9a87303598c1d3b6ca9f80885325297feab9cbedeb3554e8"
+    },
+    {
+      "bytes": 336,
+      "expectation": "accept: preview-only 90-day unattended role with enrolled hardware label",
+      "file": "unattended-grant.cbor",
+      "sha256": "e8a239f295171375ef3045270fe63177e9445e575da21cceda0bee30d3169903"
+    },
+    {
+      "bytes": 457,
+      "expectation": "accept: root-issued unattended role step",
+      "file": "unattended-grant-step.cbor",
+      "sha256": "4828960f0a7bc0f7652446a9ba2d8ae79f8ab333f736f650318ed04f6281a59b"
+    },
+    {
+      "bytes": 64,
+      "expectation": "accept: root signature over unattended role step",
+      "file": "unattended-grant-step.sig",
+      "sha256": "279fe9c3b068a755437cf4d30eca5370ec88fc90d1d7e8fe7f95217625be424b"
+    },
+    {
+      "bytes": 4403,
+      "expectation": "accept: self-issued code-signing certificate bound to P-256 role signer",
+      "file": "code-signing-grant.cbor",
+      "sha256": "8b03d8ddccaf23c636695eae0abd25b1666862706a12504531b980d3158a6b1f"
+    },
+    {
+      "bytes": 4524,
+      "expectation": "accept: root-issued code-signing role step",
+      "file": "code-signing-grant-step.cbor",
+      "sha256": "076422b38dcfcc53c9f4fc7de5c62b7d89ccc077e85bdcee5caa27059c4c3d06"
+    },
+    {
+      "bytes": 64,
+      "expectation": "accept: root signature over code-signing role step",
+      "file": "code-signing-grant-step.sig",
+      "sha256": "a11752fd8a89dbb15d2bce8373353d66ecbe7fd34f4a4979d8a80fee30e304af"
+    },
+    {
+      "bytes": 4096,
+      "expectation": "accept: public test certificate used by code-signing role",
+      "file": "code-signing-cert.der",
+      "sha256": "01f1bb1887448d16d0252570821be4139d4b7bb231bffe1ac5de9f76984ca3bc"
+    },
+    {
+      "bytes": 358,
+      "expectation": "accept: root-enrolled presence class for release.sign",
+      "file": "owner-grant.cbor",
+      "sha256": "86563a72167d95ca3e0694da046d764b701daeedc806601f9536e282f0f18f92"
+    },
+    {
+      "bytes": 479,
+      "expectation": "accept: root-issued owner-action grant step",
+      "file": "owner-grant-step.cbor",
+      "sha256": "45b20c43e3ca8c5ca5226a37fd6253f05bdc5c6b6ecfc084e3f57c6ca2eda468"
+    },
+    {
+      "bytes": 64,
+      "expectation": "accept: root signature over owner-action grant step",
+      "file": "owner-grant-step.sig",
+      "sha256": "c5c122bf0a9bf87d1d22a749815fc3a3dae3dcfffb6f2573aac8e63a7eae2706"
+    },
+    {
+      "bytes": 166,
+      "expectation": "accept: owner-approved root-signed status policy",
+      "file": "status-policy.cbor",
+      "sha256": "738581a6ce9dcc63e1ce1ecd4e76a14e42f41dfe31fed4843536ed0a47abc5e6"
+    },
+    {
+      "bytes": 215,
+      "expectation": "accept: fresh status at final grant-chain head",
+      "file": "status.cbor",
+      "sha256": "455a2759cca4907b34083e62acf13cade21bfb95754111d3f7982d67e4e4ce6d"
+    },
+    {
+      "bytes": 226,
+      "expectation": "accept: Remap 0.3.0-preview.4 canonical content",
+      "file": "release-content.cbor",
+      "sha256": "dd7bcc6a7b7fc94cd5fd60c07c83a283ff5f92ac09a1bdc32066a74b342b50a6"
+    },
+    {
+      "bytes": 226,
+      "expectation": "reject: uppercase pre-release label",
+      "file": "release-content-invalid-pre.cbor",
+      "sha256": "ef5af93d6eba1886093a5eed3c47471737a09c980cb8c1272dfcc1a8a69099cc"
+    },
+    {
+      "bytes": 677,
+      "expectation": "accept: carried-device release statement and exact assertion",
+      "file": "release-statement.cbor",
+      "sha256": "3c5bba2d654945bc855aa3c04cca29880254bbe67e6656eae2a739624117010c"
+    },
+    {
+      "bytes": 141,
+      "expectation": "accept: target-issued release.sign challenge",
+      "file": "release-challenge.cbor",
+      "sha256": "490575887acda3bc455a8b9afeed2fdd525a9a3658f71f57c66859733bd164b9"
+    },
+    {
+      "bytes": 32,
+      "expectation": "accept: exact release statement digest as owner-action request",
+      "file": "release-request.bin",
+      "sha256": "72e95c78e24d8bc524b2edbc6f358cddcade137ad04e4d9972d6f1f89d61baeb"
+    },
+    {
+      "bytes": 375,
+      "expectation": "accept: release.sign assertion bound to statement digest and target challenge",
+      "file": "release-assertion.cbor",
+      "sha256": "2ff75bc5a31b305e0cb499384b276004c78d808bc95313f965de39f7eda08ede"
+    },
+    {
+      "bytes": 300,
+      "expectation": "accept: opt-in preview release without assertion",
+      "file": "unattended-statement.cbor",
+      "sha256": "32b20590b38584e2fa122f8b8147e3e3e8e86ed35c9b46a6a264831e9b981783"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: role signature bit changed",
+      "file": "release-statement-bad-signature.cbor",
+      "sha256": "431f11c108996b006be536dae99c4f584cfab548fba03b16184e6556d32385fe"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: valid presence signature bound to a different request digest",
+      "file": "release-statement-wrong-assertion.cbor",
+      "sha256": "7115427faab0a9348810e192ce38ff3cd7480803c6509076ec518d26a6c8e510"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: statement expired before verification time",
+      "file": "release-statement-expired.cbor",
+      "sha256": "be2fc46ae8efd62118587e3061c2422b2f251fdb2c3445cdd66a39cd44b18f50"
+    },
+    {
+      "bytes": 676,
+      "expectation": "reject: channel outside root grant",
+      "file": "release-statement-wrong-channel.cbor",
+      "sha256": "c2f8aa61a5942b8268394b8a2ea450c1f1318992c1bfe3dadeae7cb5436efbfb"
+    },
+    {
+      "bytes": 215,
+      "expectation": "reject: invalid current-root status signature",
+      "file": "status-bad-signature.cbor",
+      "sha256": "c9fcbf775458275e8bb8fedbaa33fd7c3286ede76f0ba8d53b653c295c73345a"
+    },
+    {
+      "bytes": 336,
+      "expectation": "reject: signer possession proof changed",
+      "file": "release-grant-bad-possession.cbor",
+      "sha256": "3a183fd1f8c4f487e477b4a7e2d418663e250462aee325f4393353d9cab8ddfb"
+    },
+    {
+      "bytes": 336,
+      "expectation": "reject: signer class not allowed for release kind",
+      "file": "release-grant-wrong-class.cbor",
+      "sha256": "ca1a801e19e7d35ebf90bc61850e5a242187f3fb23df964bc6d7ff166774fe58"
+    },
+    {
+      "bytes": 4403,
+      "expectation": "reject: malformed role certificate",
+      "file": "code-signing-grant-bad-cert.cbor",
+      "sha256": "8359cc1af87a6ed5056b031400982fe09a9a66eee16344d463078ca1417c9e2d"
+    },
+    {
+      "bytes": 449,
+      "expectation": "accept: consumer-bytes at maximum",
+      "file": "edge-consumer-bytes-max.cbor",
+      "sha256": "61e0f72842421c3df2be65e73489eec0e2b60c8e559637e1022cafc8b35b51e0"
+    },
+    {
+      "bytes": 450,
+      "expectation": "reject: consumer-bytes just past maximum",
+      "file": "edge-consumer-bytes-over.cbor",
+      "sha256": "e4f98bdb11e37dc0a1b8883007b5b36a8e9b10a81c255a1b78d31c8d7fa1874b"
+    },
+    {
+      "bytes": 336,
+      "expectation": "accept: validity-seconds at maximum",
+      "file": "edge-validity-seconds-max.cbor",
+      "sha256": "1f85dc13e61a6e1dd84533483f0e97017bbf7a29a02d66d8317800e89b9945d9"
+    },
+    {
+      "bytes": 336,
+      "expectation": "reject: validity-seconds just past maximum",
+      "file": "edge-validity-seconds-over.cbor",
+      "sha256": "54b25f1819da3011e54a001d5fe5b3aa970bfa550681eda599455a2c96a0e5b8"
+    },
+    {
+      "bytes": 385,
+      "expectation": "accept: package-bytes at maximum",
+      "file": "edge-package-bytes-max.cbor",
+      "sha256": "0751ef67b7784e44cb0c5697b49f2dec6ce57b7e7499aa1501e257cb04ec17f2"
+    },
+    {
+      "bytes": 386,
+      "expectation": "reject: package-bytes just past maximum",
+      "file": "edge-package-bytes-over.cbor",
+      "sha256": "aaafd6333435f1cf0a4025fab355204dc79a9c12e65568eb5b0d7ea65d7f8c43"
+    },
+    {
+      "bytes": 362,
+      "expectation": "accept: channel-bytes at maximum",
+      "file": "edge-channel-bytes-max.cbor",
+      "sha256": "e9861ffcd7401fdf152ff85d89eb46ac118b3ca6c9e606122cd07fe3aa07bc42"
+    },
+    {
+      "bytes": 363,
+      "expectation": "reject: channel-bytes just past maximum",
+      "file": "edge-channel-bytes-over.cbor",
+      "sha256": "792a149d19e4a3f7860f5071393ee92478b29f819cbfb85aeeed6fc6880eb708"
+    },
+    {
+      "bytes": 353,
+      "expectation": "accept: channels-count at maximum",
+      "file": "edge-channels-count-max.cbor",
+      "sha256": "a52c74f565ea0c096b28a429877411bb8db0324b5e9d741404be1baa6eeb39a3"
+    },
+    {
+      "bytes": 358,
+      "expectation": "reject: channels-count just past maximum",
+      "file": "edge-channels-count-over.cbor",
+      "sha256": "32c3215c7d850134c6c26c6ec6a184baf091bd86ce9a6985fe4bcea408160a9a"
+    },
+    {
+      "bytes": 362,
+      "expectation": "accept: prerelease-label-bytes at maximum",
+      "file": "edge-prerelease-label-bytes-max.cbor",
+      "sha256": "7a552c3cca05a4a876aa9165a463ef6dde64e2983b8bef658749f16a231c2339"
+    },
+    {
+      "bytes": 363,
+      "expectation": "reject: prerelease-label-bytes just past maximum",
+      "file": "edge-prerelease-label-bytes-over.cbor",
+      "sha256": "b83261ceeeb5e10a38915c725f2ba104d6594e6363cceb9720156d727722d003"
+    },
+    {
+      "bytes": 336,
+      "expectation": "accept: unattended-validity-seconds at maximum",
+      "file": "edge-unattended-validity-seconds-max.cbor",
+      "sha256": "e8a239f295171375ef3045270fe63177e9445e575da21cceda0bee30d3169903"
+    },
+    {
+      "bytes": 336,
+      "expectation": "reject: unattended-validity-seconds just past maximum",
+      "file": "edge-unattended-validity-seconds-over.cbor",
+      "sha256": "6eab25722391022f9268a5bed8eb8dab61ae49a03f2a2b85ab54af4ff79633cd"
+    },
+    {
+      "bytes": 646,
+      "expectation": "accept: signers-count at maximum",
+      "file": "edge-signers-count-max.cbor",
+      "sha256": "891336ebeb8fd6f947f17b8fd48f17c635314eb9c4645537100b5f5b48370622"
+    },
+    {
+      "bytes": 801,
+      "expectation": "reject: signers-count just past maximum",
+      "file": "edge-signers-count-over.cbor",
+      "sha256": "7e681cdfb9b91dd8965ec30a635d530ef766bd6b686143087b5896b24506f6cb"
+    },
+    {
+      "bytes": 646,
+      "expectation": "accept: threshold-count at maximum",
+      "file": "edge-threshold-count-max.cbor",
+      "sha256": "891336ebeb8fd6f947f17b8fd48f17c635314eb9c4645537100b5f5b48370622"
+    },
+    {
+      "bytes": 646,
+      "expectation": "reject: threshold-count just past maximum",
+      "file": "edge-threshold-count-over.cbor",
+      "sha256": "aaa1945768f76dbaf06f44b9a7971869c7c99586673f3e21f73c82653f318318"
+    },
+    {
+      "bytes": 4506,
+      "expectation": "accept: identifiers-count at maximum",
+      "file": "edge-identifiers-count-max.cbor",
+      "sha256": "56ae044a6c051b0563b2a1c44b5a102dd785f65b6851cbdf1e229c5f14c2282e"
+    },
+    {
+      "bytes": 4521,
+      "expectation": "reject: identifiers-count just past maximum",
+      "file": "edge-identifiers-count-over.cbor",
+      "sha256": "dd31bc57c8f16c02c4c19bbb0d175e186fa12bddb87aad6b58a6d405a3c0b123"
+    },
+    {
+      "bytes": 4643,
+      "expectation": "accept: identifier-bytes at maximum",
+      "file": "edge-identifier-bytes-max.cbor",
+      "sha256": "b9f16c7edeb4226dd4068e155ac6f18f182a3fafd66798d56147389bc15d6e51"
+    },
+    {
+      "bytes": 4645,
+      "expectation": "reject: identifier-bytes just past maximum",
+      "file": "edge-identifier-bytes-over.cbor",
+      "sha256": "3ec7c6c02b0599eabba596e4f7da43422b3ee662a4539488aaedf86b2369af50"
+    },
+    {
+      "bytes": 4403,
+      "expectation": "accept: certificate-bytes at maximum",
+      "file": "edge-certificate-bytes-max.cbor",
+      "sha256": "8b03d8ddccaf23c636695eae0abd25b1666862706a12504531b980d3158a6b1f"
+    },
+    {
+      "bytes": 4404,
+      "expectation": "reject: certificate-bytes just past maximum",
+      "file": "edge-certificate-bytes-over.cbor",
+      "sha256": "d62fe5675a36f919e5155b59f68d931d07ec2e44d2e3fd7ef61d30f0fb0bdd01"
+    }
+  ],
+  "final_root_head_hex": "45b20c43e3ca8c5ca5226a37fd6253f05bdc5c6b6ecfc084e3f57c6ca2eda468",
+  "hive_hex": "e9089bac250fcc592a3a3578a962c256a1c4fc2c5be326066dfd693a1fb0f8f0",
+  "note": "Disposable public test keys. Hardware custody is an enrolled label in this bundle, not physical proof. Consumer high-water storage, artifact bytes, live status issuer and installed cross-host acceptance remain outside these provider fixtures.",
+  "protocol": "owner-action-and-release-roles-v1",
+  "root_public_key_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+  "state": "DRAFT - NOT FROZEN",
+  "verification_time": 1780000000
+}

@@ -14,6 +14,7 @@ use crate::{
     threshold::{
         Digest, Error, array, canonical, count, fixed,
         owner_action::{ACTION_DOMAIN, Assertion, REQUEST_DOMAIN},
+        step::role_grant::{ReleasePresence, RoleGrant, RolePolicy},
     },
 };
 
@@ -25,8 +26,26 @@ const MAX_ARTIFACTS: usize = 16;
 const MAX_SIGNERS: usize = 3;
 const MAX_LIFETIME: u64 = 30 * 24 * 60 * 60;
 
-/// Numeric version compared lexicographically within one channel.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+/// Bounded `SemVer` pre-release of the exact `label.number` form.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreRelease {
+    /// One to 32 lowercase ASCII letters.
+    pub label: String,
+    /// Numeric pre-release component.
+    pub number: u64,
+}
+
+impl PreRelease {
+    fn validate(&self) -> Result<(), Error> {
+        if self.label.is_empty() || self.label.len() > 32 || !self.label.bytes().all(|byte| byte.is_ascii_lowercase()) {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+}
+
+/// Version compared by numeric triple, then pre-release label and number.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Version {
     /// Major version.
     pub major: u64,
@@ -34,21 +53,68 @@ pub struct Version {
     pub minor: u64,
     /// Patch version.
     pub patch: u64,
+    /// `None` is a release, which ranks above any pre-release of the same triple.
+    pub pre: Option<PreRelease>,
 }
 
 impl Version {
-    fn encode_into(self, e: &mut Encoder<Vec<u8>>) -> Result<(), Error> {
-        e.array(3)?.u64(self.major)?.u64(self.minor)?.u64(self.patch)?;
+    pub(crate) fn encode_into(&self, e: &mut Encoder<Vec<u8>>) -> Result<(), Error> {
+        e.array(4)?.u64(self.major)?.u64(self.minor)?.u64(self.patch)?;
+        if let Some(pre) = &self.pre {
+            pre.validate()?;
+            e.array(2)?.str(&pre.label)?.u64(pre.number)?;
+        } else {
+            e.null()?;
+        }
         Ok(())
     }
 
-    fn decode_from(d: &mut Decoder<'_>) -> Result<Self, Error> {
-        array(d, 3)?;
+    pub(crate) fn decode_from(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        array(d, 4)?;
+        let major = d.u64()?;
+        let minor = d.u64()?;
+        let patch = d.u64()?;
+        let pre = if d.datatype()? == Type::Null {
+            d.null()?;
+            None
+        } else {
+            array(d, 2)?;
+            let value = PreRelease {
+                label: bounded_text(d, 32)?,
+                number: d.u64()?,
+            };
+            value.validate()?;
+            Some(value)
+        };
         Ok(Self {
-            major: d.u64()?,
-            minor: d.u64()?,
-            patch: d.u64()?,
+            major,
+            minor,
+            patch,
+            pre,
         })
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| match (&self.pre, &other.pre) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (Some(left), Some(right)) => left
+                    .label
+                    .as_bytes()
+                    .cmp(right.label.as_bytes())
+                    .then_with(|| left.number.cmp(&right.number)),
+            })
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -109,7 +175,7 @@ pub struct Content {
     pub package_format: String,
     /// Exact release channel.
     pub channel: String,
-    /// Numeric version for this channel.
+    /// Exact bounded `SemVer` version for this channel.
     pub version: Version,
     /// All target artifacts in ascending `(os, arch)` order.
     pub artifacts: Vec<Artifact>,
@@ -270,6 +336,58 @@ pub struct SignedStatement {
 }
 
 impl SignedStatement {
+    /// Check a separately root-validated release role and consumer high-water input.
+    ///
+    /// Root-chain and status verification, carried assertion grant/challenge,
+    /// protected high-water persistence, and artifact hashing remain the
+    /// consumer's independent work. `defaults` is the consumer's protected
+    /// default-install channel set, never taken from the statement.
+    ///
+    /// # Errors
+    /// Refuses wrong role, channel, version, expiry, signature or presence.
+    pub fn check_role_policy(
+        &self,
+        role: &RoleGrant,
+        defaults: &[&str],
+        now: u64,
+        high_water: Option<&Version>,
+    ) -> Result<(), Error> {
+        role.encode()?;
+        if defaults.len() > 16
+            || self.content.hive != role.hive
+            || self.content.role_id != role.id
+            || self.content.consumer_id != role.consumer
+            || now < role.not_before
+            || now > role.not_after
+            || now < self.content.issued_at
+            || now > self.content.expires_at
+            || self.content.issued_at < role.not_before
+            || self.content.issued_at > role.not_after
+        {
+            return Err(Error::Authority);
+        }
+        let RolePolicy::Release {
+            package_format,
+            channels,
+            min_version,
+            presence,
+        } = &role.policy
+        else {
+            return Err(Error::Authority);
+        };
+        if self.content.package_format != *package_format
+            || !channels.contains(&self.content.channel)
+            || self.content.version < *min_version
+            || high_water.is_some_and(|version| self.content.version <= *version)
+        {
+            return Err(Error::Authority);
+        }
+        role.check_default_channels(defaults)?;
+        let signers = role.signers.iter().map(|signer| signer.key.clone()).collect::<Vec<_>>();
+        self.verify_role_signatures(&signers, usize::from(role.threshold))?;
+        self.check_release_assertion(*presence == ReleasePresence::CarriedDevice)
+    }
+
     fn validate_signer_indexes(&self) -> Result<(), Error> {
         if self.signatures.is_empty() || self.signatures.len() > MAX_SIGNERS {
             return Err(Error::Bound);

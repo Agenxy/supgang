@@ -2,8 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::grant::{Grant, Revocation};
 use super::{Digest, Error, MAX_RECORDS, Operation, Records, SignedStep};
+use super::{
+    grant::{AnyGrant, Grant, Revocation},
+    role_grant::RoleGrant,
+};
 use crate::{
     ids::HiveId,
     threshold::{
@@ -70,7 +73,7 @@ pub struct Chain {
     children: BTreeMap<Digest, Digest>,
     active: Vec<Digest>,
     recovery_proofs: BTreeMap<u64, (SignedStep, RecoveryDescriptor)>,
-    grants: BTreeMap<[u8; 16], Grant>,
+    grants: BTreeMap<[u8; 16], AnyGrant>,
     used_grant_ids: BTreeSet<[u8; 16]>,
     grant_revocation_serial: u64,
     status: Status,
@@ -174,7 +177,19 @@ impl Chain {
     /// Active typed grant in this in-memory model; not service authorization.
     #[must_use]
     pub fn grant(&self, id: &[u8; 16]) -> Option<&Grant> {
-        (self.status == Status::Active).then(|| self.grants.get(id)).flatten()
+        match (self.status == Status::Active).then(|| self.grants.get(id)).flatten()? {
+            AnyGrant::OwnerAction(grant) => Some(grant),
+            AnyGrant::Role(_) => None,
+        }
+    }
+
+    /// Active release or code-signing role in this in-memory model.
+    #[must_use]
+    pub fn role_grant(&self, id: &[u8; 16]) -> Option<&RoleGrant> {
+        match (self.status == Status::Active).then(|| self.grants.get(id)).flatten()? {
+            AnyGrant::OwnerAction(_) => None,
+            AnyGrant::Role(grant) => Some(grant),
+        }
     }
 
     /// Highest accepted grant-and-role revocation serial, never reset by recovery.
@@ -360,14 +375,14 @@ impl Chain {
     fn validate_grant_transition(&self, step: &super::RootStep) -> Result<(), Error> {
         match step.operation {
             Operation::Grant => {
-                let grant = Grant::decode(&step.payload)?;
-                if self.used_grant_ids.len() >= MAX_RECORDS || self.used_grant_ids.contains(&grant.id) {
+                let grant = AnyGrant::decode(&step.payload)?;
+                if self.used_grant_ids.len() >= MAX_RECORDS || self.used_grant_ids.contains(&grant.id()) {
                     return Err(Error::Authority);
                 }
             }
             Operation::RevokeGrant => {
                 let revoke = Revocation::decode(&step.payload)?;
-                if self.grants.get(&revoke.id).map(|grant| grant.kind) != Some(revoke.kind)
+                if self.grants.get(&revoke.id).map(AnyGrant::kind) != Some(revoke.kind)
                     || revoke.serial != self.grant_revocation_serial.checked_add(1).ok_or(Error::Bound)?
                 {
                     return Err(Error::Authority);
@@ -381,9 +396,9 @@ impl Chain {
     fn apply_grant_transition(&mut self, step: &super::RootStep) -> Result<(), Error> {
         match step.operation {
             Operation::Grant => {
-                let grant = Grant::decode(&step.payload)?;
-                self.used_grant_ids.insert(grant.id);
-                self.grants.insert(grant.id, grant);
+                let grant = AnyGrant::decode(&step.payload)?;
+                self.used_grant_ids.insert(grant.id());
+                self.grants.insert(grant.id(), grant);
             }
             Operation::RevokeGrant => {
                 let revoke = Revocation::decode(&step.payload)?;

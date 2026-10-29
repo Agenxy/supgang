@@ -24,7 +24,7 @@ hex = { version = "=0.4.3", default-features = false, features = ["alloc"] }
 jiff = { version = "=0.2.35", default-features = false, features = ["std"] }
 libc = { version = "=0.2.189", default-features = false }
 minicbor = { version = "=2.3.0", default-features = false, features = ["alloc", "std"] }
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 rand_chacha = { version = "=0.3.1", default-features = false }
 nix = { version = "=0.31.3", default-features = false, features = ["net", "socket", "user"] }
 portmapper = { version = "=0.19.1", default-features = false }
@@ -36,6 +36,7 @@ semver = { version = "=1.0.28", default-features = false, features = ["std"] }
 thiserror = { version = "=2.0.20", default-features = false }
 tough = { version = "=0.24.0", default-features = false }
 url = { version = "=2.5.8", default-features = false }
+x509-parser = { version = "=0.18.1", default-features = false, features = ["verify-aws"] }
 zeroize = { version = "=1.9.0", default-features = false }
 rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
 quinn = { version = "=0.11.11", default-features = false, features = ["bloom", "runtime-tokio", "rustls-aws-lc-rs"] }

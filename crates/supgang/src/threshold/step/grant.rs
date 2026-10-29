@@ -5,7 +5,7 @@
 
 use minicbor::{Decoder, Encoder};
 
-use super::{Operation, RootStep};
+use super::{Operation, RootStep, role_grant::RoleGrant};
 use crate::{
     authority::SubjectCustody,
     device_key::{DevicePublicKey, DeviceSignature},
@@ -29,7 +29,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    const fn text(self) -> &'static str {
+    pub(crate) const fn text(self) -> &'static str {
         match self {
             Self::OwnerAction => "owner-action",
             Self::Release => "release",
@@ -37,7 +37,7 @@ impl Kind {
         }
     }
 
-    fn parse(value: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(value: &str) -> Result<Self, Error> {
         match value {
             "owner-action" => Ok(Self::OwnerAction),
             "release" => Ok(Self::Release),
@@ -150,6 +150,83 @@ pub struct Grant {
     pub target: TargetScope,
     /// Sorted, unique operations, at most eight.
     pub operations: Vec<AllowedOperation>,
+}
+
+/// One authenticated grant kind under the shared 12-field wire envelope.
+#[derive(Clone)]
+pub enum AnyGrant {
+    /// Exact owner-action policy.
+    OwnerAction(Grant),
+    /// Release or code-signing role policy.
+    Role(RoleGrant),
+}
+
+impl AnyGrant {
+    /// Decode one bounded grant and dispatch on its closed kind.
+    ///
+    /// # Errors
+    /// Refuses malformed, unknown, or unsupported grant kinds.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > 12 * 1024 {
+            return Err(Error::Bound);
+        }
+        let mut d = Decoder::new(bytes);
+        array(&mut d, 12)?;
+        if d.u8()? != 1 {
+            return Err(Error::Invalid);
+        }
+        let _hive: [u8; 32] = fixed(&mut d)?;
+        let _id: [u8; 16] = fixed(&mut d)?;
+        match Kind::parse(d.str()?)? {
+            Kind::OwnerAction => Grant::decode(bytes).map(Self::OwnerAction),
+            Kind::Release | Kind::CodeSigning => RoleGrant::decode(bytes).map(Self::Role),
+        }
+    }
+
+    /// Grant identity, unique across all kinds.
+    #[must_use]
+    pub const fn id(&self) -> [u8; 16] {
+        match self {
+            Self::OwnerAction(grant) => grant.id,
+            Self::Role(grant) => grant.id,
+        }
+    }
+
+    /// Closed grant kind.
+    #[must_use]
+    pub const fn kind(&self) -> Kind {
+        match self {
+            Self::OwnerAction(grant) => grant.kind,
+            Self::Role(grant) => grant.kind(),
+        }
+    }
+
+    /// Founding hive bound into the grant.
+    #[must_use]
+    pub const fn hive(&self) -> HiveId {
+        match self {
+            Self::OwnerAction(grant) => grant.hive,
+            Self::Role(grant) => grant.hive,
+        }
+    }
+
+    /// Root-step predecessor repeated in the grant.
+    #[must_use]
+    pub const fn issuer_head(&self) -> Digest {
+        match self {
+            Self::OwnerAction(grant) => grant.issuer_head,
+            Self::Role(grant) => grant.issuer_head,
+        }
+    }
+
+    /// Root-step predecessor sequence repeated in the grant.
+    #[must_use]
+    pub const fn issuer_sequence(&self) -> u64 {
+        match self {
+            Self::OwnerAction(grant) => grant.issuer_sequence,
+            Self::Role(grant) => grant.issuer_sequence,
+        }
+    }
 }
 
 impl Grant {
@@ -340,7 +417,7 @@ impl Revocation {
     /// # Errors
     /// Refuses zero ID/serial or unsupported kind.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        if self.id == [0; 16] || self.serial == 0 || self.kind != Kind::OwnerAction {
+        if self.id == [0; 16] || self.serial == 0 {
             return Err(Error::Invalid);
         }
         let mut e = Encoder::new(Vec::new());
@@ -388,14 +465,14 @@ impl Revocation {
 pub fn validate_step(step: &RootStep) -> Result<(), Error> {
     match step.operation {
         Operation::Grant => {
-            let grant = Grant::decode(&step.payload)?;
-            if grant.hive != step.hive {
+            let grant = AnyGrant::decode(&step.payload)?;
+            if grant.hive() != step.hive {
                 return Err(Error::Authority);
             }
-            if grant.issuer_head != step.predecessor {
+            if grant.issuer_head() != step.predecessor {
                 return Err(Error::Authority);
             }
-            if grant.issuer_sequence != step.sequence.saturating_sub(1) {
+            if grant.issuer_sequence() != step.sequence.saturating_sub(1) {
                 return Err(Error::Authority);
             }
         }
