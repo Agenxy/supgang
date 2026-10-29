@@ -166,7 +166,19 @@ fn test_scratch() -> Result<Option<String>, String> {
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let built = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // A target directory shared between checkouts can leave another checkout's gate binary in
+    // place, and running it would check that checkout instead of this one.
+    if let Some(invoked) = env::var_os("CARGO_MANIFEST_DIR")
+        && Path::new(&invoked) != built
+    {
+        return Err(format!(
+            "this gate binary was built from {}, not from the invoking checkout; rebuild it here or \
+             give each checkout its own target directory",
+            built.display()
+        ));
+    }
+    built
         .parent()
         .and_then(Path::parent)
         .map(Path::to_path_buf)

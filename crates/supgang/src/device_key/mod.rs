@@ -356,26 +356,17 @@ mod tests {
             DevicePublicKey::from_bytes(&bytes[..32]),
             Err(DeviceKeyError::InvalidPublicKey)
         );
-        let mut off = bytes;
-        if let Some(last) = off.last_mut() {
-            *last = last.wrapping_add(1);
+        // x = 1 is off P-256: 1 - 3 + b is a quadratic non-residue, so no y exists. A fixed
+        // point keeps this deterministic; about half of all x values are on the curve.
+        let mut off_curve = [0_u8; PUBLIC_KEY_BYTES];
+        off_curve[PUBLIC_KEY_BYTES - 1] = 1;
+        for prefix in [2, 3] {
+            off_curve[0] = prefix;
+            assert_eq!(
+                DevicePublicKey::from_bytes(&off_curve),
+                Err(DeviceKeyError::InvalidPublicKey)
+            );
         }
-        // One of the two neighbours of a valid x is very likely off the curve; try a few.
-        let mut refused = false;
-        for step in 1..=8_u8 {
-            let mut candidate = bytes;
-            if let Some(last) = candidate.last_mut() {
-                *last = last.wrapping_add(step);
-            }
-            if DevicePublicKey::from_bytes(&candidate).is_err() {
-                refused = true;
-                break;
-            }
-        }
-        assert!(
-            refused,
-            "no neighbouring x was off the curve, which is astronomically unlikely"
-        );
         let mut uncompressed = [4_u8; 65];
         uncompressed[1..33].copy_from_slice(&bytes[1..]);
         assert_eq!(
