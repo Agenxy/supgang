@@ -15,8 +15,8 @@ bounds and what consumers must pin. Corrections from astra's review
 | --- | --- | --- | --- |
 | TLS certificate authority | public CAs, ACME | root-issued name-constrained trust anchor, leaves on `transport-server` keys (ADR 0003) | ADR 0003 draft |
 | Names under a gang suffix | registrars, public DNS | `<name>.<hive>.gang`, root-signed records, Remap resolves | ADR 0003 draft, Remap |
-| Code signing | Apple Developer ID, notarization, repo signing keys | a root-granted role: this key may sign these bundle ids or package names; members pin the role, never a bare member chain | own ADR |
-| Software update trust | Sparkle, stores, mirrors | a root-granted release role per product and channel, keeping docs/security/secure-updates.md's rollback, expiry and release-authority rules; a generic signature replaces none of them | own ADR |
+| Code signing | Apple Developer ID, notarization, repo signing keys | a root-granted role: this key may sign these bundle ids or package names; members pin the role, never a bare member chain | ADR 0007 proposed |
+| Software update trust | Sparkle, stores, mirrors | a root-granted release role per product and channel, keeping docs/security/secure-updates.md's rollback, expiry and release-authority rules; a generic signature replaces none of them | ADR 0007 proposed |
 | Time | NTP pools, vendor time | an optional service: authenticated challenge-response with delay and uncertainty bounds, source selection, collusion and offline bootstrap stated; it does not close ADR 0003's freshness, which rests on signed issuance times and a bounded local clock | own ADR, later |
 | SSH certificate authority | known_hosts sprawl, cloud SSH CAs | a root-granted role naming which hosts and which principals a key may certify | own ADR |
 | Identity provider | Okta, Google, Apple ID as IdP | the hive as an *optional* OIDC issuer keyed to device and passkey, for consumers that want it; Compass remains its own authorization server and its grants are never sourced from the hive | own ADR |
