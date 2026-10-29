@@ -206,8 +206,8 @@ manifest has its own `next_update` check, but it does not supply owner-grant or 
 freshness. Remap and K7 must not infer a freshness bound from either mechanism.
 
 Version 1 therefore needs one **shared status lease** for owner-action grants and ADR 0007's
-release and code-signing roles, signed by the root, approved threshold, or an
-explicitly root-delegated status issuer. It binds the hive, current root-chain head,
+release and code-signing roles, signed by the current root (the approved threshold root once
+operational). Version 1 has no delegated status issuer. It binds the hive, current root-chain head,
 member-revocation serial, grant-and-role-revocation serial, issuance, and expiry. Its issuer must have
 the actual authority and current-state evidence to state that no newer root operation is
 effective as of issuance. A target retains monotonic heads and serials, refuses rollback or
@@ -216,20 +216,13 @@ executes an action. A live peer cannot extend a lease by relaying it. A partitio
 fails closed when the lease expires. This gives a **bounded delay** before a new revocation
 takes effect at a disconnected target, not instantaneous global revocation.
 
-The owner must decide the maximum lease lifetime and which authorized signers can renew it
-remotely while traveling; an at-home-only renewal path would defeat Remap's remote recovery
-use case. A five-minute assertion expiry does **not** imply five-minute revocation freshness.
-The common status codec imposes a seven-day protocol ceiling so neither owner actions nor
-ADR 0007 roles can accept an older status. This is not the owner-approved operating maximum:
-consumers may require less, and the renewal budget, issuer, and availability model remain open.
-Until those are decided and implemented, Supgang owner-action mode remains unavailable.
-
-**Proposed, pending owner:** the first operating maximum is seven days per lease and at
-execution; consumers may narrow it. **Proposed, pending owner:** only the current root
-(the approved threshold root once operational) issues status, after checking its
-authenticated current chain head and both revocation serials; version 1 has no delegated
-issuer. These proposals do not make a file-held root or a disconnected signer a live
-remote status service.
+The owner approved a seven-day operating maximum per lease and at execution on 28 Oct 2026;
+consumers may require less. A five-minute assertion expiry does **not** imply five-minute
+revocation freshness. The common status codec enforces the same seven-day ceiling. The current
+root may issue status only after checking its authenticated current chain head and both
+revocation serials. These approved terms do not make a file-held root or a disconnected signer
+a live remote status service. Until issuer availability and physical enforcement are built and
+proved, Supgang owner-action mode remains unavailable.
 
 The present founder root secret is file-held, and the threshold signing store is a software
 prototype. Neither establishes hardware custody or fresh owner presence. Typed grant and
@@ -242,8 +235,8 @@ hardware custody from a signature or an unverified custody label.
 The owner chose to permit the presence key on the traveling laptop to authorize remote lease
 renewal when an exact root grant allows it. A separate `policy` grant may permit a bounded
 unattended renewal request with its own signer. Neither request by itself proves that no
-newer revocation exists. The lease issuer must still be the root, an approved threshold, or
-a separately root-delegated status authority with authenticated current-head evidence.
+newer revocation exists. The lease issuer must still be the current root with authenticated
+current-head evidence.
 Its availability and freshness under travel and partition need a concrete design and test.
 
 An owner-configurable, root-signed renewal policy sets **three independent count ceilings**
@@ -256,14 +249,13 @@ can enforce its own durable monotonic high-water marks and reject over-budget, r
 equivocating leases. A compromised action key can request or present renewals within the
 remaining counts but cannot raise a root-signed ceiling, reset a count, or mint a new epoch.
 
-**Proposed, pending owner:** one epoch allows zero unattended `policy` renewals, four
-fresh carried-device-presence renewals, and four renewals total. **Proposed, pending
-owner:** a new monotonic epoch and random budget ID require an in-person, root-authorized
-recertification ceremony; a remote signer cannot reset them. **Proposed, pending owner:**
-one authoritative atomic, rollback-resistant issuer ledger serves version 1, with no
-independent issuer. A later issuer must share that linear ledger and current-head evidence
-or require a new physical epoch; equivocation halts. The offline codec and ledger model
-are draft until those choices and their physical enforcement are approved and proved.
+The owner approved the first epoch's limits on 28 Oct 2026: zero unattended `policy` status
+renewals, four fresh carried-device-presence status renewals, and four status renewals total.
+This does not prohibit an ADR 0007 unattended release-signing role. A new monotonic epoch
+and random budget ID require an in-person, root-authorized recertification ceremony; a remote
+signer cannot reset them. One authoritative atomic, rollback-resistant issuer ledger serves
+version 1, with no independent issuer; equivocation halts. The offline codec and ledger model
+remain draft until their physical enforcement is built and proved.
 
 The **draft, not frozen** version-1 policy content is the canonical CBOR array
 `[1, hive, root_head, budget_id, epoch, maximum_age, policy_cap,
@@ -289,11 +281,9 @@ before a privileged effect. These codecs and transition checks alone do not
 provide the required durable issuer store, authenticated global current-head
 evidence, or physical recertification proof.
 If a ceiling is exhausted, no further renewal in that mode is accepted; the total ceiling
-blocks all further remote renewal until **physical re-certification** creates a new
-root-authorized epoch. An independent issuer may provide the new lease only after the
-owner-approved physical recertification requirement has been met; merely switching issuers
-cannot reset the budget. The exact ceremony, ledger consistency across issuers and targets,
-and owner-chosen counts remain open design work.
+blocks all further remote renewal until **physical recertification** creates a new
+root-authorized epoch. Switching issuers cannot reset the budget. The exact ceremony and
+rollback-resistant issuer and target storage remain implementation and acceptance work.
 
 Stolen hardware or coerced use of an unlocked Touch ID can consume the allowed renewal
 budget. At a disconnected target, a revocation may remain ineffective through the final
@@ -383,11 +373,10 @@ recovery limit rather than an accepted remote action.
 1. How will enrollment verify the carried Secure Enclave key's per-signature presence policy,
    and how will each consumer validate the root-certified enrollment and exact-action proof?
    The root's local enrollment inspection is an explicit trust assumption, not attestation.
-2. What is the maximum status-lease lifetime, and which remote root, threshold, or delegated
-   status signers can issue a fresh lease while the owner is away? Set the owner-configurable
-   policy, remote-presence, and aggregate renewal counts; define authenticated current-head
-   evidence, cross-issuer ledger consistency, physical recertification, availability after
-   expiry, and the bound on revoked authority.
+2. Implement the owner-approved seven-day maximum, current-root-only issuer, and first-epoch
+   renewal caps of zero policy, four presence, and four total. Define and prove authenticated
+   current-head evidence, one rollback-resistant issuer ledger, in-person recertification,
+   availability after expiry, and the bound on revoked authority.
 3. Agree the exact canonical target-challenge bytes, authenticated delivery, disclosure scope,
    nonce storage, prompt rendering, target-clock rollback checks, and replay rules. The
    consumer-owned canonical request bytes and target-issued one-use challenge above are fixed.

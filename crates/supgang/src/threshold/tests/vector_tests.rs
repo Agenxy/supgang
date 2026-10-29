@@ -7,6 +7,7 @@
 use std::{fs, path::Path};
 
 use crate::{
+    authority::SubjectCustody,
     authority::device_node_id,
     device_key::{DeviceSigner as _, FileDeviceKey},
     ids::{HiveId, NodeId},
@@ -14,8 +15,8 @@ use crate::{
         owner_action::{Assertion, Challenge},
         status::{DOMAIN as STATUS_DOMAIN, SignedStatus, Status},
         status_renewal::{
-            Counts, Mode, POLICY_DOMAIN, PROPOSED_MAX_AGE, PROPOSED_POLICY_CAP, PROPOSED_PRESENCE_CAP,
-            PROPOSED_TOTAL_CAP, Policy, SignedPolicy,
+            Counts, Mode, OWNER_MAX_AGE, OWNER_POLICY_CAP, OWNER_PRESENCE_CAP, OWNER_TOTAL_CAP, POLICY_DOMAIN, Policy,
+            SignedPolicy,
         },
         step::{
             Operation, RootStep,
@@ -50,6 +51,12 @@ fn committed_draft_vector_hashes_match_manifest() -> Result<(), Box<dyn std::err
             return Err(std::io::Error::other("draft vector file name is not a flat name").into());
         }
         let bytes = fs::read(directory.join(name))?;
+        if Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cbor"))
+        {
+            assert_one_cbor_item(&bytes)?;
+        }
         assert_eq!(entry["bytes"].as_u64(), u64::try_from(bytes.len()).ok());
         assert_eq!(entry["sha256"].as_str(), Some(sha256(&bytes).as_str()));
     }
@@ -125,6 +132,64 @@ fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+fn assert_one_cbor_item(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut reader = minicbor::Decoder::new(bytes);
+    read_generic_cbor_item(&mut reader, 0)?;
+    if reader.position() != bytes.len() {
+        return Err(std::io::Error::other("CBOR record has trailing data or a wrong declared array length").into());
+    }
+    Ok(())
+}
+
+fn read_generic_cbor_item(reader: &mut minicbor::Decoder<'_>, depth: usize) -> Result<(), Box<dyn std::error::Error>> {
+    use minicbor::data::Type;
+
+    if depth > 16 {
+        return Err(std::io::Error::other("CBOR nesting limit exceeded").into());
+    }
+    match reader.datatype()? {
+        Type::Array => {
+            let count = reader
+                .array()?
+                .ok_or_else(|| std::io::Error::other("indefinite CBOR array"))?;
+            if count > 1024 {
+                return Err(std::io::Error::other("CBOR item count limit exceeded").into());
+            }
+            for _ in 0..count {
+                read_generic_cbor_item(reader, depth + 1)?;
+            }
+        }
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 => {
+            reader.u64()?;
+        }
+        Type::Bytes => {
+            reader.bytes()?;
+        }
+        Type::String => {
+            reader.str()?;
+        }
+        Type::Null => {
+            reader.null()?;
+        }
+        _ => return Err(std::io::Error::other("unsupported CBOR type in wire fixture").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn generic_cbor_reader_rejects_a_wrong_grant_array_length() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(OUTPUT);
+    let mut grant = fs::read(directory.join("grant.cbor"))?;
+    assert_one_cbor_item(&grant)?;
+    let top = grant
+        .first_mut()
+        .ok_or_else(|| std::io::Error::other("empty grant fixture"))?;
+    assert_eq!(*top, 0x8c, "grant must be a definite 12-field CBOR array");
+    *top = 0x8b;
+    assert!(assert_one_cbor_item(&grant).is_err());
+    Ok(())
+}
+
 #[test]
 #[ignore = "regenerates committed draft vector files only when explicitly requested"]
 fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
@@ -147,6 +212,7 @@ fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
         signer: signer_key,
         signer_node,
         signer_role: SignerRole::OwnerPresence,
+        signer_custody: SubjectCustody::File,
         possession: [0; 64],
         not_before: 100,
         not_after: 1_000_000,
@@ -167,7 +233,7 @@ fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
         .collect(),
     };
     grant.possession = signer
-        .sign_domain(b"supgang/grant-possession/v1\0", &grant.possession_message()?)?
+        .sign_domain(b"supgang/role-possession/v1\0", &grant.possession_message()?)?
         .to_bytes();
     let grant_bytes = grant.encode()?;
     let step = RootStep {
@@ -189,10 +255,10 @@ fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
         root_head: head,
         budget_id: [9; 16],
         epoch: 1,
-        maximum_age: PROPOSED_MAX_AGE,
-        policy_cap: PROPOSED_POLICY_CAP,
-        presence_cap: PROPOSED_PRESENCE_CAP,
-        total_cap: PROPOSED_TOTAL_CAP,
+        maximum_age: OWNER_MAX_AGE,
+        policy_cap: OWNER_POLICY_CAP,
+        presence_cap: OWNER_PRESENCE_CAP,
+        total_cap: OWNER_TOTAL_CAP,
     };
     let mut policy_message = POLICY_DOMAIN.to_vec();
     policy_message.extend_from_slice(&policy.encode()?);
@@ -367,7 +433,7 @@ fn generate_owner_action_vectors() -> Result<(), Box<dyn std::error::Error>> {
         "target_hex": hex::encode(target.as_bytes()),
         "root_head_hex": hex::encode(head),
         "verification_time": 1020,
-        "pending": ["owner status policy", "durable issuer and target ledgers", "release-statement codec and vectors", "physical hardware proof"],
+        "pending": ["durable current-head issuer and target ledgers", "release-role codec and conformance vectors", "physical hardware proof"],
         "files": files,
     });
     fs::write(output.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;

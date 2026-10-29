@@ -21,7 +21,6 @@ cargo test --locked --package supgang-core generate_owner_action_vectors -- --ig
 ```
 
 The normal test suite checks every listed byte count and SHA-256 against the
-manifest. The release-statement wire format and its vectors belong to a
-separate stacked branch. Owner approval of the renewal limits, a durable
-current-head issuer and ledgers, independent consumer verification, and
-physical acceptance remain required before any vector set can be frozen.
+manifest. The owner approved the first status-renewal limits on 28 Oct 2026.
+A durable current-head issuer and ledgers, independent consumer verification,
+and physical acceptance remain required before any vector set can be frozen.
