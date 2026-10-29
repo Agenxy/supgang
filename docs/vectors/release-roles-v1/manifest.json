@@ -340,6 +340,18 @@
       "sha256": "5973e140354ddbd446e0d0bd9b53d08ddd3a03c57bab7c6317c655c357a31bb5"
     },
     {
+      "bytes": 16385,
+      "expectation": "necessarily multi-fault: pre-parse length bound",
+      "file": "refuse-statement-over-envelope-limit.cbor",
+      "sha256": "4465d89da4f7f71b0ce211c9a63e834aa9c869358b85a9a64a9988eea3d6b7f0"
+    },
+    {
+      "bytes": 262145,
+      "expectation": "necessarily multi-fault: pre-parse length bound",
+      "file": "refuse-authority-over-bundle-limit.cbor",
+      "sha256": "b27a032984ea8a6bec700c3d6f63f8fcfbf8ff8ef87e972891feda4eea4aad0c"
+    },
+    {
       "bytes": 300,
       "expectation": "accept: opt-in preview release without assertion",
       "file": "unattended-statement.cbor",

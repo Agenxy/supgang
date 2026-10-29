@@ -58,7 +58,7 @@ fn committed_release_role_bundle_has_exact_hashes_and_one_cbor_item() -> TestRes
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?
         .as_array()
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?;
-    assert_eq!(files.len(), 107);
+    assert_eq!(files.len(), 109);
     for file in files {
         let name = file
             .get("file")
@@ -110,6 +110,42 @@ fn committed_release_role_bundle_refuses_noncanonical_record_forms() -> TestResu
         let name = format!("refuse-assertion-{mutation}.cbor");
         assert!(Assertion::decode(&fs::read(output.join(&name))?).is_err(), "{name}");
     }
+    Ok(())
+}
+
+#[test]
+fn committed_release_role_bundle_refuses_aggregate_lengths_before_parsing() -> TestResult {
+    let output = output_dir();
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(output.join("manifest.json"))?)?;
+    let files = manifest
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| std::io::Error::other("missing manifest files"))?;
+    for name in [
+        "refuse-statement-over-envelope-limit.cbor",
+        "refuse-authority-over-bundle-limit.cbor",
+    ] {
+        let entry = files
+            .iter()
+            .find(|entry| entry.get("file").and_then(serde_json::Value::as_str) == Some(name))
+            .ok_or_else(|| std::io::Error::other("missing aggregate bound fixture"))?;
+        assert_eq!(
+            entry.get("expectation").and_then(serde_json::Value::as_str),
+            Some("necessarily multi-fault: pre-parse length bound")
+        );
+    }
+    let statement = fs::read(output.join("refuse-statement-over-envelope-limit.cbor"))?;
+    assert_eq!(statement.len(), crate::threshold::release_statement::MAX_BYTES + 1);
+    assert!(matches!(
+        SignedStatement::decode(&statement),
+        Err(crate::threshold::Error::Bound)
+    ));
+    let bundle = fs::read(output.join("refuse-authority-over-bundle-limit.cbor"))?;
+    assert_eq!(bundle.len(), crate::threshold::release_bundle::MAX_BYTES + 1);
+    assert!(matches!(
+        ReleaseBundle::decode(&bundle),
+        Err(crate::threshold::Error::Bound)
+    ));
     Ok(())
 }
 

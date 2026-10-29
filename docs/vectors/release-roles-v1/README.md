@@ -6,9 +6,16 @@ their root-signed steps, ADR 0005 shared status, a carried-device owner assertio
 and carried and unattended release statements. It replaces the earlier
 statement-only draft vectors.
 
-The records use public disposable test scalars. The normal certificate is
-deterministically regenerated with a code-signing key distinct from the release
-key. A separate 4,096-byte certificate exercises the size edge. A `hardware`
+The 109-file manifest includes two aggregate pre-parse length refusals: 16,385
+bytes for a statement and 262,145 bytes for an authority bundle. ADR 0007
+labels these necessarily multi-fault because every otherwise valid nested
+record stays below the aggregate ceiling. Verifiers reject them on length
+before decoding their contents.
+
+The records use public disposable test scalars. The normal certificate uses a
+code-signing key distinct from the release key. Its reviewed public DER is
+pinned because ECDSA certificate signatures can vary on reissuance. A separate
+pinned 4,096-byte certificate exercises the size edge. A `hardware`
 custody label in these records is **not** a physical hardware proof. The example
 consumer is `org.agenxy.Remap`, whose preview version is
 `0.3.0-preview.4` (`[0, 3, 0, ["preview", 4]]`). The example default install

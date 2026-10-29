@@ -138,8 +138,8 @@ fn generate_release_role_vectors() -> TestResult {
         "accept: root signature over unattended role step",
     )?;
 
-    let certificate = certificate::cert_der()?;
-    let edge_certificate = certificate::max_cert_der()?;
+    let certificate = certificate::cert_der(&output)?;
+    let edge_certificate = certificate::max_cert_der(&output)?;
     let (_, parsed_certificate) = x509_parser::parse_x509_certificate(&certificate)
         .map_err(|_| std::io::Error::other("invalid pinned test certificate"))?;
     let certificate_start = u64::try_from(parsed_certificate.validity().not_before.timestamp())?;
@@ -499,6 +499,7 @@ fn generate_release_role_vectors() -> TestResult {
     encoding::write(&output, &mut records, "status", &signed_status.encode()?)?;
     encoding::write(&output, &mut records, "statement", &carried.encode()?)?;
     encoding::write(&output, &mut records, "assertion", &assertion.encode()?)?;
+    encoding::write_aggregate_lengths(&output, &mut records)?;
 
     let unattended_content = content(hive, unattended.id, 5);
     let unattended_content_bytes = unattended_content.encode()?;

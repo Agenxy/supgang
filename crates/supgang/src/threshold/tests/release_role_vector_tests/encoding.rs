@@ -70,3 +70,22 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, record:
     )?;
     Ok(())
 }
+
+/// Aggregate ceilings are pre-parse guards above every valid nested record.
+/// These intentionally also fail inner decoding, so the manifest labels them.
+pub(super) fn write_aggregate_lengths(output: &Path, records: &mut Vec<serde_json::Value>) -> TestResult {
+    save(
+        output,
+        records,
+        "refuse-statement-over-envelope-limit.cbor",
+        &vec![0; crate::threshold::release_statement::MAX_BYTES + 1],
+        "necessarily multi-fault: pre-parse length bound",
+    )?;
+    save(
+        output,
+        records,
+        "refuse-authority-over-bundle-limit.cbor",
+        &vec![0; crate::threshold::release_bundle::MAX_BYTES + 1],
+        "necessarily multi-fault: pre-parse length bound",
+    )
+}
