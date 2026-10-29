@@ -389,6 +389,7 @@ async fn service_loop(
                 &mut outbound_in_flight,
             )
             .await;
+            next_dial = retry_schedule::on_link_retry_deadline(&active, directory, unix_time()?, now, next_dial);
         }
         silence.retire_departed_and_schedule(&mut active, &mut noncanonical_outbound, &mut next_dial, now);
         silence.observe(&active);
@@ -421,6 +422,7 @@ async fn service_loop(
         let mut unused_outbound_slot = false;
         finish_ready_sessions(
             &mut priority_inbound_tasks,
+            &mut inbound_admission,
             &mut unused_outbound_slot,
             &mut LiveSessionState {
                 update: Some(&update_context),
@@ -443,6 +445,7 @@ async fn service_loop(
         )?;
         finish_ready_sessions(
             &mut inbound_tasks,
+            &mut inbound_admission,
             &mut unused_outbound_slot,
             &mut LiveSessionState {
                 update: Some(&update_context),
@@ -472,6 +475,7 @@ async fn service_loop(
         )?;
         finish_ready_sessions(
             &mut outbound_tasks,
+            &mut inbound_admission,
             &mut outbound_in_flight,
             &mut LiveSessionState {
                 update: Some(&update_context),

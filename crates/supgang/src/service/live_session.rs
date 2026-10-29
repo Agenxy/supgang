@@ -25,7 +25,9 @@ use super::{
 #[cfg(test)]
 use super::make_local_contact;
 
+mod completion;
 mod recovery;
+pub(super) use completion::finish_ready_sessions;
 #[cfg(test)]
 use recovery::eligible_hints;
 use recovery::{on_link_bypass_candidates, recovery_candidates};
@@ -427,29 +429,6 @@ pub(super) async fn cancel_pending_replacements(
         pending.connection.close(2_u8.into(), reason);
     }
     replacements.clear();
-}
-
-pub(super) fn finish_ready_sessions(
-    tasks: &mut tokio::task::JoinSet<SessionTaskResult>,
-    outbound_in_flight: &mut bool,
-    live: &mut LiveSessionState<'_>,
-) -> Result<(), ServiceError> {
-    while let Some(joined) = tasks.try_join_next() {
-        let completed = joined?;
-        if completed.claimed_outbound_slot {
-            *outbound_in_flight = false;
-        }
-        if let Some((exchange, connection)) = completed.authenticated {
-            live.finish_authenticated(
-                connection,
-                exchange,
-                completed.origin,
-                completed.superseded,
-                completed.registered_old,
-            )?;
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn schedule_remembered_peer(

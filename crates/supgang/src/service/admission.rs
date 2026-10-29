@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, net::IpAddr, time::Duration};
 
 const MAX_SESSIONS_PER_SOURCE_WINDOW: u8 = 1;
+const MAX_SESSIONS_PER_AUTHENTICATED_SOURCE_WINDOW: u8 = 2;
 const MAX_TRACKED_SOURCES: usize = 64;
 const SOURCE_WINDOW: Duration = Duration::from_secs(30);
 
@@ -12,6 +13,7 @@ const _: () = assert!(SOURCE_WINDOW.as_secs() > super::CONNECT_TIMEOUT_SECONDS +
 struct SourceWindow {
     started: tokio::time::Instant,
     admitted: u8,
+    authenticated: bool,
 }
 
 /// Limits work started after QUIC address validation but before peer authentication.
@@ -34,7 +36,12 @@ impl InboundAdmission {
             .retain(|_, window| now.saturating_duration_since(window.started) < SOURCE_WINDOW);
         let source = canonical_source(address.ip());
         if let Some(window) = self.sources.get_mut(&source) {
-            if window.admitted >= MAX_SESSIONS_PER_SOURCE_WINDOW {
+            let limit = if window.authenticated {
+                MAX_SESSIONS_PER_AUTHENTICATED_SOURCE_WINDOW
+            } else {
+                MAX_SESSIONS_PER_SOURCE_WINDOW
+            };
+            if window.admitted >= limit {
                 return false;
             }
             window.admitted = window.admitted.saturating_add(1);
@@ -56,9 +63,20 @@ impl InboundAdmission {
             SourceWindow {
                 started: now,
                 admitted: 1,
+                authenticated: false,
             },
         );
         true
+    }
+
+    /// Grants one bounded return attempt only after this source completes a
+    /// cryptographically authenticated member session and Sync exchange.
+    pub(super) fn note_authenticated(&mut self, address: std::net::SocketAddr, now: tokio::time::Instant) {
+        if let Some(window) = self.sources.get_mut(&canonical_source(address.ip()))
+            && now.saturating_duration_since(window.started) < SOURCE_WINDOW
+        {
+            window.authenticated = true;
+        }
     }
 }
 
@@ -112,7 +130,10 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::time::Duration;
 
-    use super::{InboundAdmission, MAX_SESSIONS_PER_SOURCE_WINDOW, MAX_TRACKED_SOURCES, SOURCE_WINDOW};
+    use super::{
+        InboundAdmission, MAX_SESSIONS_PER_AUTHENTICATED_SOURCE_WINDOW, MAX_SESSIONS_PER_SOURCE_WINDOW,
+        MAX_TRACKED_SOURCES, SOURCE_WINDOW,
+    };
 
     #[test]
     fn one_validated_source_cannot_occupy_the_inbound_pool() {
@@ -121,6 +142,23 @@ mod tests {
         let mut admission = InboundAdmission::new();
         for offset in 0..MAX_SESSIONS_PER_SOURCE_WINDOW {
             assert!(admission.allow(SocketAddr::new(source.ip(), source.port() + u16::from(offset)), now));
+        }
+        assert!(!admission.allow(source, now));
+        assert!(admission.allow(source, now + SOURCE_WINDOW));
+    }
+
+    #[test]
+    fn authenticated_source_gets_one_bounded_return_attempt() {
+        let now = tokio::time::Instant::now();
+        let ip = Ipv4Addr::new(192, 0, 2, 9);
+        let source = SocketAddr::from((ip, 40_000));
+        let mapped = SocketAddr::from((ip.to_ipv6_mapped(), 40_001));
+        let mut admission = InboundAdmission::new();
+        assert!(admission.allow(source, now));
+        assert!(!admission.allow(mapped, now));
+        admission.note_authenticated(source, now);
+        for _ in MAX_SESSIONS_PER_SOURCE_WINDOW..MAX_SESSIONS_PER_AUTHENTICATED_SOURCE_WINDOW {
+            assert!(admission.allow(mapped, now));
         }
         assert!(!admission.allow(source, now));
         assert!(admission.allow(source, now + SOURCE_WINDOW));
