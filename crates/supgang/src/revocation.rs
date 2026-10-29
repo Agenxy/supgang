@@ -330,7 +330,7 @@ mod tests {
         let empty = SignedRevocationList::empty(&root, 10)?;
         empty.verify(&root.verifying_key())?;
         assert_eq!(empty.list.serial, 0);
-        assert!(empty.list.revoked_nodes.is_empty());
+        assert!(empty.list.revoked_nodes.is_empty(), "{:?}", empty.list.revoked_nodes);
         Ok(())
     }
 }

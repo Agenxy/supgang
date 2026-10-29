@@ -142,7 +142,7 @@ third member is reachable, automatic recovery may have nothing to contact.
 
 ## Build and install
 
-Rust 1.97.1 is pinned in `rust-toolchain.toml`. Direct Rust dependencies are exactly pinned and the
+Rust 1.99.1 is pinned in `rust-toolchain.toml`. Direct Rust dependencies are exactly pinned and the
 lockfile is committed.
 
 ```text

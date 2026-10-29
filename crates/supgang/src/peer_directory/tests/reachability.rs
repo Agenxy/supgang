@@ -261,6 +261,7 @@ fn gateway_report_replaces_only_ephemeral_local_provenance() -> Result<(), Box<d
     assert!(directory.replace_local_gateway_reachability(Some(second.clone()), 51)?);
     assert_eq!(directory.reachability_claims(51), [second]);
     assert!(directory.replace_local_gateway_reachability(None, 51)?);
-    assert!(directory.reachability_claims(51).is_empty());
+    let reachability_claims = directory.reachability_claims(51);
+    assert!(reachability_claims.is_empty(), "{reachability_claims:?}");
     Ok(())
 }

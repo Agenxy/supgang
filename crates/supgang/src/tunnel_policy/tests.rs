@@ -8,7 +8,8 @@ fn exposures_are_opt_in_bounded_and_owner_only() -> Result<(), Box<dyn std::erro
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("state");
     drop(state::initialize(&path)?);
-    assert!(load(&path)?.exposures.is_empty());
+    let exposures = load(&path)?.exposures;
+    assert!(exposures.is_empty(), "{exposures:?}");
     let mut policy = TunnelPolicy::default();
     let ssh = ServiceName::new("ssh")?;
     policy.set(ssh.clone(), 22)?;

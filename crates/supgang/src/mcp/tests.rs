@@ -324,7 +324,7 @@ async fn unsupported_protocol_and_oversized_input_fail_closed() -> Result<(), Bo
 
     let oversized = vec![b' '; super::transport::MAX_MCP_REQUEST_BYTES + 1];
     let raw = exchange_bytes(directory.path(), &oversized, true).await?;
-    assert!(raw.is_empty());
+    assert!(raw.is_empty(), "{raw:?}");
     Ok(())
 }
 

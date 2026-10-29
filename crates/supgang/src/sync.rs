@@ -339,7 +339,8 @@ mod tests {
             revocations: SignedRevocationList::empty(&root, 10)?,
         };
         let encoded = encode_bundle(SYNC_OFFER, &page)?;
-        assert!(decode_bundle(&encoded, SYNC_OFFER)?.contacts.is_empty());
+        let contacts = decode_bundle(&encoded, SYNC_OFFER)?.contacts;
+        assert!(contacts.is_empty(), "{contacts:?}");
         let mut malformed = encoded;
         malformed.push(0);
         assert_eq!(decode_bundle(&malformed, SYNC_OFFER), Err(SyncError::InvalidShape));

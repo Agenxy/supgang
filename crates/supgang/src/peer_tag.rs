@@ -529,7 +529,7 @@ mod tests {
 
         let removed = remove(&state_path, PeerTag::new("hOmE")?)?;
         assert_eq!(removed.node_id, first);
-        assert!(removed.tags.is_empty());
+        assert!(removed.tags.is_empty(), "{:?}", removed.tags);
         assert!(load(&state_path)?.find("home").is_none());
         Ok(())
     }

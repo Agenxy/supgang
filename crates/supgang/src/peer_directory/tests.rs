@@ -65,28 +65,19 @@ fn on_link_bypass_requires_a_locally_authenticated_route_and_current_signed_cand
     let address: SocketAddr = "127.0.0.1:4433".parse()?;
     let interface: std::net::IpAddr = "127.0.0.2".parse()?;
     let network = crate::network::InterfaceNetwork::new(interface, "255.0.0.0".parse()?);
-    assert!(
-        directory
-            .authenticated_on_link_routes(peer.node_id(), &[network], 50)
-            .is_empty()
-    );
+    let found = directory.authenticated_on_link_routes(peer.node_id(), &[network], 50);
+    assert!(found.is_empty(), "{found:?}");
     directory.remember_authenticated_route(&founder.identity().device, &signed, address, Some(interface), 50)?;
     assert_eq!(
         directory.authenticated_on_link_routes(peer.node_id(), &[network], 50),
         vec![address]
     );
     let other_interface = crate::network::InterfaceNetwork::new("127.0.0.3".parse()?, "255.0.0.0".parse()?);
-    assert!(
-        directory
-            .authenticated_on_link_routes(peer.node_id(), &[other_interface], 50)
-            .is_empty()
-    );
+    let found = directory.authenticated_on_link_routes(peer.node_id(), &[other_interface], 50);
+    assert!(found.is_empty(), "{found:?}");
     directory.import(contact(&mut founder, &peer, 2, 4_434)?, 50)?;
-    assert!(
-        directory
-            .authenticated_on_link_routes(peer.node_id(), &[network], 50)
-            .is_empty()
-    );
+    let found = directory.authenticated_on_link_routes(peer.node_id(), &[network], 50);
+    assert!(found.is_empty(), "{found:?}");
     directory.import(contact(&mut founder, &peer, 3, 4_433)?, 50)?;
     assert_eq!(
         directory.authenticated_on_link_routes(peer.node_id(), &[network], 50),
@@ -526,8 +517,10 @@ fn revocation_immediately_removes_every_automatic_use() -> Result<(), Box<dyn st
     directory.set_revocations(&revocations)?;
     assert!(directory.is_revoked(&peer.node_id()));
     assert!(directory.usable(&peer.node_id(), 50).is_none());
-    assert!(directory.usable_contacts(50).is_empty());
-    assert!(directory.dial_hints(50).is_empty());
+    let usable_contacts = directory.usable_contacts(50);
+    assert!(usable_contacts.is_empty(), "{usable_contacts:?}");
+    let dial_hints = directory.dial_hints(50);
+    assert!(dial_hints.is_empty(), "{dial_hints:?}");
     assert!(matches!(
         directory.import(signed_contact, 50),
         Err(PeerDirectoryError::Revoked)

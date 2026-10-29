@@ -213,7 +213,8 @@ mod tests {
         let config = EndpointConfig::read(&path)?;
         assert_eq!(config.listen().port(), 44_330);
         assert_eq!(config.local().len(), 1);
-        assert!(config.direct().is_empty());
+        let direct = config.direct();
+        assert!(direct.is_empty(), "{direct:?}");
         assert_eq!(config.mapped().len(), 1);
         Ok(())
     }
