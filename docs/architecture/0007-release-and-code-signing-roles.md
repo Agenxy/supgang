@@ -309,6 +309,10 @@ listed under acceptance. Rules for the tampered forms:
 - Each tampered form has exactly one fault. Every signature, possession proof and binding is
   recomputed after the tampering, so a verifier that checks signatures first still reaches
   the named check.
+- The one exception is an aggregate byte ceiling that valid inner fields cannot reach: the
+  signed statement's 16 384 bytes and the bundle's 262 144 bytes. These ceilings refuse input
+  before it is decoded, and their vectors are labelled as necessarily multi-fault. A verifier
+  must refuse such a vector on its length alone, without decoding any of it.
 - Each of the four records also has encoding refusals: a non-shortest integer, an
   indefinite length, a tag, trailing bytes, and one extra field. The authority bundle also has
   a refusal for each mixed null of its owner fields.
