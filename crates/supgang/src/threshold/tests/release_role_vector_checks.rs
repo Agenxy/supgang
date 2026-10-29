@@ -58,7 +58,7 @@ fn committed_release_role_bundle_has_exact_hashes_and_one_cbor_item() -> TestRes
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?
         .as_array()
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?;
-    assert_eq!(files.len(), 109);
+    assert_eq!(files.len(), 111);
     for file in files {
         let name = file
             .get("file")
@@ -324,6 +324,20 @@ fn committed_release_role_statement_cases() -> TestResult {
             .is_err()
     );
     let excess_assertion = SignedStatement::decode(&fs::read(output.join("refuse-unattended-with-assertion.cbor"))?)?;
+    let excess_challenge = Challenge::decode(&fs::read(output.join("refuse-unattended-extra-challenge.cbor"))?)?;
+    let excess_request = fs::read(output.join("refuse-unattended-extra-request.bin"))?;
+    assert_eq!(excess_request, excess_assertion.content.encode()?);
+    excess_assertion
+        .assertion
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("missing forbidden assertion"))?
+        .verify_binding(&owner, &excess_challenge, &excess_request, excess_challenge.target, NOW)?;
+    let unattended_keys = unattended
+        .signers
+        .iter()
+        .map(|signer| signer.key.clone())
+        .collect::<Vec<_>>();
+    excess_assertion.verify_role_signatures(&unattended_keys, usize::from(unattended.threshold))?;
     assert!(
         excess_assertion
             .check_role_policy(&unattended, &["stable"], VERIFY_AT, None)

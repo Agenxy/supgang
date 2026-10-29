@@ -6,7 +6,7 @@ their root-signed steps, ADR 0005 shared status, a carried-device owner assertio
 and carried and unattended release statements. It replaces the earlier
 statement-only draft vectors.
 
-The 109-file manifest includes two aggregate pre-parse length refusals: 16,385
+The 111-file manifest includes two aggregate pre-parse length refusals: 16,385
 bytes for a statement and 262,145 bytes for an authority bundle. ADR 0007
 labels these necessarily multi-fault because every otherwise valid nested
 record stays below the aggregate ceiling. Verifiers reject them on length

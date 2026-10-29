@@ -101,7 +101,40 @@ pub(super) fn write(
         "reject: carried-device statement omits owner assertion",
     )?;
     let mut excess_assertion = unattended_statement.clone();
-    excess_assertion.assertion = Some(assertion.clone());
+    let unattended_request = excess_assertion.content.encode()?;
+    let unattended_challenge = Challenge {
+        target: assertion.target,
+        consumer: assertion.consumer.clone(),
+        operation: assertion.operation.clone(),
+        grant_id: assertion.grant_id,
+        request: unattended_request.clone(),
+        nonce: assertion.nonce,
+        expires_at: NOW + 90,
+    };
+    let mut request_hash = Sha256::new();
+    request_hash.update(REQUEST_DOMAIN);
+    request_hash.update(&unattended_request);
+    let mut bound_assertion = assertion.clone();
+    bound_assertion.request_digest = request_hash.finalize().into();
+    bound_assertion.challenge_digest = unattended_challenge.digest()?;
+    bound_assertion.signature = presence_key
+        .sign_domain(ACTION_DOMAIN, &bound_assertion.payload()?)?
+        .to_bytes();
+    excess_assertion.assertion = Some(bound_assertion);
+    save(
+        output,
+        records,
+        "refuse-unattended-extra-request.bin",
+        &unattended_request,
+        "accept: request bytes bound to the otherwise valid forbidden assertion",
+    )?;
+    save(
+        output,
+        records,
+        "refuse-unattended-extra-challenge.cbor",
+        &unattended_challenge.encode()?,
+        "accept: challenge bound to the unattended statement content",
+    )?;
     save(
         output,
         records,

@@ -400,10 +400,22 @@
       "sha256": "cf80e6ed051a793aa3121d745b13f76469fcc81c954ed73f7f6c69fd94ba3e07"
     },
     {
+      "bytes": 226,
+      "expectation": "accept: request bytes bound to the otherwise valid forbidden assertion",
+      "file": "refuse-unattended-extra-request.bin",
+      "sha256": "009b7eb337e2b8113d17617565a571a87858425ce80cc00e9bc05242151190b2"
+    },
+    {
+      "bytes": 335,
+      "expectation": "accept: challenge bound to the unattended statement content",
+      "file": "refuse-unattended-extra-challenge.cbor",
+      "sha256": "44cd53f9e60a6abd0a93712b750f21593758dad3d25d4a10d64a9f389b0a1cd7"
+    },
+    {
       "bytes": 677,
       "expectation": "reject: unattended statement carries an owner assertion",
       "file": "refuse-unattended-with-assertion.cbor",
-      "sha256": "6e80914e4dd926f6dca2ebfc24759a3a742b47be4603537f7106f34999dfe3b8"
+      "sha256": "69285a2562b278ad23693db5ea0fb2c85eefdb3c357b15fbabfb703ee8f87bb8"
     },
     {
       "bytes": 677,
