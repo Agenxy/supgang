@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    authority::SubjectCustody,
     ids::NodeId,
     threshold::{
         owner_action::{Assertion, Challenge},
@@ -33,6 +34,7 @@ fn required_remap_assertion_binds_exact_challenge_request_and_target() -> TestRe
         signer: signer_key,
         signer_node,
         signer_role: SignerRole::OwnerPresence,
+        signer_custody: SubjectCustody::File,
         possession: [0; 64],
         not_before: 100,
         not_after: 600,
@@ -45,7 +47,7 @@ fn required_remap_assertion_binds_exact_challenge_request_and_target() -> TestRe
         }],
     };
     grant.possession = signer
-        .sign_domain(b"supgang/grant-possession/v1\0", &grant.possession_message()?)?
+        .sign_domain(b"supgang/role-possession/v1\0", &grant.possession_message()?)?
         .to_bytes();
     let request = b"remap-plan-v1:exact-args-and-observed-state".to_vec();
     let challenge = Challenge {

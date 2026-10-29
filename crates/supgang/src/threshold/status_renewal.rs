@@ -12,15 +12,14 @@ use crate::{
     threshold::{Digest, Error, array, canonical, fixed, owner_action::AvailabilityPermit},
 };
 
-/// Proposed, pending owner: the first operating maximum is seven days.
-pub const PROPOSED_MAX_AGE: u64 = 7 * 24 * 60 * 60;
-/// Proposed, pending owner: no unattended renewals in the first epoch.
-pub const PROPOSED_POLICY_CAP: u64 = 0;
-/// Proposed, pending owner: four fresh-presence renewals in the first epoch.
-pub const PROPOSED_PRESENCE_CAP: u64 = 4;
-/// Proposed, pending owner: four total renewals in the first epoch.
-pub const PROPOSED_TOTAL_CAP: u64 = 4;
-const MAX_RENEWALS: u64 = 1024;
+/// Owner-approved first operating maximum (28 Oct 2026): seven days.
+pub const OWNER_MAX_AGE: u64 = 7 * 24 * 60 * 60;
+/// Owner-approved first epoch: no unattended status renewals.
+pub const OWNER_POLICY_CAP: u64 = 0;
+/// Owner-approved first epoch: four fresh-presence status renewals.
+pub const OWNER_PRESENCE_CAP: u64 = 4;
+/// Owner-approved first epoch: four total status renewals.
+pub const OWNER_TOTAL_CAP: u64 = 4;
 /// Domain for the ordinary current-root signature on exact policy content.
 pub const POLICY_DOMAIN: &[u8] = b"supgang/status-policy/v1\0";
 const TERMS_DOMAIN: &[u8] = b"supgang/status-policy-terms/v1\0";
@@ -55,10 +54,10 @@ impl Policy {
         if self.budget_id == [0; 16]
             || self.epoch == 0
             || self.maximum_age == 0
-            || self.maximum_age > PROPOSED_MAX_AGE
-            || self.policy_cap > MAX_RENEWALS
-            || self.presence_cap > MAX_RENEWALS
-            || self.total_cap > MAX_RENEWALS
+            || self.maximum_age > OWNER_MAX_AGE
+            || self.policy_cap > OWNER_POLICY_CAP
+            || self.presence_cap > OWNER_PRESENCE_CAP
+            || self.total_cap > OWNER_TOTAL_CAP
             || self.total_cap > self.policy_cap + self.presence_cap
         {
             return Err(Error::Bound);
@@ -331,7 +330,7 @@ impl Ledger {
             || self.budget_id == [0; 16]
             || self.epoch == 0
             || self.counts.policy.checked_add(self.counts.presence) != Some(self.counts.total)
-            || self.counts.total > MAX_RENEWALS
+            || self.counts.total > OWNER_TOTAL_CAP
             || ((self.status_digest == [0; 32]) != (self.issued_at == 0 && self.counts == Counts::default()))
         {
             return Err(Error::Invalid);
@@ -507,10 +506,10 @@ mod tests {
             root_head: [4; 32],
             budget_id: [5; 16],
             epoch: 1,
-            maximum_age: PROPOSED_MAX_AGE,
-            policy_cap: PROPOSED_POLICY_CAP,
-            presence_cap: PROPOSED_PRESENCE_CAP,
-            total_cap: PROPOSED_TOTAL_CAP,
+            maximum_age: OWNER_MAX_AGE,
+            policy_cap: OWNER_POLICY_CAP,
+            presence_cap: OWNER_PRESENCE_CAP,
+            total_cap: OWNER_TOTAL_CAP,
         }
     }
 
@@ -543,7 +542,16 @@ mod tests {
         invalid.budget_id = [0; 16];
         assert!(invalid.encode().is_err());
         invalid = policy;
-        invalid.maximum_age = PROPOSED_MAX_AGE + 1;
+        invalid.maximum_age = OWNER_MAX_AGE + 1;
+        assert!(invalid.encode().is_err());
+        invalid = policy;
+        invalid.policy_cap = 1;
+        assert!(invalid.encode().is_err());
+        invalid = policy;
+        invalid.presence_cap = OWNER_PRESENCE_CAP + 1;
+        assert!(invalid.encode().is_err());
+        invalid = policy;
+        invalid.total_cap = OWNER_TOTAL_CAP + 1;
         assert!(invalid.encode().is_err());
         Ok(())
     }
@@ -590,7 +598,7 @@ mod tests {
                 .is_err()
         );
         let mut state = initial;
-        for count in 1..=PROPOSED_PRESENCE_CAP {
+        for count in 1..=OWNER_PRESENCE_CAP {
             state = state.draft_issue(
                 &policy,
                 Mode::Presence,

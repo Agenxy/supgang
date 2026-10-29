@@ -1,34 +1,34 @@
 {
   "files": [
     {
-      "bytes": 446,
+      "bytes": 451,
       "expectation": "accept: typed grant payload",
       "file": "grant.cbor",
-      "sha256": "a85ba69c804ea58853d9733d11b0cf88fa63748f59fb0ef8ce385b306e2ead06"
+      "sha256": "6a930b2d2d12c896f94ac02aa8b097792fee16fdd0b4636f57f305cb9ecb39f5"
     },
     {
-      "bytes": 564,
+      "bytes": 569,
       "expectation": "accept: root step content",
       "file": "grant-step.cbor",
-      "sha256": "1d63a0ae444a510c1db0f2a1517588164762c258c3453d48faf3de9568c2d81f"
+      "sha256": "1c065b5deb97f7b3f09afbed6ca633ba734f0cdece75e324fa781af4879d50f3"
     },
     {
       "bytes": 64,
       "expectation": "accept: root signature over step domain and content",
       "file": "grant-step.sig",
-      "sha256": "2de1b8519bdffba9929e8a023b51bfb164ede88c72a2499dcfc13fadce28e897"
+      "sha256": "b71c5f0c0a77ca2e05d9cf44bfa263317d95a386ef8d2527134b2c3f42616fbc"
     },
     {
       "bytes": 166,
       "expectation": "accept: root-signed draft renewal terms",
       "file": "status-policy.cbor",
-      "sha256": "6d440513f349e40e9be57980d320f3ff05be8e5339f7e823d3e5266e26c8a336"
+      "sha256": "b4601f888d39a656b6057f09677e973878ea0da1687d0b886dc641fa46890805"
     },
     {
       "bytes": 211,
       "expectation": "accept: root-signed initial lease at time 1020",
       "file": "status.cbor",
-      "sha256": "aa8870328621369fd18ad58a620aff3256e851544cd466db691341cf4610827d"
+      "sha256": "9ae688f730f2490911db357d9ba8507b8ab0bbff862874a6ba38d1161752c285"
     },
     {
       "bytes": 156,
@@ -64,25 +64,24 @@
       "bytes": 211,
       "expectation": "reject: invalid root signature",
       "file": "status-bad-signature.cbor",
-      "sha256": "1f723cbc5328ccd97aa367ec6041cb840705d62a1c2800b8b4f8d96a8cf3d8e8"
+      "sha256": "e0b0f1d3bdadb08ff799b231e0b89a92624d0455faa974bc861220352d0fe7fc"
     },
     {
       "bytes": 211,
       "expectation": "reject: signed lease names another budget",
       "file": "status-wrong-budget.cbor",
-      "sha256": "fcb15e64ec093daf900168314b7fc259acb4b1927c34e7a5fd81dbaea1bf7df7"
+      "sha256": "3792541005b8aaa6778dee8423d12372810b5cd20f665472e7e2def49c6f1e1a"
     }
   ],
   "hive_hex": "e9089bac250fcc592a3a3578a962c256a1c4fc2c5be326066dfd693a1fb0f8f0",
   "note": "Disposable test keys. Request bytes are opaque Supgang-provider input, not a canonical Remap effect request. No live issuer or physical acceptance is claimed.",
   "pending": [
-    "owner status policy",
-    "durable issuer and target ledgers",
-    "release-statement codec and vectors",
+    "durable current-head issuer and target ledgers",
+    "release-role codec and conformance vectors",
     "physical hardware proof"
   ],
   "protocol": "owner-action-v1-proposal",
-  "root_head_hex": "1d63a0ae444a510c1db0f2a1517588164762c258c3453d48faf3de9568c2d81f",
+  "root_head_hex": "1c065b5deb97f7b3f09afbed6ca633ba734f0cdece75e324fa781af4879d50f3",
   "root_public_key_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
   "signer_public_key_hex": "031e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896e",
   "source_commit": "regenerate from current source; no immutable commit pin yet",

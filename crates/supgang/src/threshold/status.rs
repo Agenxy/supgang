@@ -2,8 +2,8 @@
 //!
 //! No live issuer exists yet. A valid signature bounds staleness; it cannot by
 //! itself prove that an isolated issuer knew about a newer root operation.
-//! Renewal policy and ledger fields are draft, pending owner decisions and
-//! physically proven atomic storage. This codec cannot enable privileged actions.
+//! The owner approved initial renewal limits; issuer current-head evidence and
+//! physically proven atomic storage are still absent. This codec cannot enable privileged actions.
 
 use minicbor::{Decoder, Encoder};
 

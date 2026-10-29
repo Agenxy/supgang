@@ -7,12 +7,13 @@ use minicbor::{Decoder, Encoder};
 
 use super::{Operation, RootStep};
 use crate::{
+    authority::SubjectCustody,
     device_key::{DevicePublicKey, DeviceSignature},
     ids::{HiveId, NodeId},
     threshold::{Digest, Error, array, canonical, count, fixed},
 };
 
-const POSSESSION_DOMAIN: &[u8] = b"supgang/grant-possession/v1\0";
+const POSSESSION_DOMAIN: &[u8] = b"supgang/role-possession/v1\0";
 const MAX_LIFETIME: u64 = 366 * 24 * 60 * 60;
 const MAX_OPERATIONS: usize = 8;
 
@@ -133,7 +134,9 @@ pub struct Grant {
     pub signer_node: NodeId,
     /// Root-enrolled signer class.
     pub signer_role: SignerRole,
-    /// Strict low-S proof over the common grant prefix.
+    /// Root-enrolled custody label; this is not hardware attestation.
+    pub signer_custody: SubjectCustody,
+    /// Strict low-S proof over the canonical grant identity and enrolled signer fields.
     pub possession: [u8; 64],
     /// First permitted UNIX second.
     pub not_before: u64,
@@ -159,12 +162,17 @@ impl Grant {
             return Err(Error::Invalid);
         }
         let mut e = Encoder::new(Vec::new());
-        e.array(5)?
+        e.array(10)?
             .u8(1)?
             .bytes(self.hive.as_bytes())?
             .bytes(&self.id)?
             .str(self.kind.text())?
-            .str(&self.consumer)?;
+            .str(&self.consumer)?
+            .str("p256")?
+            .bytes(&self.signer.to_bytes())?
+            .bytes(self.signer_node.as_bytes())?
+            .str(self.signer_role.text())?
+            .str(custody_text(self.signer_custody))?;
         Ok(e.into_writer())
     }
 
@@ -207,11 +215,12 @@ impl Grant {
             .str(self.kind.text())?
             .str(&self.consumer)?;
         e.array(1)?
-            .array(5)?
+            .array(6)?
             .str("p256")?
             .bytes(&self.signer.to_bytes())?
             .bytes(self.signer_node.as_bytes())?
             .str(self.signer_role.text())?
+            .str(custody_text(self.signer_custody))?
             .bytes(&self.possession)?;
         e.u8(1)?
             .u64(self.not_before)?
@@ -252,13 +261,14 @@ impl Grant {
         let kind = Kind::parse(d.str()?)?;
         let consumer = d.str()?.to_owned();
         array(&mut d, 1)?;
-        array(&mut d, 5)?;
+        array(&mut d, 6)?;
         if d.str()? != "p256" {
             return Err(Error::Invalid);
         }
         let signer = DevicePublicKey::from_bytes(d.bytes()?).map_err(|_| Error::Invalid)?;
         let signer_node = NodeId::from_bytes(fixed(&mut d)?);
         let signer_role = SignerRole::parse(d.str()?)?;
+        let signer_custody = parse_custody(d.str()?)?;
         let possession = fixed(&mut d)?;
         if d.u8()? != 1 {
             return Err(Error::Invalid);
@@ -293,6 +303,7 @@ impl Grant {
             signer,
             signer_node,
             signer_role,
+            signer_custody,
             possession,
             not_before,
             not_after,
@@ -418,11 +429,28 @@ fn valid_name(value: &str, maximum: usize) -> bool {
 
 fn valid_consumer_id(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 96
+        && value.len() <= 128
         && !value.starts_with(['.', '-'])
         && !value.ends_with(['.', '-'])
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphabetic() || byte.is_ascii_digit() || byte == b'.' || byte == b'-')
         && !value.contains("..")
+}
+
+const fn custody_text(value: SubjectCustody) -> &'static str {
+    match value {
+        SubjectCustody::Hardware => "hardware",
+        SubjectCustody::File => "file",
+        SubjectCustody::Synced => "synced",
+    }
+}
+
+fn parse_custody(value: &str) -> Result<SubjectCustody, Error> {
+    match value {
+        "hardware" => Ok(SubjectCustody::Hardware),
+        "file" => Ok(SubjectCustody::File),
+        "synced" => Ok(SubjectCustody::Synced),
+        _ => Err(Error::Invalid),
+    }
 }
