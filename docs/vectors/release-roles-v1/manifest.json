@@ -65,25 +65,25 @@
     },
     {
       "bytes": 707,
-      "expectation": "reject: code-signing kind cannot authorize release statement",
+      "expectation": "reject: pair with release-statement.cbor; code-signing kind cannot authorize release",
       "file": "refuse-release-with-code-signing-grant.cbor",
       "sha256": "76f3d984deea9d7f2a68bce2658a3e89abfeeb9852155e5b5141ecbadf1ecca4"
     },
     {
       "bytes": 336,
-      "expectation": "reject: release kind cannot authorize code-signing identifier",
+      "expectation": "reject: check against code-signing-grant.cbor; release kind cannot authorize code-signing identifier",
       "file": "refuse-code-signing-with-release-grant.cbor",
       "sha256": "4cd96502f8f3dde44729c4b99360c6a7b72962cc72d235e1e9fff41d9d99caa0"
     },
     {
       "bytes": 16,
-      "expectation": "accept: exact code-signing identifier",
+      "expectation": "accept: check against code-signing-grant.cbor; exact code-signing identifier",
       "file": "code-signing-identifier-exact.txt",
       "sha256": "c1363b644db2d3b3e32927221cc86ef05841d9e24cae4b11bf5bf1719b349c8d"
     },
     {
       "bytes": 23,
-      "expectation": "reject: prefix extension is not exact identifier",
+      "expectation": "reject: check against code-signing-grant.cbor; prefix extension is not exact identifier",
       "file": "refuse-code-signing-prefix-identifier.txt",
       "sha256": "99a3afd17465876b8e5cdf5e6ccb74ccd39fdd3f3a66f8905bc2c9ab22d34d0b"
     },
@@ -106,40 +106,76 @@
       "sha256": "966f93a21358acad75744a3afc518dba365325e3ee03ecde0481a30d6f7505e1"
     },
     {
+      "bytes": 646,
+      "expectation": "accept: root-issued threshold-three release role",
+      "file": "multi-signer-role.cbor",
+      "sha256": "12a588e0125d1c6cd3fcf93045668cd8e0cc743ea957b58d99869913adcc74fe"
+    },
+    {
+      "bytes": 767,
+      "expectation": "accept: root step enrolling all three release signers",
+      "file": "multi-signer-role-step.cbor",
+      "sha256": "8e632aef56ddd35506510bd4174bd5b88b62f0044d408e9b56eccc009f8ff936"
+    },
+    {
+      "bytes": 64,
+      "expectation": "accept: root signature over multi-signer role step",
+      "file": "multi-signer-role-step.sig",
+      "sha256": "11d662310ca88ce0f3bc0005363584a13e70f09ae8588556b6457b10be95ba5f"
+    },
+    {
+      "bytes": 362,
+      "expectation": "accept: second owner-action grant valid at verification time",
+      "file": "owner-expiry-grant.cbor",
+      "sha256": "f07b9c111a6c67cbe32a7e044997709a88cff248229c1fa3ff6550e0973d198d"
+    },
+    {
+      "bytes": 483,
+      "expectation": "accept: root-issued second owner-action grant step",
+      "file": "owner-expiry-grant-step.cbor",
+      "sha256": "7d97189e7177ea627b1f7b93c6db80b8b3a6ea093dea2bc69c376abb2de34d47"
+    },
+    {
+      "bytes": 64,
+      "expectation": "accept: root signature over second owner-action grant step",
+      "file": "owner-expiry-grant-step.sig",
+      "sha256": "9af1d20926b7ecc5612be753592f908348d7f2b9ea7c0a701f926afe195a91b6"
+    },
+    {
       "bytes": 166,
       "expectation": "accept: owner-approved root-signed status policy",
       "file": "status-policy.cbor",
-      "sha256": "ad30c956b9e99d98f6a3674fc37ed5275d45066fcab71aaec2006a226742fc82"
+      "sha256": "afe7af6edb028a3b5c8b720ac8ca7728195646399081d81d69024e32059f8352"
     },
     {
-      "bytes": 422,
+      "bytes": 490,
       "expectation": "accept: fresh status at final grant-chain head",
       "file": "status.cbor",
-      "sha256": "6edc133950db5073028c62feffd878425ed757c1db953212727c0ec19c084edc"
+      "sha256": "9a05a9158b9e161859097a575a820e6ccb53a9f17d337782ad237faa9cf12c27"
     },
     {
-      "bytes": 1505,
+      "bytes": 1573,
       "expectation": "accept: canonical carried-device release authority bundle",
       "file": "release-authority.cbor",
-      "sha256": "ae73fd3d7028516b6e3a14e908276a75414bf9a112d138e952e114d9b83948ab"
+      "sha256": "ecb5db89a7109f0964fe0ae2a2b430d83fd9bae290c350629fc50674a616609e"
     },
     {
-      "bytes": 955,
+      "bytes": 1023,
       "expectation": "accept: canonical unattended release authority bundle",
       "file": "unattended-authority.cbor",
-      "sha256": "0bb0bc6ceaa3ba17124652c31ec5e4df8fd5906ced8d2555f68bd8c9235b3a83"
+      "sha256": "532fbe074db812dbce3559aeb61a8e46b12a299ea05ffa538300b055b821e68b"
     },
     {
-      "bytes": 1440,
+      "bytes": 1508,
       "expectation": "reject: owner step and signature must both be present",
       "file": "refuse-authority-owner-step-without-signature.cbor",
-      "sha256": "51aca51c458f1d0ec16c4922c0dccea1010394934af394f96acf0fbfba6d1810"
+      "sha256": "49690e9accd855a7d06fd4003b02798202a471dbd98d6638a75d0df67a6c3a9b"
     },
     {
-      "bytes": 1020,
+      "bytes": 1088,
       "expectation": "reject: owner signature and step must both be present",
       "file": "refuse-authority-owner-signature-without-step.cbor",
-      "sha256": "e1a52abbc0ecc98d1f9b387087b520462fb7153443962bf3bc0cb83131431f8f"
+      "sha256": "16cd673d72ed882de5cbed00bd7ed7aa7b01c3aa886799b17007f2f9446121e2"
     },
     {
       "bytes": 123,
@@ -172,28 +208,40 @@
       "sha256": "e6585a9dab1582f2df2c892bbbe1d5e5117802d995b43e1590e88b395f08b491"
     },
     {
-      "bytes": 646,
-      "expectation": "accept: role with three valid enrolled signer proofs",
-      "file": "multi-signer-role.cbor",
-      "sha256": "67b60e794b83ec436cc2064a59de374008b25e04d507d3ac23bc7a433726e0f0"
+      "bytes": 226,
+      "expectation": "accept: canonical content bytes bound to multi-signer assertion",
+      "file": "multi-signer-request.bin",
+      "sha256": "cec0936ad43231de93276f0b4cdcb1b569f3807054451a9a6f7a163c53d82262"
     },
     {
-      "bytes": 745,
-      "expectation": "accept: valid two-signature ordered envelope",
+      "bytes": 335,
+      "expectation": "accept: owner challenge for threshold-three release statement",
+      "file": "multi-signer-challenge.cbor",
+      "sha256": "c91a63467cb8f2bcdfc6ef46b4f1a904c663570bd288ba105dca53c78d8a52aa"
+    },
+    {
+      "bytes": 813,
+      "expectation": "accept: valid three-signature ordered envelope at active role",
       "file": "multi-signer-statement.cbor",
-      "sha256": "4e443da93f5849a5ad6520172f28a082fce9a77ce0266999d5a1cb76319d8fab"
+      "sha256": "5305cd6d019bbc832a4cf84d8955ea397be1a906b5c224f52e336a1e0d7333ca"
     },
     {
-      "bytes": 745,
-      "expectation": "reject: two valid signatures have descending signer indexes",
+      "bytes": 677,
+      "expectation": "reject: pair with multi-signer-role.cbor; one valid signature is below threshold three",
+      "file": "refuse-fewer-than-threshold-statement.cbor",
+      "sha256": "0fdecece9d646b3ea19174e4d6a350850c7ca9fe0d402945f01c2d59d5ef122e"
+    },
+    {
+      "bytes": 813,
+      "expectation": "reject: three valid signatures have descending signer indexes",
       "file": "refuse-unsorted-signers.cbor",
-      "sha256": "109fe752053a2d3adeced07257707e6ccbec74a546bb68b0674fb6b443af6a40"
+      "sha256": "a0ca8c64f528188d583c34ca4f0745e1f14d9dc589301abf8c1baaf2c7b81ee9"
     },
     {
-      "bytes": 745,
+      "bytes": 813,
       "expectation": "reject: same valid signature repeats one signer index",
       "file": "refuse-duplicate-signers.cbor",
-      "sha256": "9fb12610aca272edb9e23b209a9ca8543d134fc7bdba9a446418a8c700883f0d"
+      "sha256": "ca627f91e61cbece423256c79fe83ce70adfab869f23ba5043994972ee158b5b"
     },
     {
       "bytes": 677,
@@ -250,34 +298,34 @@
       "sha256": "9e89a4f6ba277bf4a1fb3e9e2c3ad82762cf4fd77f571ec850eb8ae9c1b3de0b"
     },
     {
-      "bytes": 423,
+      "bytes": 491,
       "expectation": "reject: equivalent version integer uses non-shortest encoding",
       "file": "refuse-status-nonminimal-integer.cbor",
-      "sha256": "aaa5592a41039a5de2b167d293198499a56fff69d9323f9ff81e279dd89f67e4"
+      "sha256": "11d4e559391746624feb912252287d2082edfe2cd26e55afb36840a2af0374dc"
     },
     {
-      "bytes": 423,
+      "bytes": 491,
       "expectation": "reject: indefinite outer array",
       "file": "refuse-status-indefinite.cbor",
-      "sha256": "d2d9246f1f09c2bd5cf593a0a7a09ca0a6b63b7de3137be977221377c138ac79"
+      "sha256": "4a5890fde87171208478afee375ec9eb41ceb373f268030b484719cac2a4a862"
     },
     {
-      "bytes": 423,
+      "bytes": 491,
       "expectation": "reject: tagged outer record",
       "file": "refuse-status-tag.cbor",
-      "sha256": "44292ceea266d4a9dd063bb7bea8d80cb5e79745500118485f4926f1a4683e9b"
+      "sha256": "ca9e915af6b67cd50ce1ba4d67466590b0fc6bcf1ad5c44c25ac119ba31d2bc3"
     },
     {
-      "bytes": 423,
+      "bytes": 491,
       "expectation": "reject: trailing CBOR item",
       "file": "refuse-status-trailing.cbor",
-      "sha256": "3494ed5faffe6c827155b24fba068c9f515f3327da1955c4f4ddbdff20d6ed79"
+      "sha256": "a928083da5c5d445614a2c2ce45b528094890cef69c00cc6dfe5d7b8f6348151"
     },
     {
-      "bytes": 423,
+      "bytes": 491,
       "expectation": "reject: additional outer field",
       "file": "refuse-status-extra-field.cbor",
-      "sha256": "c1be8ddeb4b2169463472b498517218cabd0ddee379aad2e8dc1724967e593c8"
+      "sha256": "ba51f2a5e0de4a52dd29abdea059f4e863131514b7450e0c8d85626c1f696e2b"
     },
     {
       "bytes": 678,
@@ -424,10 +472,22 @@
       "sha256": "96ec5b12e7fd24d512cc43457ca0ea2106f6aa78ad099e89cecf80070b97efd9"
     },
     {
+      "bytes": 226,
+      "expectation": "accept: canonical request for expiry-bound assertion",
+      "file": "refuse-assertion-at-statement-expiry-request.bin",
+      "sha256": "9db718fb049debd2e45d81cd88da3fe92b57a49c3e1c85daac7ad4f851b1e32e"
+    },
+    {
+      "bytes": 335,
+      "expectation": "accept: owner challenge valid at manifest verification time",
+      "file": "refuse-assertion-at-statement-expiry-challenge.cbor",
+      "sha256": "44b6695e0e03e4bbc2d83c12bf27003a390ac0b9c9752e9e6322733f8467bee0"
+    },
+    {
       "bytes": 677,
-      "expectation": "reject at NOW+20: valid signature and owner window, assertion equals statement expiry",
+      "expectation": "reject: at manifest verification time, valid owner assertion equals statement expiry",
       "file": "refuse-assertion-at-statement-expiry.cbor",
-      "sha256": "9d0f16693f173df1a01a593f10add328969e2cebe0877224ae9d45c9e2ae873a"
+      "sha256": "ae836681f1d6e67d402f972ecc98ec67b8bced356f28556aefb56dbe6e0ca605"
     },
     {
       "bytes": 336,
@@ -592,22 +652,22 @@
       "sha256": "8551ce3e7a6dc62146b978a7bf6199f5dc1a7402dee981c9625a44490960f43a"
     },
     {
-      "bytes": 422,
+      "bytes": 490,
       "expectation": "reject: invalid current-root status signature",
       "file": "status-bad-signature.cbor",
-      "sha256": "48f9e62d5173fe4311141d38fb4d043777ddc78ffb63ab667f63d75e486bd864"
+      "sha256": "5ae611826a2a077f31b08cf21234808d460b2dd6e92d81b6345c3df6f2f05c36"
     },
     {
       "bytes": 336,
       "expectation": "reject: grant hive differs from pinned hive",
       "file": "refuse-cross-hive-grant.cbor",
-      "sha256": "3f68808ed2e5d0847754bc5c0b4072ebd22800960c2f926dec310d9909fdfff4"
+      "sha256": "bc17d587ad0c8f7430a630ec1d56f15b6194c596e94fdb5aef2d6c47b4bed24e"
     },
     {
       "bytes": 332,
       "expectation": "reject: unattended role with file custody",
       "file": "refuse-unattended-file-signer.cbor",
-      "sha256": "451841187bb6b373acbb1adefd9b0eeb8952f2aa151568f0d1cba0c827bd3b47"
+      "sha256": "0a1dbb935c5b5993eae6b14bed5c4e62ac94a6fdfdcaf78bb3e2a6b538a3aa18"
     },
     {
       "bytes": 335,
@@ -617,9 +677,9 @@
     },
     {
       "bytes": 646,
-      "expectation": "reject: pair with release-statement.cbor, which has one signature and this grant requires three",
+      "expectation": "reject: pair with refuse-fewer-than-threshold-statement.cbor; active role requires three signatures",
       "file": "refuse-fewer-than-threshold-grant.cbor",
-      "sha256": "891336ebeb8fd6f947f17b8fd48f17c635314eb9c4645537100b5f5b48370622"
+      "sha256": "12a588e0125d1c6cd3fcf93045668cd8e0cc743ea957b58d99869913adcc74fe"
     },
     {
       "bytes": 677,
@@ -628,49 +688,49 @@
       "sha256": "70faa41860ad809a577177e6d5be1b2d764bf9826088b85b981d9f6fb313cafa"
     },
     {
-      "bytes": 422,
+      "bytes": 490,
       "expectation": "reject: valid root signature but status older than consumer 600-second maximum",
       "file": "refuse-stale-status.cbor",
-      "sha256": "380b9443e3f723209a442d643a532afdd3e93398a8661b0f77384825466dcd93"
+      "sha256": "f9b411b5702d83287698d4fcac97a62ef38fe3874f7769d65982a3aaa035d2c9"
     },
     {
-      "bytes": 405,
+      "bytes": 473,
       "expectation": "reject: root-signed current status omits release grant",
       "file": "refuse-revoked-role-status.cbor",
-      "sha256": "f891c096032c7493955f462a7325f1ee2bee8f19d990ffda6e47a5e3508f50d7"
+      "sha256": "051370dae59b6a3b12175285a2a6256129aefcb42df84933bddae5244074645d"
     },
     {
-      "bytes": 388,
+      "bytes": 456,
       "expectation": "reject: root-signed current status omits release signer member",
       "file": "refuse-revoked-member-status.cbor",
-      "sha256": "8bf76c9d3b11f3ffb5c3c4103775cacb26b54806a212767a377925ff0f174a36"
+      "sha256": "35db8ddc7f9dc0b2f4c75fbb79109d6dbb5dd2fb2935155c8ca4d1b3bf8b4d0d"
     },
     {
       "bytes": 457,
-      "expectation": "reject: pair with accepted four-step chain, role id is already spent",
+      "expectation": "reject: pair with accepted six-step chain, role id is already spent",
       "file": "refuse-reused-role-id-step.cbor",
-      "sha256": "8b2f035b492fceacd587daa7d13b579ea433c6f3400c47350c80bc9650dc0b9f"
+      "sha256": "7c2f519afb9c8975a71a6b8cf71bdbc463a5becae1caae052f12a86e891f1f66"
     },
     {
       "bytes": 64,
       "expectation": "reject: valid root signature does not permit a spent role id",
       "file": "refuse-reused-role-id-step.sig",
-      "sha256": "3e395201b2eeaf49e7c3b193d62b886129ad5c29432c2032c8b7ec5e78c6f09c"
+      "sha256": "09b13b7aaa0c9c4c5f5a9a071890cf1ef803dade63237492511123f7a2dda0d8"
     },
     {
       "bytes": 457,
       "expectation": "reject: signed step predecessor differs from grant issuer head",
       "file": "refuse-stale-issuer-head-step.cbor",
-      "sha256": "8273354579f5681fa7456c164cae3cd3b37ad5ff9238ad79a36e7c7d828ec1b4"
+      "sha256": "99e0e1a6d54bcbee498d04704d1efeeb21a55fb966304d795d03b60cccf363e6"
     },
     {
       "bytes": 64,
       "expectation": "reject: root signature cannot repair a stale issuer head",
       "file": "refuse-stale-issuer-head-step.sig",
-      "sha256": "53c43d1a8ffc1b8e09893fedc073af570a726473a11d4ca035f7dfedee6689fc"
+      "sha256": "0f69c47501debe103551cad920f629a84dfdcba6ec65b318310791deff57c3b4"
     }
   ],
-  "final_root_head_hex": "6a905f63e1ea16c9bf4ea535fcc6e5ace6a3c3921b448e44882211aa13e1430c",
+  "final_root_head_hex": "7d97189e7177ea627b1f7b93c6db80b8b3a6ea093dea2bc69c376abb2de34d47",
   "hive_hex": "e9089bac250fcc592a3a3578a962c256a1c4fc2c5be326066dfd693a1fb0f8f0",
   "note": "Disposable public test keys. Hardware custody is an enrolled label in this bundle, not physical proof. Consumer high-water storage, artifact bytes, live status issuer and installed cross-host acceptance remain outside these provider fixtures.",
   "protocol": "owner-action-and-release-roles-v1",

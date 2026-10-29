@@ -6,7 +6,7 @@ their root-signed steps, ADR 0005 shared status, a carried-device owner assertio
 and carried and unattended release statements. It replaces the earlier
 statement-only draft vectors.
 
-The 111-file manifest includes two aggregate pre-parse length refusals: 16,385
+The 121-file manifest includes two aggregate pre-parse length refusals: 16,385
 bytes for a statement and 262,145 bytes for an authority bundle. ADR 0007
 labels these necessarily multi-fault because every otherwise valid nested
 record stays below the aggregate ceiling. Verifiers reject them on length
@@ -39,9 +39,13 @@ actual artifact bytes. This provider bundle establishes none of those runtime
 or physical acceptance claims.
 
 Contextual refusal pairs use the pinned values in `manifest.json`: the
-`refuse-fewer-than-threshold-grant.cbor` requires three signatures while
-`release-statement.cbor` carries one; the `refuse-reused-role-id-step` follows
-the four accepted steps and repeats the release role ID; and
+`refuse-fewer-than-threshold-grant.cbor` pairs with
+`refuse-fewer-than-threshold-statement.cbor`, which carries one signature for
+the active three-signer role; the `refuse-reused-role-id-step` follows
+the six accepted steps and repeats the release role ID; and
 `refuse-stale-status.cbor` is checked at `verification_time` with a 600-second
 maximum age. The stale-issuer step has a valid root signature over canonical
 CBOR but is refused because its payload names a different predecessor.
+The assertion-at-statement-expiry vector uses the separately root-issued
+owner grant and is checked at the manifest verification time, where both the
+statement and owner grant are otherwise live.

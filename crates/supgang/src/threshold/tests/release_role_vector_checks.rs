@@ -58,7 +58,7 @@ fn committed_release_role_bundle_has_exact_hashes_and_one_cbor_item() -> TestRes
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?
         .as_array()
         .ok_or_else(|| std::io::Error::other("missing fixture list"))?;
-    assert_eq!(files.len(), 111);
+    assert_eq!(files.len(), 121);
     for file in files {
         let name = file
             .get("file")
@@ -160,6 +160,8 @@ fn committed_release_role_bundle_verifies_and_refuses_named_mutations() -> TestR
         ("unattended-grant-step.cbor", "unattended-grant-step.sig"),
         ("code-signing-grant-step.cbor", "code-signing-grant-step.sig"),
         ("owner-grant-step.cbor", "owner-grant-step.sig"),
+        ("multi-signer-role-step.cbor", "multi-signer-role-step.sig"),
+        ("owner-expiry-grant-step.cbor", "owner-expiry-grant-step.sig"),
     ] {
         let bytes = fs::read(output.join(name))?;
         let signature: [u8; 64] = fs::read(output.join(signature_name))?
@@ -285,12 +287,22 @@ fn committed_release_role_statement_cases() -> TestResult {
     assert!(carried.content == content);
     let multi_role = RoleGrant::decode(&fs::read(output.join("multi-signer-role.cbor"))?)?;
     let multi_statement = SignedStatement::decode(&fs::read(output.join("multi-signer-statement.cbor"))?)?;
+    multi_role.check_active_status(&status.status)?;
+    multi_statement.check_role_policy(&multi_role, &["stable"], VERIFY_AT, None)?;
+    let multi_request = fs::read(output.join("multi-signer-request.bin"))?;
+    let multi_challenge = Challenge::decode(&fs::read(output.join("multi-signer-challenge.cbor"))?)?;
+    assert_eq!(multi_request, multi_statement.content.encode()?);
+    multi_statement
+        .assertion
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("missing multi-signer assertion"))?
+        .verify_binding(&owner, &multi_challenge, &multi_request, multi_challenge.target, NOW)?;
     let multi_keys = multi_role
         .signers
         .iter()
         .map(|signer| signer.key.clone())
         .collect::<Vec<_>>();
-    multi_statement.verify_role_signatures(&multi_keys, 1)?;
+    multi_statement.verify_role_signatures(&multi_keys, 3)?;
     for name in ["refuse-unsorted-signers.cbor", "refuse-duplicate-signers.cbor"] {
         assert!(
             SignedStatement::decode(&fs::read(output.join(name))?).is_err(),
@@ -474,9 +486,39 @@ fn committed_release_role_crypto_refusals() -> TestResult {
         );
     }
     let at_expiry = SignedStatement::decode(&fs::read(output.join("refuse-assertion-at-statement-expiry.cbor"))?)?;
+    let owner_expiry = Grant::decode(&fs::read(output.join("owner-expiry-grant.cbor"))?)?;
+    let status = SignedStatus::decode(&fs::read(output.join("status.cbor"))?)?;
+    assert!(status.status.active_grants.contains(&owner_expiry.id));
+    assert!(status.status.active_members.contains(&owner_expiry.signer_node));
+    assert!(owner_expiry.not_before <= VERIFY_AT && VERIFY_AT <= owner_expiry.not_after);
+    let expiry_request = fs::read(output.join("refuse-assertion-at-statement-expiry-request.bin"))?;
+    let expiry_challenge = Challenge::decode(&fs::read(
+        output.join("refuse-assertion-at-statement-expiry-challenge.cbor"),
+    )?)?;
+    assert_eq!(expiry_request, at_expiry.content.encode()?);
+    let expiry_assertion = at_expiry
+        .assertion
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("missing expiry assertion"))?;
+    expiry_assertion.verify_binding(
+        &owner_expiry,
+        &expiry_challenge,
+        &expiry_request,
+        expiry_challenge.target,
+        VERIFY_AT + 30,
+    )?;
+    assert!(at_expiry.content.issued_at <= VERIFY_AT && VERIFY_AT < at_expiry.content.expires_at);
+    assert_eq!(at_expiry.content.expires_at, VERIFY_AT + 30);
+    assert_eq!(expiry_assertion.issued_at, at_expiry.content.expires_at);
+    let release_keys = release
+        .signers
+        .iter()
+        .map(|signer| signer.key.clone())
+        .collect::<Vec<_>>();
+    at_expiry.verify_role_signatures(&release_keys, usize::from(release.threshold))?;
     assert!(
         at_expiry
-            .check_role_policy(&release, &["stable"], NOW + 20, None)
+            .check_role_policy(&release, &["stable"], VERIFY_AT, None)
             .is_err()
     );
     Ok(())
@@ -486,7 +528,6 @@ fn committed_release_role_crypto_refusals() -> TestResult {
 fn committed_release_role_bundle_refuses_contextual_role_and_statement_cases() -> TestResult {
     let output = output_dir();
     let release = RoleGrant::decode(&fs::read(output.join("release-grant.cbor"))?)?;
-    let carried = SignedStatement::decode(&fs::read(output.join("release-statement.cbor"))?)?;
     let cross_hive = RoleGrant::decode(&fs::read(output.join("refuse-cross-hive-grant.cbor"))?)?;
     assert_ne!(cross_hive.hive, release.hive);
     assert!(RoleGrant::decode(&fs::read(output.join("refuse-unattended-file-signer.cbor"))?).is_err());
@@ -494,8 +535,28 @@ fn committed_release_role_bundle_refuses_contextual_role_and_statement_cases() -
     assert!(default_channel.check_default_channels(&["stable"]).is_err());
     let threshold_three = RoleGrant::decode(&fs::read(output.join("refuse-fewer-than-threshold-grant.cbor"))?)?;
     assert_eq!(threshold_three.threshold, 3);
+    let fewer = SignedStatement::decode(&fs::read(output.join("refuse-fewer-than-threshold-statement.cbor"))?)?;
+    assert_eq!(fewer.content.role_id, threshold_three.id);
+    assert_eq!(fewer.signatures.len(), 1);
+    let owner = Grant::decode(&fs::read(output.join("owner-grant.cbor"))?)?;
+    let multi_request = fs::read(output.join("multi-signer-request.bin"))?;
+    let multi_challenge = Challenge::decode(&fs::read(output.join("multi-signer-challenge.cbor"))?)?;
+    assert_eq!(multi_request, fewer.content.encode()?);
+    fewer
+        .assertion
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("missing threshold refusal assertion"))?
+        .verify_binding(&owner, &multi_challenge, &multi_request, multi_challenge.target, NOW)?;
+    let status = SignedStatus::decode(&fs::read(output.join("status.cbor"))?)?;
+    threshold_three.check_active_status(&status.status)?;
+    let threshold_keys = threshold_three
+        .signers
+        .iter()
+        .map(|signer| signer.key.clone())
+        .collect::<Vec<_>>();
+    assert!(fewer.verify_role_signatures(&threshold_keys, 3).is_err());
     assert!(
-        carried
+        fewer
             .check_role_policy(&threshold_three, &["stable"], VERIFY_AT, None)
             .is_err()
     );

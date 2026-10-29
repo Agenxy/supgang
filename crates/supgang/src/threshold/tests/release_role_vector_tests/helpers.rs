@@ -60,15 +60,17 @@ pub(super) fn release_policy(presence: ReleasePresence, number: u64) -> RolePoli
 
 pub(super) fn owner_grant(
     hive: HiveId,
+    id: u8,
     predecessor: [u8; 32],
     sequence: u64,
     target: NodeId,
+    not_after: u64,
 ) -> Result<Grant, Box<dyn std::error::Error>> {
     let key = FileDeviceKey::from_secret_bytes(&[11; 32])?;
     let public = key.public_key();
     let mut grant = Grant {
         hive,
-        id: [12; 16],
+        id: [id; 16],
         kind: Kind::OwnerAction,
         consumer: "org.agenxy.supgang".into(),
         signer: public,
@@ -77,7 +79,7 @@ pub(super) fn owner_grant(
         signer_custody: SubjectCustody::Hardware,
         possession: [0; 64],
         not_before: NOW - 1000,
-        not_after: NOW + 3600,
+        not_after,
         issuer_head: predecessor,
         issuer_sequence: sequence,
         target: TargetScope::Node(target),

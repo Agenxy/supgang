@@ -191,34 +191,34 @@ fn generate_release_role_vectors() -> TestResult {
         &mut records,
         "refuse-release-with-code-signing-grant.cbor",
         &code_bytes,
-        "reject: code-signing kind cannot authorize release statement",
+        "reject: pair with release-statement.cbor; code-signing kind cannot authorize release",
     )?;
     save(
         &output,
         &mut records,
         "refuse-code-signing-with-release-grant.cbor",
         &release_bytes,
-        "reject: release kind cannot authorize code-signing identifier",
+        "reject: check against code-signing-grant.cbor; release kind cannot authorize code-signing identifier",
     )?;
     save(
         &output,
         &mut records,
         "code-signing-identifier-exact.txt",
         b"org.agenxy.Remap",
-        "accept: exact code-signing identifier",
+        "accept: check against code-signing-grant.cbor; exact code-signing identifier",
     )?;
     save(
         &output,
         &mut records,
         "refuse-code-signing-prefix-identifier.txt",
         b"org.agenxy.Remap.helper",
-        "reject: prefix extension is not exact identifier",
+        "reject: check against code-signing-grant.cbor; prefix extension is not exact identifier",
     )?;
 
-    let owner = owner_grant(hive, code_head, 3, target)?;
+    let owner = owner_grant(hive, 12, code_head, 3, target, NOW + 3600)?;
     let owner_bytes = owner.encode()?;
     let (owner_step, owner_signature) = root_step(&root, code_head, 4, owner_bytes.clone(), proposer)?;
-    let head = owner_step.digest()?;
+    let owner_head = owner_step.digest()?;
     save(
         &output,
         &mut records,
@@ -239,6 +239,67 @@ fn generate_release_role_vectors() -> TestResult {
         "owner-grant-step.sig",
         &owner_signature,
         "accept: root signature over owner-action grant step",
+    )?;
+
+    let multi_base = role_grant(
+        hive,
+        24,
+        (owner_head, 4),
+        (9, SubjectCustody::File),
+        release_policy(ReleasePresence::CarriedDevice, 4),
+        (NOW - 1000, NOW + 90 * 24 * 60 * 60 - 1000),
+    )?;
+    let multi_role = bounds::three_signers(&multi_base)?;
+    let multi_bytes = multi_role.encode()?;
+    let (multi_step, multi_signature) = root_step(&root, owner_head, 5, multi_bytes.clone(), proposer)?;
+    let multi_head = multi_step.digest()?;
+    save(
+        &output,
+        &mut records,
+        "multi-signer-role.cbor",
+        &multi_bytes,
+        "accept: root-issued threshold-three release role",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "multi-signer-role-step.cbor",
+        &multi_step.encode()?,
+        "accept: root step enrolling all three release signers",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "multi-signer-role-step.sig",
+        &multi_signature,
+        "accept: root signature over multi-signer role step",
+    )?;
+
+    let owner_expiry = owner_grant(hive, 13, multi_head, 5, target, VERIFY_AT + 3600)?;
+    let owner_expiry_bytes = owner_expiry.encode()?;
+    let (owner_expiry_step, owner_expiry_signature) =
+        root_step(&root, multi_head, 6, owner_expiry_bytes.clone(), proposer)?;
+    let head = owner_expiry_step.digest()?;
+    save(
+        &output,
+        &mut records,
+        "owner-expiry-grant.cbor",
+        &owner_expiry_bytes,
+        "accept: second owner-action grant valid at verification time",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "owner-expiry-grant-step.cbor",
+        &owner_expiry_step.encode()?,
+        "accept: root-issued second owner-action grant step",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "owner-expiry-grant-step.sig",
+        &owner_expiry_signature,
+        "accept: root signature over second owner-action grant step",
     )?;
 
     let policy = Policy {
@@ -275,6 +336,8 @@ fn generate_release_role_vectors() -> TestResult {
             .node,
         owner.signer_node,
     ];
+    active_members.extend(multi_role.signers.iter().map(|signer| signer.node));
+    active_members.push(owner_expiry.signer_node);
     active_members.sort_unstable();
     active_members.dedup();
     let status = Status {
@@ -282,7 +345,14 @@ fn generate_release_role_vectors() -> TestResult {
         root_head: head,
         member_serial: 0,
         grant_serial: 0,
-        active_grants: vec![release.id, unattended.id, code_signing.id, owner.id],
+        active_grants: vec![
+            release.id,
+            unattended.id,
+            code_signing.id,
+            owner.id,
+            owner_expiry.id,
+            multi_role.id,
+        ],
         active_members,
         issued_at: VERIFY_AT - 20,
         expires_at: VERIFY_AT + 580,
@@ -466,10 +536,10 @@ fn generate_release_role_vectors() -> TestResult {
         &output,
         &mut records,
         &statement_extra::Context {
-            release: &release,
             carried: &carried,
             release_content_bytes: &release_content_bytes,
             assertion: &assertion,
+            multi_role: &multi_role,
             release_key: &release_key,
             presence_key: &presence_key,
         },
@@ -528,6 +598,7 @@ fn generate_release_role_vectors() -> TestResult {
         &carried,
         &unattended_statement,
         &assertion,
+        &owner_expiry,
         &release_key,
         &presence_key,
     )?;
@@ -556,6 +627,7 @@ fn generate_release_role_vectors() -> TestResult {
             hive,
             head,
             release: &release,
+            multi_role: &multi_role,
             unattended: &unattended,
             status: &signed_status,
             statement: &carried,

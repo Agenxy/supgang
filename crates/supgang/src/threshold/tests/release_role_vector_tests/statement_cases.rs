@@ -8,6 +8,7 @@ pub(super) fn write(
     carried: &SignedStatement,
     unattended_statement: &SignedStatement,
     assertion: &Assertion,
+    owner_expiry: &Grant,
     release_key: &FileDeviceKey,
     presence_key: &FileDeviceKey,
 ) -> TestResult {
@@ -157,20 +158,57 @@ pub(super) fn write(
         "reject: valid signature but assertion precedes statement issuance",
     )?;
     let mut at_statement_expiry = carried.clone();
-    at_statement_expiry.content.expires_at = NOW + 30;
+    at_statement_expiry.content.expires_at = VERIFY_AT + 30;
+    let expiry_request = at_statement_expiry.content.encode()?;
+    let expiry_challenge = Challenge {
+        target: assertion.target,
+        consumer: assertion.consumer.clone(),
+        operation: assertion.operation.clone(),
+        grant_id: owner_expiry.id,
+        request: expiry_request.clone(),
+        nonce: assertion.nonce,
+        expires_at: VERIFY_AT + 90,
+    };
     let assertion_at_expiry = at_statement_expiry
         .assertion
         .as_mut()
         .ok_or_else(|| std::io::Error::other("missing assertion"))?;
-    assertion_at_expiry.issued_at = NOW + 30;
-    assertion_at_expiry.expires_at = NOW + 60;
+    assertion_at_expiry.grant_id = owner_expiry.id;
+    assertion_at_expiry.challenge_digest = expiry_challenge.digest()?;
+    assertion_at_expiry.issued_at = VERIFY_AT + 30;
+    assertion_at_expiry.expires_at = VERIFY_AT + 60;
     resign_carried(&mut at_statement_expiry, release_key, presence_key)?;
+    at_statement_expiry
+        .assertion
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("missing assertion"))?
+        .verify_binding(
+            owner_expiry,
+            &expiry_challenge,
+            &expiry_request,
+            expiry_challenge.target,
+            VERIFY_AT + 30,
+        )?;
+    save(
+        output,
+        records,
+        "refuse-assertion-at-statement-expiry-request.bin",
+        &expiry_request,
+        "accept: canonical request for expiry-bound assertion",
+    )?;
+    save(
+        output,
+        records,
+        "refuse-assertion-at-statement-expiry-challenge.cbor",
+        &expiry_challenge.encode()?,
+        "accept: owner challenge valid at manifest verification time",
+    )?;
     save(
         output,
         records,
         "refuse-assertion-at-statement-expiry.cbor",
         &at_statement_expiry.encode()?,
-        "reject at NOW+20: valid signature and owner window, assertion equals statement expiry",
+        "reject: at manifest verification time, valid owner assertion equals statement expiry",
     )?;
     Ok(())
 }

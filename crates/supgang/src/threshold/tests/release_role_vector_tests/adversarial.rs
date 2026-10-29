@@ -26,6 +26,7 @@ pub(super) struct Base<'a> {
     pub hive: HiveId,
     pub head: [u8; 32],
     pub release: &'a RoleGrant,
+    pub multi_role: &'a RoleGrant,
     pub unattended: &'a RoleGrant,
     pub status: &'a SignedStatus,
     pub statement: &'a SignedStatement,
@@ -85,13 +86,12 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &
         "reject: independently protected stable default channel intersects unattended role",
     )?;
 
-    let threshold_three = bounds::three_signers(base.release)?;
     save(
         output,
         records,
         "refuse-fewer-than-threshold-grant.cbor",
-        &threshold_three.encode()?,
-        "reject: pair with release-statement.cbor, which has one signature and this grant requires three",
+        &base.multi_role.encode()?,
+        "reject: pair with refuse-fewer-than-threshold-statement.cbor; active role requires three signatures",
     )?;
 
     let mut wrong_consumer = base.statement.clone();
@@ -156,19 +156,19 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &
     let duplicate = role_grant(
         base.hive,
         base.release.id[0],
-        (base.head, 4),
+        (base.head, 6),
         (9, SubjectCustody::File),
         release_policy(ReleasePresence::CarriedDevice, 4),
         (NOW - 1000, NOW + 1000),
     )?;
     let proposer = device_node_id(FileDeviceKey::from_secret_bytes(&[9; 32])?.public_key());
-    let (duplicate_step, duplicate_signature) = root_step(base.root, base.head, 5, duplicate.encode()?, proposer)?;
+    let (duplicate_step, duplicate_signature) = root_step(base.root, base.head, 7, duplicate.encode()?, proposer)?;
     save(
         output,
         records,
         "refuse-reused-role-id-step.cbor",
         &duplicate_step.encode()?,
-        "reject: pair with accepted four-step chain, role id is already spent",
+        "reject: pair with accepted six-step chain, role id is already spent",
     )?;
     save(
         output,
@@ -181,7 +181,7 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &
     let stale_issuer = role_grant(
         base.hive,
         23,
-        ([42; 32], 4),
+        ([42; 32], 6),
         (9, SubjectCustody::File),
         release_policy(ReleasePresence::CarriedDevice, 4),
         (NOW - 1000, NOW + 1000),
@@ -191,7 +191,7 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &
         .u8(1)?
         .bytes(base.hive.as_bytes())?
         .bytes(&base.head)?
-        .u64(5)?
+        .u64(7)?
         .u64(0)?
         .u64(0)?
         .str("grant")?
