@@ -132,9 +132,9 @@ authority.
 - **Exposure is explicit.** A guest never matches a member exposure. A service is reachable by
   guests only if the sponsor's owner exposed it to guests of that consumer, for example
   `supgang expose k7-coord 7443 --guests org.agenxy.k7`. Default deny holds for every guest.
-- **Authority ends together.** Authorization covers the grant's lifetime, issuer-role and guest revocation, local
-  deny, exposure removal and session loss. Any one of these cancels the guest's streams at once,
-  as `SessionAuthorization` already does for members.
+- **Authority ends together.** Authorization covers the grant's lifetime, issuer-role and guest
+  revocation, local deny, exposure removal and session loss. Any one of these cancels the
+  guest's streams at once, as `SessionAuthorization` already does for members.
 - **Strict mode.** Admitting guests opens no public connection that the sponsor would not
   otherwise make.
 
