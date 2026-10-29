@@ -14,7 +14,11 @@ use crate::{
     threshold::{
         Digest, Error, array, canonical, count, fixed,
         owner_action::{ACTION_DOMAIN, Assertion, REQUEST_DOMAIN},
-        step::role_grant::{ReleasePresence, RoleGrant, RolePolicy},
+        status::Status,
+        step::{
+            grant::{Grant, Presence, SignerRole, TargetScope},
+            role_grant::{ReleasePresence, RoleGrant, RolePolicy},
+        },
     },
 };
 
@@ -541,12 +545,14 @@ impl SignedStatement {
         };
         let mut hash = Sha256::new();
         hash.update(REQUEST_DOMAIN);
-        hash.update(self.content.digest()?);
+        hash.update(self.content.encode()?);
         let request_digest: Digest = hash.finalize().into();
         if assertion.hive != self.content.hive
             || assertion.consumer != "org.agenxy.supgang"
             || assertion.operation != "release.sign"
             || assertion.request_digest != request_digest
+            || assertion.issued_at < self.content.issued_at
+            || assertion.issued_at >= self.content.expires_at
         {
             return Err(Error::Authority);
         }
@@ -555,6 +561,41 @@ impl SignedStatement {
             .signer_key
             .verify_domain(ACTION_DOMAIN, &assertion.payload()?, &signature)
             .map_err(|_| Error::Proof)
+    }
+
+    /// Check the owner grant at signing time and its unrevoked status now.
+    ///
+    /// The caller first authenticates the root grant and status separately.
+    /// Challenge issuance and nonce consumption are signing-host checks, not
+    /// install-time checks; the challenge digest must still be present.
+    ///
+    /// # Errors
+    /// Refuses a mismatched or inactive owner grant or approval outside its time.
+    pub fn check_carried_authority(&self, owner: &Grant, status: &Status) -> Result<(), Error> {
+        self.check_release_assertion(true)?;
+        owner.encode()?;
+        let assertion = self.assertion.as_ref().ok_or(Error::Authority)?;
+        let scope_matches = matches!(owner.target, TargetScope::Node(node) if node == assertion.target)
+            || matches!(owner.target, TargetScope::HiveNodes(hive) if hive == self.content.hive);
+        if owner.hive != self.content.hive
+            || owner.consumer != "org.agenxy.supgang"
+            || owner.id != assertion.grant_id
+            || owner.signer_role != SignerRole::OwnerPresence
+            || owner.signer_node != assertion.signer_node
+            || owner.signer != assertion.signer_key
+            || !scope_matches
+            || assertion.challenge_digest == [0; 32]
+            || assertion.issued_at < owner.not_before
+            || assertion.issued_at > owner.not_after
+            || status.hive != self.content.hive
+            || !owner
+                .operations
+                .iter()
+                .any(|operation| operation.name == "release.sign" && operation.presence == Presence::Required)
+        {
+            return Err(Error::Authority);
+        }
+        status.check_active_grant(&owner.id, &[owner.signer_node])
     }
 }
 

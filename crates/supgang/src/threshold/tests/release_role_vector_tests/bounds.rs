@@ -167,12 +167,14 @@ pub(super) fn write_edge_fixtures(
     release: &RoleGrant,
     unattended: &RoleGrant,
     code_signing: &RoleGrant,
+    edge_certificate: &[u8],
 ) -> TestResult {
     let mut valid = release.clone();
     valid.consumer = "x".repeat(128);
     resign_one(&mut valid, 9)?;
     let mut invalid = valid.clone();
     invalid.consumer.push('x');
+    resign_one(&mut invalid, 9)?;
     pair(output, records, "consumer-bytes", &valid, &invalid)?;
 
     valid = release.clone();
@@ -261,6 +263,10 @@ pub(super) fn write_edge_fixtures(
     pair(output, records, "identifier-bytes", &valid, &invalid)?;
 
     valid = code_signing.clone();
+    if let RolePolicy::CodeSigning { certificate, .. } = &mut valid.policy {
+        *certificate = edge_certificate.to_vec();
+    }
+    resign_one(&mut valid, 14)?;
     invalid = valid.clone();
     if let RolePolicy::CodeSigning { certificate, .. } = &mut invalid.policy {
         certificate.push(0);

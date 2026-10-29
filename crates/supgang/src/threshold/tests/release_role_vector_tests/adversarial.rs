@@ -5,7 +5,7 @@ use std::path::Path;
 use ed25519_dalek::Signer as _;
 use minicbor::Encoder;
 
-use super::{NOW, TestResult, bounds, release_policy, role_grant, root_step, save};
+use super::{NOW, TestResult, VERIFY_AT, bounds, release_policy, resign_carried, role_grant, root_step, save};
 use crate::{
     authority::{SubjectCustody, device_node_id},
     device_key::{DeviceSigner as _, FileDeviceKey},
@@ -32,6 +32,15 @@ pub(super) struct Base<'a> {
 }
 
 pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &Base<'_>) -> TestResult {
+    let mut bad_status = base.status.clone();
+    bad_status.signature[0] ^= 1;
+    save(
+        output,
+        records,
+        "status-bad-signature.cbor",
+        &bad_status.encode()?,
+        "reject: invalid current-root status signature",
+    )?;
     let other_hive = role_grant(
         HiveId::from_bytes([99; 32]),
         20,
@@ -87,6 +96,11 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &
 
     let mut wrong_consumer = base.statement.clone();
     wrong_consumer.content.consumer_id = "org.agenxy.Other".into();
+    resign_carried(
+        &mut wrong_consumer,
+        &FileDeviceKey::from_secret_bytes(&[9; 32])?,
+        &FileDeviceKey::from_secret_bytes(&[11; 32])?,
+    )?;
     save(
         output,
         records,
@@ -95,9 +109,9 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &
         "reject: signed statement consumer differs from exact root grant consumer",
     )?;
 
-    let mut stale_status = *base.status;
-    stale_status.status.issued_at = NOW - 601;
-    stale_status.status.expires_at = NOW + 1;
+    let mut stale_status = base.status.clone();
+    stale_status.status.issued_at = VERIFY_AT - 601;
+    stale_status.status.expires_at = VERIFY_AT + 1;
     let mut message = STATUS_DOMAIN.to_vec();
     message.extend_from_slice(&stale_status.status.encode()?);
     stale_status.signature = base.root.sign(&message).to_bytes();
@@ -107,6 +121,36 @@ pub(super) fn write(output: &Path, records: &mut Vec<serde_json::Value>, base: &
         "refuse-stale-status.cbor",
         &stale_status.encode()?,
         "reject: valid root signature but status older than consumer 600-second maximum",
+    )?;
+    let mut revoked_role = base.status.clone();
+    revoked_role.status.active_grants.retain(|id| id != &base.release.id);
+    let mut message = STATUS_DOMAIN.to_vec();
+    message.extend_from_slice(&revoked_role.status.encode()?);
+    revoked_role.signature = base.root.sign(&message).to_bytes();
+    save(
+        output,
+        records,
+        "refuse-revoked-role-status.cbor",
+        &revoked_role.encode()?,
+        "reject: root-signed current status omits release grant",
+    )?;
+    let mut revoked_member = base.status.clone();
+    let signer = base
+        .release
+        .signers
+        .first()
+        .ok_or_else(|| std::io::Error::other("missing signer"))?
+        .node;
+    revoked_member.status.active_members.retain(|node| node != &signer);
+    let mut message = STATUS_DOMAIN.to_vec();
+    message.extend_from_slice(&revoked_member.status.encode()?);
+    revoked_member.signature = base.root.sign(&message).to_bytes();
+    save(
+        output,
+        records,
+        "refuse-revoked-member-status.cbor",
+        &revoked_member.encode()?,
+        "reject: root-signed current status omits release signer member",
     )?;
 
     let duplicate = role_grant(

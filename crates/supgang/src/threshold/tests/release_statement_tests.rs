@@ -56,7 +56,7 @@ fn carried_assertion(content: &Content) -> Result<Assertion, Box<dyn std::error:
     let signer = FileDeviceKey::from_secret_bytes(&[11; 32])?;
     let mut request_hash = Sha256::new();
     request_hash.update(REQUEST_DOMAIN);
-    request_hash.update(content.digest()?);
+    request_hash.update(content.encode()?);
     let mut assertion = Assertion {
         hive: content.hive,
         signer_node: device_node_id(signer.public_key()),

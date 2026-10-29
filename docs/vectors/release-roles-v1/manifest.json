@@ -40,130 +40,370 @@
       "sha256": "279fe9c3b068a755437cf4d30eca5370ec88fc90d1d7e8fe7f95217625be424b"
     },
     {
-      "bytes": 4403,
+      "bytes": 707,
       "expectation": "accept: self-issued code-signing certificate bound to P-256 role signer",
       "file": "code-signing-grant.cbor",
-      "sha256": "8b03d8ddccaf23c636695eae0abd25b1666862706a12504531b980d3158a6b1f"
+      "sha256": "76f3d984deea9d7f2a68bce2658a3e89abfeeb9852155e5b5141ecbadf1ecca4"
     },
     {
-      "bytes": 4524,
+      "bytes": 828,
       "expectation": "accept: root-issued code-signing role step",
       "file": "code-signing-grant-step.cbor",
-      "sha256": "076422b38dcfcc53c9f4fc7de5c62b7d89ccc077e85bdcee5caa27059c4c3d06"
+      "sha256": "d444bf28d1a6ea048a24d1e2da8c0c034d12557e049076220fe12d819fdd9d34"
     },
     {
       "bytes": 64,
       "expectation": "accept: root signature over code-signing role step",
       "file": "code-signing-grant-step.sig",
-      "sha256": "a11752fd8a89dbb15d2bce8373353d66ecbe7fd34f4a4979d8a80fee30e304af"
+      "sha256": "47e7497622ec986768968336132e8619a01550d341d52d1cda715b9b551685a2"
     },
     {
-      "bytes": 4096,
+      "bytes": 400,
       "expectation": "accept: public test certificate used by code-signing role",
       "file": "code-signing-cert.der",
-      "sha256": "01f1bb1887448d16d0252570821be4139d4b7bb231bffe1ac5de9f76984ca3bc"
+      "sha256": "8a1831e8b4450bc22dbb2bd9dc74990ac1fe52c4361498f77ce4b430bf3e1e06"
     },
     {
-      "bytes": 358,
+      "bytes": 707,
+      "expectation": "reject: code-signing kind cannot authorize release statement",
+      "file": "refuse-release-with-code-signing-grant.cbor",
+      "sha256": "76f3d984deea9d7f2a68bce2658a3e89abfeeb9852155e5b5141ecbadf1ecca4"
+    },
+    {
+      "bytes": 336,
+      "expectation": "reject: release kind cannot authorize code-signing identifier",
+      "file": "refuse-code-signing-with-release-grant.cbor",
+      "sha256": "4cd96502f8f3dde44729c4b99360c6a7b72962cc72d235e1e9fff41d9d99caa0"
+    },
+    {
+      "bytes": 16,
+      "expectation": "accept: exact code-signing identifier",
+      "file": "code-signing-identifier-exact.txt",
+      "sha256": "c1363b644db2d3b3e32927221cc86ef05841d9e24cae4b11bf5bf1719b349c8d"
+    },
+    {
+      "bytes": 23,
+      "expectation": "reject: prefix extension is not exact identifier",
+      "file": "refuse-code-signing-prefix-identifier.txt",
+      "sha256": "99a3afd17465876b8e5cdf5e6ccb74ccd39fdd3f3a66f8905bc2c9ab22d34d0b"
+    },
+    {
+      "bytes": 362,
       "expectation": "accept: root-enrolled presence class for release.sign",
       "file": "owner-grant.cbor",
-      "sha256": "86563a72167d95ca3e0694da046d764b701daeedc806601f9536e282f0f18f92"
+      "sha256": "1ca4054f73837db831a0360ae121dfb593c13f4ec6c43e78b9b24512c57686d6"
     },
     {
-      "bytes": 479,
+      "bytes": 483,
       "expectation": "accept: root-issued owner-action grant step",
       "file": "owner-grant-step.cbor",
-      "sha256": "45b20c43e3ca8c5ca5226a37fd6253f05bdc5c6b6ecfc084e3f57c6ca2eda468"
+      "sha256": "6a905f63e1ea16c9bf4ea535fcc6e5ace6a3c3921b448e44882211aa13e1430c"
     },
     {
       "bytes": 64,
       "expectation": "accept: root signature over owner-action grant step",
       "file": "owner-grant-step.sig",
-      "sha256": "c5c122bf0a9bf87d1d22a749815fc3a3dae3dcfffb6f2573aac8e63a7eae2706"
+      "sha256": "966f93a21358acad75744a3afc518dba365325e3ee03ecde0481a30d6f7505e1"
     },
     {
       "bytes": 166,
       "expectation": "accept: owner-approved root-signed status policy",
       "file": "status-policy.cbor",
-      "sha256": "738581a6ce9dcc63e1ce1ecd4e76a14e42f41dfe31fed4843536ed0a47abc5e6"
+      "sha256": "ad30c956b9e99d98f6a3674fc37ed5275d45066fcab71aaec2006a226742fc82"
     },
     {
-      "bytes": 215,
+      "bytes": 422,
       "expectation": "accept: fresh status at final grant-chain head",
       "file": "status.cbor",
-      "sha256": "455a2759cca4907b34083e62acf13cade21bfb95754111d3f7982d67e4e4ce6d"
+      "sha256": "6edc133950db5073028c62feffd878425ed757c1db953212727c0ec19c084edc"
+    },
+    {
+      "bytes": 1505,
+      "expectation": "accept: canonical carried-device release authority bundle",
+      "file": "release-authority.cbor",
+      "sha256": "ae73fd3d7028516b6e3a14e908276a75414bf9a112d138e952e114d9b83948ab"
+    },
+    {
+      "bytes": 955,
+      "expectation": "accept: canonical unattended release authority bundle",
+      "file": "unattended-authority.cbor",
+      "sha256": "0bb0bc6ceaa3ba17124652c31ec5e4df8fd5906ced8d2555f68bd8c9235b3a83"
+    },
+    {
+      "bytes": 1440,
+      "expectation": "reject: owner step and signature must both be present",
+      "file": "refuse-authority-owner-step-without-signature.cbor",
+      "sha256": "51aca51c458f1d0ec16c4922c0dccea1010394934af394f96acf0fbfba6d1810"
+    },
+    {
+      "bytes": 1020,
+      "expectation": "reject: owner signature and step must both be present",
+      "file": "refuse-authority-owner-signature-without-step.cbor",
+      "sha256": "e1a52abbc0ecc98d1f9b387087b520462fb7153443962bf3bc0cb83131431f8f"
+    },
+    {
+      "bytes": 123,
+      "expectation": "accept: bytes named by the release artifact digest",
+      "file": "artifact.bin",
+      "sha256": "b9a5be97c47d94c904dc1a7e2e83a51beb1c91836358ced2667b7750164cbbdc"
     },
     {
       "bytes": 226,
       "expectation": "accept: Remap 0.3.0-preview.4 canonical content",
       "file": "release-content.cbor",
-      "sha256": "dd7bcc6a7b7fc94cd5fd60c07c83a283ff5f92ac09a1bdc32066a74b342b50a6"
+      "sha256": "58d0f982ac1cbba986b66ab27d2d07858ea2d768a9bcfa2fe3617bb54725b284"
+    },
+    {
+      "bytes": 68,
+      "expectation": "reject: protected high-water equal to candidate version",
+      "file": "refuse-version-high-water.json",
+      "sha256": "e71fc6c8d61cb7f256ae8d5f6aa05fda89b3d1121465a849ffc20b8055b25f64"
     },
     {
       "bytes": 226,
       "expectation": "reject: uppercase pre-release label",
       "file": "release-content-invalid-pre.cbor",
-      "sha256": "ef5af93d6eba1886093a5eed3c47471737a09c980cb8c1272dfcc1a8a69099cc"
+      "sha256": "7e98711a5b997484ac4f12234e11cd998e4386164331f57db561d9b28e6ef87e"
     },
     {
       "bytes": 677,
       "expectation": "accept: carried-device release statement and exact assertion",
       "file": "release-statement.cbor",
-      "sha256": "3c5bba2d654945bc855aa3c04cca29880254bbe67e6656eae2a739624117010c"
+      "sha256": "e6585a9dab1582f2df2c892bbbe1d5e5117802d995b43e1590e88b395f08b491"
     },
     {
-      "bytes": 141,
+      "bytes": 646,
+      "expectation": "accept: role with three valid enrolled signer proofs",
+      "file": "multi-signer-role.cbor",
+      "sha256": "67b60e794b83ec436cc2064a59de374008b25e04d507d3ac23bc7a433726e0f0"
+    },
+    {
+      "bytes": 745,
+      "expectation": "accept: valid two-signature ordered envelope",
+      "file": "multi-signer-statement.cbor",
+      "sha256": "4e443da93f5849a5ad6520172f28a082fce9a77ce0266999d5a1cb76319d8fab"
+    },
+    {
+      "bytes": 745,
+      "expectation": "reject: two valid signatures have descending signer indexes",
+      "file": "refuse-unsorted-signers.cbor",
+      "sha256": "109fe752053a2d3adeced07257707e6ccbec74a546bb68b0674fb6b443af6a40"
+    },
+    {
+      "bytes": 745,
+      "expectation": "reject: same valid signature repeats one signer index",
+      "file": "refuse-duplicate-signers.cbor",
+      "sha256": "9fb12610aca272edb9e23b209a9ca8543d134fc7bdba9a446418a8c700883f0d"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: canonical content has a thirty-day-plus-one-second window with valid signatures",
+      "file": "refuse-statement-over-thirty-days.cbor",
+      "sha256": "b278ba84dc7fca82e2b0ff10c5411b7e5a0ed899c191990032605c18cadc5b3c"
+    },
+    {
+      "bytes": 335,
       "expectation": "accept: target-issued release.sign challenge",
       "file": "release-challenge.cbor",
-      "sha256": "490575887acda3bc455a8b9afeed2fdd525a9a3658f71f57c66859733bd164b9"
+      "sha256": "b934dcb73c010ab7184a0f33c07e05a7d199bd4e4cebd81bec8c9da03ae5e160"
     },
     {
-      "bytes": 32,
-      "expectation": "accept: exact release statement digest as owner-action request",
+      "bytes": 226,
+      "expectation": "accept: exact canonical release content as owner-action request",
       "file": "release-request.bin",
-      "sha256": "72e95c78e24d8bc524b2edbc6f358cddcade137ad04e4d9972d6f1f89d61baeb"
+      "sha256": "58d0f982ac1cbba986b66ab27d2d07858ea2d768a9bcfa2fe3617bb54725b284"
     },
     {
       "bytes": 375,
-      "expectation": "accept: release.sign assertion bound to statement digest and target challenge",
+      "expectation": "accept: release.sign assertion bound to canonical content and target challenge",
       "file": "release-assertion.cbor",
-      "sha256": "2ff75bc5a31b305e0cb499384b276004c78d808bc95313f965de39f7eda08ede"
+      "sha256": "238f6f725e2059549c21b1e3efaba8e62422985af1e52dcecbb60955b0643b78"
+    },
+    {
+      "bytes": 337,
+      "expectation": "reject: equivalent version integer uses non-shortest encoding",
+      "file": "refuse-grant-nonminimal-integer.cbor",
+      "sha256": "edde3dca67104332b8e3f2b8a678b996bc1213559737adcffcec4629f9329158"
+    },
+    {
+      "bytes": 337,
+      "expectation": "reject: indefinite outer array",
+      "file": "refuse-grant-indefinite.cbor",
+      "sha256": "dbb599c960e1e5425f2c2d3b249bb1850d7eb919ec5cec41eb2aa27c9cd39e30"
+    },
+    {
+      "bytes": 337,
+      "expectation": "reject: tagged outer record",
+      "file": "refuse-grant-tag.cbor",
+      "sha256": "e7e51bb8affd393067a0d8d107065f020aaa9b6a616f465882c110a1850a50f7"
+    },
+    {
+      "bytes": 337,
+      "expectation": "reject: trailing CBOR item",
+      "file": "refuse-grant-trailing.cbor",
+      "sha256": "0967c2a9a582b93c1bb15e0ac62bd8c8d6faa6482e7bb492ac4e4db9fc28f103"
+    },
+    {
+      "bytes": 337,
+      "expectation": "reject: additional outer field",
+      "file": "refuse-grant-extra-field.cbor",
+      "sha256": "9e89a4f6ba277bf4a1fb3e9e2c3ad82762cf4fd77f571ec850eb8ae9c1b3de0b"
+    },
+    {
+      "bytes": 423,
+      "expectation": "reject: equivalent version integer uses non-shortest encoding",
+      "file": "refuse-status-nonminimal-integer.cbor",
+      "sha256": "aaa5592a41039a5de2b167d293198499a56fff69d9323f9ff81e279dd89f67e4"
+    },
+    {
+      "bytes": 423,
+      "expectation": "reject: indefinite outer array",
+      "file": "refuse-status-indefinite.cbor",
+      "sha256": "d2d9246f1f09c2bd5cf593a0a7a09ca0a6b63b7de3137be977221377c138ac79"
+    },
+    {
+      "bytes": 423,
+      "expectation": "reject: tagged outer record",
+      "file": "refuse-status-tag.cbor",
+      "sha256": "44292ceea266d4a9dd063bb7bea8d80cb5e79745500118485f4926f1a4683e9b"
+    },
+    {
+      "bytes": 423,
+      "expectation": "reject: trailing CBOR item",
+      "file": "refuse-status-trailing.cbor",
+      "sha256": "3494ed5faffe6c827155b24fba068c9f515f3327da1955c4f4ddbdff20d6ed79"
+    },
+    {
+      "bytes": 423,
+      "expectation": "reject: additional outer field",
+      "file": "refuse-status-extra-field.cbor",
+      "sha256": "c1be8ddeb4b2169463472b498517218cabd0ddee379aad2e8dc1724967e593c8"
+    },
+    {
+      "bytes": 678,
+      "expectation": "reject: equivalent version integer uses non-shortest encoding",
+      "file": "refuse-statement-nonminimal-integer.cbor",
+      "sha256": "3ddcc3e0a87606fbb82a7818a1b03ec7446dfdd86d2b86be9ba9312907e6f203"
+    },
+    {
+      "bytes": 678,
+      "expectation": "reject: indefinite outer array",
+      "file": "refuse-statement-indefinite.cbor",
+      "sha256": "305b46ffae049b6be414809c7d9a4424a3847681a58eb31413738d48330f5403"
+    },
+    {
+      "bytes": 678,
+      "expectation": "reject: tagged outer record",
+      "file": "refuse-statement-tag.cbor",
+      "sha256": "32eb52a45225dc195c5d3004c7148809ae8e4b283beb12517f5594f5dadfdaa7"
+    },
+    {
+      "bytes": 678,
+      "expectation": "reject: trailing CBOR item",
+      "file": "refuse-statement-trailing.cbor",
+      "sha256": "cd1fec3e422f9243c409940f294fc7d08504ea3ef6a11d18abe84dc364654c11"
+    },
+    {
+      "bytes": 678,
+      "expectation": "reject: additional outer field",
+      "file": "refuse-statement-extra-field.cbor",
+      "sha256": "8a30bfafe00cff9582b58b237f445f17e7b778e927c4f2188815f732f9739f82"
+    },
+    {
+      "bytes": 376,
+      "expectation": "reject: equivalent version integer uses non-shortest encoding",
+      "file": "refuse-assertion-nonminimal-integer.cbor",
+      "sha256": "580481d80ada8c23ba9c073d9c231119ee9b238dc87b57de4729ae4658acb0dc"
+    },
+    {
+      "bytes": 376,
+      "expectation": "reject: indefinite outer array",
+      "file": "refuse-assertion-indefinite.cbor",
+      "sha256": "9661cf1387c53ae6c29fccff4b970b1018e517e45a7bd1544fcc72a6e5f24d10"
+    },
+    {
+      "bytes": 376,
+      "expectation": "reject: tagged outer record",
+      "file": "refuse-assertion-tag.cbor",
+      "sha256": "71aab641ec67290c370b9d48b30fd114ec2a24bf47d5eec16541cbcec77b847d"
+    },
+    {
+      "bytes": 376,
+      "expectation": "reject: trailing CBOR item",
+      "file": "refuse-assertion-trailing.cbor",
+      "sha256": "89ae6eacee2971864247f84925db10242e3e43787f34dfaa0155e1aced64a7a1"
+    },
+    {
+      "bytes": 376,
+      "expectation": "reject: additional outer field",
+      "file": "refuse-assertion-extra-field.cbor",
+      "sha256": "5973e140354ddbd446e0d0bd9b53d08ddd3a03c57bab7c6317c655c357a31bb5"
     },
     {
       "bytes": 300,
       "expectation": "accept: opt-in preview release without assertion",
       "file": "unattended-statement.cbor",
-      "sha256": "32b20590b38584e2fa122f8b8147e3e3e8e86ed35c9b46a6a264831e9b981783"
+      "sha256": "1ec86d76f4f034cbbf357f0cfb37bfba73cf367d87431a3731cad5b87b04cef6"
     },
     {
       "bytes": 677,
       "expectation": "reject: role signature bit changed",
       "file": "release-statement-bad-signature.cbor",
-      "sha256": "431f11c108996b006be536dae99c4f584cfab548fba03b16184e6556d32385fe"
+      "sha256": "0f8ea7e34544dec4507152f345b0f7353182a12fa59dfafe8831b4808d935e60"
     },
     {
       "bytes": 677,
       "expectation": "reject: valid presence signature bound to a different request digest",
       "file": "release-statement-wrong-assertion.cbor",
-      "sha256": "7115427faab0a9348810e192ce38ff3cd7480803c6509076ec518d26a6c8e510"
+      "sha256": "e4797a775b4e5770cea225f9d42b297ff34dc01c72eb1a029afe9de15b751c87"
     },
     {
       "bytes": 677,
       "expectation": "reject: statement expired before verification time",
       "file": "release-statement-expired.cbor",
-      "sha256": "be2fc46ae8efd62118587e3061c2422b2f251fdb2c3445cdd66a39cd44b18f50"
+      "sha256": "1b48cea481b1ac97a17d74a9bf1a87d09869bf6e3d5ced6f582e2574175d3da7"
     },
     {
       "bytes": 676,
       "expectation": "reject: channel outside root grant",
       "file": "release-statement-wrong-channel.cbor",
-      "sha256": "c2f8aa61a5942b8268394b8a2ea450c1f1318992c1bfe3dadeae7cb5436efbfb"
+      "sha256": "10b39f86f951505e05e7a90954ddcf283fa7de9a060ea0328e114980cd582151"
     },
     {
-      "bytes": 215,
-      "expectation": "reject: invalid current-root status signature",
-      "file": "status-bad-signature.cbor",
-      "sha256": "c9fcbf775458275e8bb8fedbaa33fd7c3286ede76f0ba8d53b653c295c73345a"
+      "bytes": 677,
+      "expectation": "reject: signed preview.3 is below granted preview.4 minimum",
+      "file": "refuse-version-below-minimum.cbor",
+      "sha256": "d95c82588c55fa5585257dbc415db188b4a4082828c2145a02b19c55293e2d48"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: valid statement names a digest different from artifact.bin",
+      "file": "refuse-mixed-artifact-statement.cbor",
+      "sha256": "4a8f89734e3c7105dc4d0019d05021105cbc2ddc5418257df3f60044079588ea"
+    },
+    {
+      "bytes": 300,
+      "expectation": "reject: carried-device statement omits owner assertion",
+      "file": "refuse-carried-missing-assertion.cbor",
+      "sha256": "cf80e6ed051a793aa3121d745b13f76469fcc81c954ed73f7f6c69fd94ba3e07"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: unattended statement carries an owner assertion",
+      "file": "refuse-unattended-with-assertion.cbor",
+      "sha256": "6e80914e4dd926f6dca2ebfc24759a3a742b47be4603537f7106f34999dfe3b8"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject: valid signature but assertion precedes statement issuance",
+      "file": "refuse-assertion-before-statement.cbor",
+      "sha256": "96ec5b12e7fd24d512cc43457ca0ea2106f6aa78ad099e89cecf80070b97efd9"
+    },
+    {
+      "bytes": 677,
+      "expectation": "reject at NOW+20: valid signature and owner window, assertion equals statement expiry",
+      "file": "refuse-assertion-at-statement-expiry.cbor",
+      "sha256": "9d0f16693f173df1a01a593f10add328969e2cebe0877224ae9d45c9e2ae873a"
     },
     {
       "bytes": 336,
@@ -175,13 +415,13 @@
       "bytes": 336,
       "expectation": "reject: signer class not allowed for release kind",
       "file": "release-grant-wrong-class.cbor",
-      "sha256": "ca1a801e19e7d35ebf90bc61850e5a242187f3fb23df964bc6d7ff166774fe58"
+      "sha256": "7187243814989ecbe95b783c62322a085fde21ac03dd06d8f2dc3e3768a839b5"
     },
     {
-      "bytes": 4403,
+      "bytes": 707,
       "expectation": "reject: malformed role certificate",
       "file": "code-signing-grant-bad-cert.cbor",
-      "sha256": "8359cc1af87a6ed5056b031400982fe09a9a66eee16344d463078ca1417c9e2d"
+      "sha256": "b7a03eb188d3fe7eb24583b32dd0f53b582079c3cc156b9360096844c5a2b5c7"
     },
     {
       "bytes": 449,
@@ -193,7 +433,7 @@
       "bytes": 450,
       "expectation": "reject: consumer-bytes just past maximum",
       "file": "edge-consumer-bytes-over.cbor",
-      "sha256": "e4f98bdb11e37dc0a1b8883007b5b36a8e9b10a81c255a1b78d31c8d7fa1874b"
+      "sha256": "61558040f24e57e4b350e0321e2d03b409e0b551a3014d3a420a8729d3714281"
     },
     {
       "bytes": 336,
@@ -292,52 +532,58 @@
       "sha256": "aaa1945768f76dbaf06f44b9a7971869c7c99586673f3e21f73c82653f318318"
     },
     {
-      "bytes": 4506,
+      "bytes": 810,
       "expectation": "accept: identifiers-count at maximum",
       "file": "edge-identifiers-count-max.cbor",
-      "sha256": "56ae044a6c051b0563b2a1c44b5a102dd785f65b6851cbdf1e229c5f14c2282e"
+      "sha256": "4d9e3ee58099068779cf906f5fd1f418b72b050bbfd752185c143827f49d701c"
     },
     {
-      "bytes": 4521,
+      "bytes": 825,
       "expectation": "reject: identifiers-count just past maximum",
       "file": "edge-identifiers-count-over.cbor",
-      "sha256": "dd31bc57c8f16c02c4c19bbb0d175e186fa12bddb87aad6b58a6d405a3c0b123"
+      "sha256": "8e08720e9bab424004d1b0887307d6714e7e12cd2b29774b086b0a4b8d645759"
     },
     {
-      "bytes": 4643,
+      "bytes": 947,
       "expectation": "accept: identifier-bytes at maximum",
       "file": "edge-identifier-bytes-max.cbor",
-      "sha256": "b9f16c7edeb4226dd4068e155ac6f18f182a3fafd66798d56147389bc15d6e51"
+      "sha256": "ee9cacf73d6092e2767a298485b59ed6d927d3945b67b322343eefc6902ce5d0"
     },
     {
-      "bytes": 4645,
+      "bytes": 949,
       "expectation": "reject: identifier-bytes just past maximum",
       "file": "edge-identifier-bytes-over.cbor",
-      "sha256": "3ec7c6c02b0599eabba596e4f7da43422b3ee662a4539488aaedf86b2369af50"
+      "sha256": "72ee188e97764da71f8185f8451ceccba01b457c89ed310a79d85abf8a814d45"
     },
     {
       "bytes": 4403,
       "expectation": "accept: certificate-bytes at maximum",
       "file": "edge-certificate-bytes-max.cbor",
-      "sha256": "8b03d8ddccaf23c636695eae0abd25b1666862706a12504531b980d3158a6b1f"
+      "sha256": "9329dac15ec5a3a3297893dd2c818139d3c015e38f59247da5597825cbabb1e2"
     },
     {
       "bytes": 4404,
       "expectation": "reject: certificate-bytes just past maximum",
       "file": "edge-certificate-bytes-over.cbor",
-      "sha256": "d62fe5675a36f919e5155b59f68d931d07ec2e44d2e3fd7ef61d30f0fb0bdd01"
+      "sha256": "8551ce3e7a6dc62146b978a7bf6199f5dc1a7402dee981c9625a44490960f43a"
+    },
+    {
+      "bytes": 422,
+      "expectation": "reject: invalid current-root status signature",
+      "file": "status-bad-signature.cbor",
+      "sha256": "48f9e62d5173fe4311141d38fb4d043777ddc78ffb63ab667f63d75e486bd864"
     },
     {
       "bytes": 336,
       "expectation": "reject: grant hive differs from pinned hive",
       "file": "refuse-cross-hive-grant.cbor",
-      "sha256": "b9fb350d24af91ef1175d6057ba4758804b0241ceb63925a33b7f1df12c2366d"
+      "sha256": "3f68808ed2e5d0847754bc5c0b4072ebd22800960c2f926dec310d9909fdfff4"
     },
     {
       "bytes": 332,
       "expectation": "reject: unattended role with file custody",
       "file": "refuse-unattended-file-signer.cbor",
-      "sha256": "1aeeb47bfceef05f6e3182fb8e64c7d6b4c1df544a715c9fd24254da8d551e4b"
+      "sha256": "451841187bb6b373acbb1adefd9b0eeb8952f2aa151568f0d1cba0c827bd3b47"
     },
     {
       "bytes": 335,
@@ -355,44 +601,56 @@
       "bytes": 677,
       "expectation": "reject: signed statement consumer differs from exact root grant consumer",
       "file": "refuse-wrong-consumer-statement.cbor",
-      "sha256": "534be4155ab5cd30fcaba14c05083daddad0d5b1482e773eff19505a3edc2337"
+      "sha256": "70faa41860ad809a577177e6d5be1b2d764bf9826088b85b981d9f6fb313cafa"
     },
     {
-      "bytes": 215,
+      "bytes": 422,
       "expectation": "reject: valid root signature but status older than consumer 600-second maximum",
       "file": "refuse-stale-status.cbor",
-      "sha256": "a54e469511a15ff71779bd261ea22f219b0b70e0cca3499c089011c9e043a59e"
+      "sha256": "380b9443e3f723209a442d643a532afdd3e93398a8661b0f77384825466dcd93"
+    },
+    {
+      "bytes": 405,
+      "expectation": "reject: root-signed current status omits release grant",
+      "file": "refuse-revoked-role-status.cbor",
+      "sha256": "f891c096032c7493955f462a7325f1ee2bee8f19d990ffda6e47a5e3508f50d7"
+    },
+    {
+      "bytes": 388,
+      "expectation": "reject: root-signed current status omits release signer member",
+      "file": "refuse-revoked-member-status.cbor",
+      "sha256": "8bf76c9d3b11f3ffb5c3c4103775cacb26b54806a212767a377925ff0f174a36"
     },
     {
       "bytes": 457,
       "expectation": "reject: pair with accepted four-step chain, role id is already spent",
       "file": "refuse-reused-role-id-step.cbor",
-      "sha256": "e5cb237678179ea726b44850077d164ed1bff645a0142bc8e44c864c1f575fb1"
+      "sha256": "8b2f035b492fceacd587daa7d13b579ea433c6f3400c47350c80bc9650dc0b9f"
     },
     {
       "bytes": 64,
       "expectation": "reject: valid root signature does not permit a spent role id",
       "file": "refuse-reused-role-id-step.sig",
-      "sha256": "0292a93954c2dd0a1867a05e01f98493be4121896c98f3b4dde98dddb9dc5059"
+      "sha256": "3e395201b2eeaf49e7c3b193d62b886129ad5c29432c2032c8b7ec5e78c6f09c"
     },
     {
       "bytes": 457,
       "expectation": "reject: signed step predecessor differs from grant issuer head",
       "file": "refuse-stale-issuer-head-step.cbor",
-      "sha256": "4ffd465ed9e6e358191adc782a3da66601f0ea894958bf284a3497fa178ef141"
+      "sha256": "8273354579f5681fa7456c164cae3cd3b37ad5ff9238ad79a36e7c7d828ec1b4"
     },
     {
       "bytes": 64,
       "expectation": "reject: root signature cannot repair a stale issuer head",
       "file": "refuse-stale-issuer-head-step.sig",
-      "sha256": "05a38ee53a34cd0c6dbe8c40993d0f4440e58be05265391b6b764accb29e9cea"
+      "sha256": "53c43d1a8ffc1b8e09893fedc073af570a726473a11d4ca035f7dfedee6689fc"
     }
   ],
-  "final_root_head_hex": "45b20c43e3ca8c5ca5226a37fd6253f05bdc5c6b6ecfc084e3f57c6ca2eda468",
+  "final_root_head_hex": "6a905f63e1ea16c9bf4ea535fcc6e5ace6a3c3921b448e44882211aa13e1430c",
   "hive_hex": "e9089bac250fcc592a3a3578a962c256a1c4fc2c5be326066dfd693a1fb0f8f0",
   "note": "Disposable public test keys. Hardware custody is an enrolled label in this bundle, not physical proof. Consumer high-water storage, artifact bytes, live status issuer and installed cross-host acceptance remain outside these provider fixtures.",
   "protocol": "owner-action-and-release-roles-v1",
   "root_public_key_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
   "state": "DRAFT - NOT FROZEN",
-  "verification_time": 1780000000
+  "verification_time": 1780007200
 }

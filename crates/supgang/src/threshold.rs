@@ -17,6 +17,7 @@ pub mod control_auth;
 pub mod founding;
 pub mod owner_action;
 pub mod regroup;
+pub mod release_bundle;
 pub mod release_statement;
 pub mod session;
 pub mod status;

@@ -10,6 +10,7 @@ use std::{
 };
 
 use ed25519_dalek::Signer as _;
+use minicbor::Encoder;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
@@ -19,6 +20,7 @@ use crate::{
     ids::{HiveId, NodeId},
     threshold::{
         owner_action::{ACTION_DOMAIN, Assertion, Challenge, REQUEST_DOMAIN},
+        release_bundle::ReleaseBundle,
         release_statement::{
             Artifact, Content, DOMAIN as RELEASE_DOMAIN, PreRelease, RoleSignature, SignedStatement, Version,
         },
@@ -38,176 +40,20 @@ use crate::{
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const OUTPUT: &str = "docs/vectors/release-roles-v1";
 const NOW: u64 = 1_780_000_000;
+const VERIFY_AT: u64 = NOW + 2 * 60 * 60;
 
 mod adversarial;
 mod bounds;
 mod certificate;
+mod encoding;
+mod grant_cases;
+mod helpers;
+use helpers::*;
+mod statement_cases;
+mod statement_extra;
 
 fn output_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(OUTPUT)
-}
-
-fn role_grant(
-    hive: HiveId,
-    id: u8,
-    issuer: ([u8; 32], u64),
-    signer: (u8, SubjectCustody),
-    policy: RolePolicy,
-    validity: (u64, u64),
-) -> Result<RoleGrant, Box<dyn std::error::Error>> {
-    let key = FileDeviceKey::from_secret_bytes(&[signer.0; 32])?;
-    let public = key.public_key();
-    let mut role = RoleGrant {
-        hive,
-        id: [id; 16],
-        consumer: "org.agenxy.Remap".into(),
-        signers: vec![RoleSigner {
-            key: SubjectKey::P256(public),
-            node: device_node_id(public),
-            custody: signer.1,
-            possession: [0; 64],
-        }],
-        threshold: 1,
-        not_before: validity.0,
-        not_after: validity.1,
-        issuer_head: issuer.0,
-        issuer_sequence: issuer.1,
-        policy,
-    };
-    let message = role
-        .signers
-        .first()
-        .ok_or_else(|| std::io::Error::other("missing signer"))?
-        .possession_message(&role)?;
-    role.signers
-        .first_mut()
-        .ok_or_else(|| std::io::Error::other("missing signer"))?
-        .possession = key.sign_domain(b"supgang/role-possession/v1\0", &message)?.to_bytes();
-    Ok(role)
-}
-
-fn release_policy(presence: ReleasePresence, number: u64) -> RolePolicy {
-    RolePolicy::Release {
-        package_format: "remap-package-v1".into(),
-        channels: vec!["preview".into()],
-        min_version: Version {
-            major: 0,
-            minor: 3,
-            patch: 0,
-            pre: Some(PreRelease {
-                label: "preview".into(),
-                number,
-            }),
-        },
-        presence,
-    }
-}
-
-fn owner_grant(
-    hive: HiveId,
-    predecessor: [u8; 32],
-    sequence: u64,
-    target: NodeId,
-) -> Result<Grant, Box<dyn std::error::Error>> {
-    let key = FileDeviceKey::from_secret_bytes(&[11; 32])?;
-    let public = key.public_key();
-    let mut grant = Grant {
-        hive,
-        id: [12; 16],
-        kind: Kind::OwnerAction,
-        consumer: "org.agenxy.supgang".into(),
-        signer: public,
-        signer_node: device_node_id(public),
-        signer_role: SignerRole::OwnerPresence,
-        signer_custody: SubjectCustody::File,
-        possession: [0; 64],
-        not_before: NOW - 1000,
-        not_after: NOW + 3600,
-        issuer_head: predecessor,
-        issuer_sequence: sequence,
-        target: TargetScope::Node(target),
-        operations: vec![AllowedOperation {
-            name: "release.sign".into(),
-            presence: Presence::Required,
-        }],
-    };
-    grant.possession = key
-        .sign_domain(b"supgang/role-possession/v1\0", &grant.possession_message()?)?
-        .to_bytes();
-    Ok(grant)
-}
-
-fn root_step(
-    root: &ed25519_dalek::SigningKey,
-    predecessor: [u8; 32],
-    sequence: u64,
-    payload: Vec<u8>,
-    proposer: NodeId,
-) -> Result<(RootStep, [u8; 64]), Box<dyn std::error::Error>> {
-    let step = RootStep {
-        hive: HiveId::from_root_verifying_key(&root.verifying_key().to_bytes()),
-        predecessor,
-        sequence,
-        epoch: 0,
-        recovery_gen: 0,
-        operation: Operation::Grant,
-        payload,
-        proposed_at: NOW - 100,
-        proposer,
-    };
-    let signature = root.sign(&step.message()?).to_bytes();
-    SignedStep {
-        step: step.clone(),
-        signature,
-    }
-    .verify(&root.verifying_key().to_bytes())?;
-    Ok((step, signature))
-}
-
-fn content(hive: HiveId, role_id: [u8; 16], number: u64) -> Content {
-    Content {
-        hive,
-        role_id,
-        consumer_id: "org.agenxy.Remap".into(),
-        package_format: "remap-package-v1".into(),
-        channel: "preview".into(),
-        version: Version {
-            major: 0,
-            minor: 3,
-            patch: 0,
-            pre: Some(PreRelease {
-                label: "preview".into(),
-                number,
-            }),
-        },
-        artifacts: vec![Artifact {
-            os: "macos".into(),
-            arch: "aarch64".into(),
-            length: 123,
-            sha256: [8; 32],
-        }],
-        source_commit: vec![7; 20],
-        provenance: Some([6; 32]),
-        issued_at: NOW - 10,
-        expires_at: NOW + 24 * 60 * 60,
-    }
-}
-
-fn save(
-    output: &Path,
-    records: &mut Vec<serde_json::Value>,
-    name: &str,
-    bytes: &[u8],
-    expectation: &str,
-) -> TestResult {
-    fs::write(output.join(name), bytes)?;
-    records.push(json!({
-        "file": name,
-        "bytes": bytes.len(),
-        "sha256": hex::encode(Sha256::digest(bytes)),
-        "expectation": expectation,
-    }));
-    Ok(())
 }
 
 #[test]
@@ -292,7 +138,8 @@ fn generate_release_role_vectors() -> TestResult {
         "accept: root signature over unattended role step",
     )?;
 
-    let certificate = certificate::cert_der(&output)?;
+    let certificate = certificate::cert_der()?;
+    let edge_certificate = certificate::max_cert_der()?;
     let (_, parsed_certificate) = x509_parser::parse_x509_certificate(&certificate)
         .map_err(|_| std::io::Error::other("invalid pinned test certificate"))?;
     let certificate_start = u64::try_from(parsed_certificate.validity().not_before.timestamp())?;
@@ -301,7 +148,7 @@ fn generate_release_role_vectors() -> TestResult {
         hive,
         6,
         (unattended_head, 2),
-        (9, SubjectCustody::File),
+        (14, SubjectCustody::File),
         RolePolicy::CodeSigning {
             identifiers: vec!["org.agenxy.Remap".into()],
             certificate: certificate.clone(),
@@ -338,6 +185,34 @@ fn generate_release_role_vectors() -> TestResult {
         "code-signing-cert.der",
         &certificate,
         "accept: public test certificate used by code-signing role",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "refuse-release-with-code-signing-grant.cbor",
+        &code_bytes,
+        "reject: code-signing kind cannot authorize release statement",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "refuse-code-signing-with-release-grant.cbor",
+        &release_bytes,
+        "reject: release kind cannot authorize code-signing identifier",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "code-signing-identifier-exact.txt",
+        b"org.agenxy.Remap",
+        "accept: exact code-signing identifier",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "refuse-code-signing-prefix-identifier.txt",
+        b"org.agenxy.Remap.helper",
+        "reject: prefix extension is not exact identifier",
     )?;
 
     let owner = owner_grant(hive, code_head, 3, target)?;
@@ -382,13 +257,35 @@ fn generate_release_role_vectors() -> TestResult {
         policy,
         signature: root.sign(&policy_message).to_bytes(),
     };
+    let mut active_members = vec![
+        release
+            .signers
+            .first()
+            .ok_or_else(|| std::io::Error::other("missing release signer"))?
+            .node,
+        unattended
+            .signers
+            .first()
+            .ok_or_else(|| std::io::Error::other("missing unattended signer"))?
+            .node,
+        code_signing
+            .signers
+            .first()
+            .ok_or_else(|| std::io::Error::other("missing code signer"))?
+            .node,
+        owner.signer_node,
+    ];
+    active_members.sort_unstable();
+    active_members.dedup();
     let status = Status {
         hive,
         root_head: head,
         member_serial: 0,
         grant_serial: 0,
-        issued_at: NOW - 20,
-        expires_at: NOW + 580,
+        active_grants: vec![release.id, unattended.id, code_signing.id, owner.id],
+        active_members,
+        issued_at: VERIFY_AT - 20,
+        expires_at: VERIFY_AT + 580,
         policy_digest: policy.content_digest()?,
         budget_id: policy.budget_id,
         epoch: policy.epoch,
@@ -415,9 +312,76 @@ fn generate_release_role_vectors() -> TestResult {
         &signed_status.encode()?,
         "accept: fresh status at final grant-chain head",
     )?;
+    let carried_bundle = ReleaseBundle {
+        role_step: release_step.encode()?,
+        role_signature: release_signature,
+        owner_step: Some(owner_step.encode()?),
+        owner_signature: Some(owner_signature),
+        status: signed_status.encode()?,
+    };
+    save(
+        &output,
+        &mut records,
+        "release-authority.cbor",
+        &carried_bundle.encode()?,
+        "accept: canonical carried-device release authority bundle",
+    )?;
+    let unattended_bundle = ReleaseBundle {
+        role_step: unattended_step.encode()?,
+        role_signature: unattended_signature,
+        owner_step: None,
+        owner_signature: None,
+        status: signed_status.encode()?,
+    };
+    save(
+        &output,
+        &mut records,
+        "unattended-authority.cbor",
+        &unattended_bundle.encode()?,
+        "accept: canonical unattended release authority bundle",
+    )?;
+    let mut owner_step_only = Encoder::new(Vec::new());
+    owner_step_only
+        .array(6)?
+        .u8(1)?
+        .bytes(&release_step.encode()?)?
+        .bytes(&release_signature)?
+        .bytes(&owner_step.encode()?)?
+        .null()?
+        .bytes(&signed_status.encode()?)?;
+    save(
+        &output,
+        &mut records,
+        "refuse-authority-owner-step-without-signature.cbor",
+        &owner_step_only.into_writer(),
+        "reject: owner step and signature must both be present",
+    )?;
+    let mut owner_signature_only = Encoder::new(Vec::new());
+    owner_signature_only
+        .array(6)?
+        .u8(1)?
+        .bytes(&release_step.encode()?)?
+        .bytes(&release_signature)?
+        .null()?
+        .bytes(&owner_signature)?
+        .bytes(&signed_status.encode()?)?;
+    save(
+        &output,
+        &mut records,
+        "refuse-authority-owner-signature-without-step.cbor",
+        &owner_signature_only.into_writer(),
+        "reject: owner signature and step must both be present",
+    )?;
 
     let release_content = content(hive, release.id, 4);
-    let request = release_content.digest()?.to_vec();
+    save(
+        &output,
+        &mut records,
+        "artifact.bin",
+        &[8_u8; 123],
+        "accept: bytes named by the release artifact digest",
+    )?;
+    let request = release_content.encode()?;
     let challenge = Challenge {
         target,
         consumer: "org.agenxy.supgang".into(),
@@ -461,12 +425,20 @@ fn generate_release_role_vectors() -> TestResult {
         }],
     };
     carried.check_role_policy(&release, &["stable"], NOW, None)?;
+    carried.check_carried_authority(&owner, &signed_status.status)?;
     save(
         &output,
         &mut records,
         "release-content.cbor",
         &release_content_bytes,
         "accept: Remap 0.3.0-preview.4 canonical content",
+    )?;
+    save(
+        &output,
+        &mut records,
+        "refuse-version-high-water.json",
+        &serde_json::to_vec(&json!({"major":0,"minor":3,"patch":0,"pre_label":"preview","pre_number":4}))?,
+        "reject: protected high-water equal to candidate version",
     )?;
     let mut invalid_pre = release_content_bytes.clone();
     let offset = invalid_pre
@@ -490,6 +462,18 @@ fn generate_release_role_vectors() -> TestResult {
         &carried.encode()?,
         "accept: carried-device release statement and exact assertion",
     )?;
+    statement_extra::write(
+        &output,
+        &mut records,
+        &statement_extra::Context {
+            release: &release,
+            carried: &carried,
+            release_content_bytes: &release_content_bytes,
+            assertion: &assertion,
+            release_key: &release_key,
+            presence_key: &presence_key,
+        },
+    )?;
     save(
         &output,
         &mut records,
@@ -502,15 +486,19 @@ fn generate_release_role_vectors() -> TestResult {
         &mut records,
         "release-request.bin",
         &request,
-        "accept: exact release statement digest as owner-action request",
+        "accept: exact canonical release content as owner-action request",
     )?;
     save(
         &output,
         &mut records,
         "release-assertion.cbor",
         &assertion.encode()?,
-        "accept: release.sign assertion bound to statement digest and target challenge",
+        "accept: release.sign assertion bound to canonical content and target challenge",
     )?;
+    encoding::write(&output, &mut records, "grant", &release_bytes)?;
+    encoding::write(&output, &mut records, "status", &signed_status.encode()?)?;
+    encoding::write(&output, &mut records, "statement", &carried.encode()?)?;
+    encoding::write(&output, &mut records, "assertion", &assertion.encode()?)?;
 
     let unattended_content = content(hive, unattended.id, 5);
     let unattended_content_bytes = unattended_content.encode()?;
@@ -533,115 +521,32 @@ fn generate_release_role_vectors() -> TestResult {
         "accept: opt-in preview release without assertion",
     )?;
 
-    let mut bad_signature = carried.clone();
-    bad_signature
-        .signatures
-        .first_mut()
-        .ok_or_else(|| std::io::Error::other("missing signature"))?
-        .bytes[0] ^= 1;
-    save(
+    statement_cases::write(
         &output,
         &mut records,
-        "release-statement-bad-signature.cbor",
-        &bad_signature.encode()?,
-        "reject: role signature bit changed",
+        &carried,
+        &unattended_statement,
+        &assertion,
+        &release_key,
+        &presence_key,
     )?;
-    let mut wrong_assertion = carried.clone();
-    let assertion_mut = wrong_assertion
-        .assertion
-        .as_mut()
-        .ok_or_else(|| std::io::Error::other("missing assertion"))?;
-    assertion_mut.request_digest[0] ^= 1;
-    assertion_mut.signature = presence_key
-        .sign_domain(ACTION_DOMAIN, &assertion_mut.payload()?)?
-        .to_bytes();
-    save(
+    grant_cases::write(
         &output,
         &mut records,
-        "release-statement-wrong-assertion.cbor",
-        &wrong_assertion.encode()?,
-        "reject: valid presence signature bound to a different request digest",
+        &release,
+        &release_bytes,
+        &code_bytes,
+        &certificate,
+        &release_key,
     )?;
-    let mut expired = carried.clone();
-    expired.content.expires_at = NOW - 1;
-    save(
+    bounds::write_edge_fixtures(
         &output,
         &mut records,
-        "release-statement-expired.cbor",
-        &expired.encode()?,
-        "reject: statement expired before verification time",
+        &release,
+        &unattended,
+        &code_signing,
+        &edge_certificate,
     )?;
-    let mut wrong_channel = carried.clone();
-    wrong_channel.content.channel = "stable".into();
-    save(
-        &output,
-        &mut records,
-        "release-statement-wrong-channel.cbor",
-        &wrong_channel.encode()?,
-        "reject: channel outside root grant",
-    )?;
-    let mut bad_status = signed_status;
-    bad_status.signature[0] ^= 1;
-    save(
-        &output,
-        &mut records,
-        "status-bad-signature.cbor",
-        &bad_status.encode()?,
-        "reject: invalid current-root status signature",
-    )?;
-    let mut bad_grant = release_bytes.clone();
-    let proof = release
-        .signers
-        .first()
-        .ok_or_else(|| std::io::Error::other("missing role signer"))?
-        .possession;
-    let offset = bad_grant
-        .windows(proof.len())
-        .position(|part| part == proof)
-        .ok_or_else(|| std::io::Error::other("missing possession bytes"))?;
-    *bad_grant
-        .get_mut(offset)
-        .ok_or_else(|| std::io::Error::other("missing possession byte"))? ^= 1;
-    save(
-        &output,
-        &mut records,
-        "release-grant-bad-possession.cbor",
-        &bad_grant,
-        "reject: signer possession proof changed",
-    )?;
-    let mut bad_class = release_bytes;
-    let class = b"role-key";
-    let offset = bad_class
-        .windows(class.len())
-        .position(|part| part == class)
-        .ok_or_else(|| std::io::Error::other("missing signer class"))?;
-    *bad_class
-        .get_mut(offset)
-        .ok_or_else(|| std::io::Error::other("missing class byte"))? = b'R';
-    save(
-        &output,
-        &mut records,
-        "release-grant-wrong-class.cbor",
-        &bad_class,
-        "reject: signer class not allowed for release kind",
-    )?;
-    let mut bad_cert = code_bytes;
-    let offset = bad_cert
-        .windows(certificate.len())
-        .position(|part| part == certificate)
-        .ok_or_else(|| std::io::Error::other("missing cert bytes"))?;
-    *bad_cert
-        .get_mut(offset)
-        .ok_or_else(|| std::io::Error::other("missing cert byte"))? ^= 1;
-    save(
-        &output,
-        &mut records,
-        "code-signing-grant-bad-cert.cbor",
-        &bad_cert,
-        "reject: malformed role certificate",
-    )?;
-
-    bounds::write_edge_fixtures(&output, &mut records, &release, &unattended, &code_signing)?;
     adversarial::write(
         &output,
         &mut records,
@@ -662,7 +567,7 @@ fn generate_release_role_vectors() -> TestResult {
         "root_public_key_hex": hex::encode(root_key),
         "hive_hex": hex::encode(hive.as_bytes()),
         "final_root_head_hex": hex::encode(head),
-        "verification_time": NOW,
+        "verification_time": VERIFY_AT,
         "default_install_channels": ["stable"],
         "files": records,
         "note": "Disposable public test keys. Hardware custody is an enrolled label in this bundle, not physical proof. Consumer high-water storage, artifact bytes, live status issuer and installed cross-host acceptance remain outside these provider fixtures."

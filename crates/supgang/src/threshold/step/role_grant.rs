@@ -11,7 +11,7 @@ use crate::{
     authority::{SubjectCustody, SubjectKey},
     device_key::{DevicePublicKey, DeviceSignature},
     ids::{HiveId, NodeId},
-    threshold::{Digest, Error, array, canonical, count, fixed, release_statement::Version},
+    threshold::{Digest, Error, array, canonical, count, fixed, release_statement::Version, status::Status},
 };
 
 const POSSESSION_DOMAIN: &[u8] = b"supgang/role-possession/v1\0";
@@ -437,6 +437,21 @@ impl RoleGrant {
         Ok(())
     }
 
+    /// Require this grant and every role signer device in a verified status.
+    ///
+    /// The caller authenticates the status root signature and freshness first.
+    ///
+    /// # Errors
+    /// Refuses a missing grant or member device.
+    pub fn check_active_status(&self, status: &Status) -> Result<(), Error> {
+        self.validate()?;
+        if status.hive != self.hive {
+            return Err(Error::Authority);
+        }
+        let nodes = self.signers.iter().map(|signer| signer.node).collect::<Vec<_>>();
+        status.check_active_grant(&self.id, &nodes)
+    }
+
     /// Check one consumer-supplied code-signing identifier by exact equality.
     ///
     /// # Errors
@@ -455,6 +470,17 @@ impl RoleGrant {
     fn verify_certificate(&self, bytes: &[u8]) -> Result<(), Error> {
         let (remaining, certificate) = x509_parser::parse_x509_certificate(bytes).map_err(|_| Error::Invalid)?;
         if !remaining.is_empty() || certificate.subject() != certificate.issuer() {
+            return Err(Error::Authority);
+        }
+        let expected_cn = format!(
+            "{} code signing {}",
+            self.consumer,
+            hex::encode(self.id.get(..4).ok_or(Error::Invalid)?)
+        );
+        let mut common_names = certificate.subject().iter_common_name();
+        if common_names.next().and_then(|name| name.as_str().ok()) != Some(expected_cn.as_str())
+            || common_names.next().is_some()
+        {
             return Err(Error::Authority);
         }
         certificate.verify_signature(None).map_err(|_| Error::Proof)?;

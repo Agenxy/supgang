@@ -6,8 +6,9 @@ their root-signed steps, ADR 0005 shared status, a carried-device owner assertio
 and carried and unattended release statements. It replaces the earlier
 statement-only draft vectors.
 
-The records use public disposable test scalars. The certificate is a pinned
-public fixture; regenerating the other files reuses that DER file. A `hardware`
+The records use public disposable test scalars. The normal certificate is
+deterministically regenerated with a code-signing key distinct from the release
+key. A separate 4,096-byte certificate exercises the size edge. A `hardware`
 custody label in these records is **not** a physical hardware proof. The example
 consumer is `org.agenxy.Remap`, whose preview version is
 `0.3.0-preview.4` (`[0, 3, 0, ["preview", 4]]`). The example default install
@@ -19,11 +20,14 @@ From the repository root, regenerate deliberately with:
 cargo test --locked --package supgang-core generate_release_role_vectors -- --ignored
 ```
 
-The normal suite checks every listed hash, parses each `.cbor` record as one
-complete item with an independent structural reader, verifies the signatures
-and bindings, and checks the named refusals. A consumer must independently
+The normal suite checks every listed hash, parses accepted `.cbor` records as
+one complete item with an independent structural reader, verifies the signatures
+and bindings, and checks the named encoding and policy refusals. The carried
+`release-request.bin` is the exact canonical content bytes; the assertion signs
+their domain-separated request hash. `artifact.bin` supplies bytes for the
+artifact-digest check. A consumer must independently
 verify the pinned root chain and status, its own opt-in and default channels,
-persisted version high-water, the complete owner assertion and nonce, and the
+persisted version high-water, the complete owner assertion and signing-host nonce, and the
 actual artifact bytes. This provider bundle establishes none of those runtime
 or physical acceptance claims.
 

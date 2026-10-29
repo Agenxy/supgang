@@ -107,7 +107,7 @@ fn code_signing_certificate() -> Result<(Vec<u8>, u64, u64), Box<dyn std::error:
     params.not_after = rcgen::date_time_ymd(2026, 12, 31);
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, "org.agenxy.Remap code signing test");
+        .push(rcgen::DnType::CommonName, "org.agenxy.Remap code signing 04040404");
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::CodeSigning];
     let certificate = params.self_signed(&pair)?;

@@ -333,7 +333,8 @@ installer certificate, and no local signing identity.
 
 - key usage `digitalSignature`;
 - extended key usage `codeSigning` only;
-- subject common name `<consumer_id> code signing <role_id prefix>`;
+- subject common name `<consumer_id> code signing <role_id prefix>`, where the
+  prefix is the first four role ID bytes as eight lowercase hexadecimal digits;
 - validity no longer than the grant.
 
 It does not chain to the ADR 0003 browser trust anchor. That anchor is name-constrained for
