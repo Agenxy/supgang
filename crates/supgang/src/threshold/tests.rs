@@ -21,10 +21,13 @@ mod boundary_tests;
 mod chain_tests;
 mod control_tests;
 mod founding_tests;
+mod grant_tests;
+mod owner_action_tests;
 mod policy_tests;
 mod review_tests;
 mod session_tests;
 mod storage_tests;
+mod vector_tests;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Machines = BTreeMap<frost::Identifier, Session<FileSessionStore>>;
