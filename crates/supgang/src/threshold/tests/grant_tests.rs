@@ -5,7 +5,12 @@ use crate::{
     threshold::step::{
         Outcome,
         grant::{AllowedOperation, Grant, Kind, Presence, Revocation, SignerRole, TargetScope},
+        role_grant::{ReleasePresence, RoleGrant, RolePolicy, RoleSigner},
     },
+};
+use crate::{
+    authority::SubjectKey,
+    threshold::release_statement::{PreRelease, Version},
 };
 
 fn owner_grant(chain: &Chain, id: u8) -> Result<Grant, Error> {
@@ -137,5 +142,81 @@ fn revoke_requires_active_matching_grant_and_exact_next_serial() -> TestResult {
         }
     }
     assert!(chain.grant(&grant.id).is_some());
+    Ok(())
+}
+
+#[test]
+fn release_role_advances_only_under_root_and_revokes_on_shared_serial() -> TestResult {
+    let fixture = fixture(3)?;
+    let mut chain = fixture.chain;
+    let signer = FileDeviceKey::from_secret_bytes(&[9; 32])?;
+    let public = signer.public_key();
+    let mut role = RoleGrant {
+        hive: chain.hive(),
+        id: [25; 16],
+        consumer: "org.agenxy.Remap".into(),
+        signers: vec![RoleSigner {
+            key: SubjectKey::P256(public),
+            node: device_node_id(public),
+            custody: SubjectCustody::File,
+            possession: [0; 64],
+        }],
+        threshold: 1,
+        not_before: 100,
+        not_after: 200,
+        issuer_head: chain.tip(),
+        issuer_sequence: chain.order().2,
+        policy: RolePolicy::Release {
+            package_format: "remap-package-v1".into(),
+            channels: vec!["preview".into()],
+            min_version: Version {
+                major: 0,
+                minor: 3,
+                patch: 0,
+                pre: Some(PreRelease {
+                    label: "preview".into(),
+                    number: 4,
+                }),
+            },
+            presence: ReleasePresence::CarriedDevice,
+        },
+    };
+    let message = role.signers.first().ok_or(Error::Invalid)?.possession_message(&role)?;
+    role.signers.first_mut().ok_or(Error::Invalid)?.possession = signer
+        .sign_domain(b"supgang/role-possession/v1\0", &message)?
+        .to_bytes();
+    let mut step = proposal(&chain, 1)?;
+    step.operation = Operation::Grant;
+    step.payload = role.encode()?;
+    assert_eq!(chain.accept(sign(&fixture.root, &step, &[1, 2])?)?, Outcome::Accepted);
+    assert!(chain.role_grant(&role.id).is_some());
+    assert!(chain.grant(&role.id).is_none());
+    let mut wrong = proposal(&chain, 2)?;
+    wrong.operation = Operation::RevokeGrant;
+    wrong.payload = Revocation {
+        hive: chain.hive(),
+        id: role.id,
+        kind: Kind::OwnerAction,
+        serial: 1,
+        issuer_head: chain.tip(),
+        issuer_sequence: chain.order().2,
+    }
+    .encode()?;
+    assert!(matches!(
+        chain.accept(sign(&fixture.root, &wrong, &[1, 2])?),
+        Err(Error::Authority)
+    ));
+    wrong.payload = Revocation {
+        hive: chain.hive(),
+        id: role.id,
+        kind: Kind::Release,
+        serial: 1,
+        issuer_head: chain.tip(),
+        issuer_sequence: chain.order().2,
+    }
+    .encode()?;
+    assert_eq!(chain.accept(sign(&fixture.root, &wrong, &[1, 2])?)?, Outcome::Accepted);
+    assert!(chain.role_grant(&role.id).is_none());
+    assert_eq!(chain.grant_revocation_serial(), 1);
     Ok(())
 }

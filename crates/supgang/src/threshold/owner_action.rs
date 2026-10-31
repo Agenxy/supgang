@@ -23,8 +23,8 @@ use crate::{
     },
 };
 
-const ACTION_DOMAIN: &[u8] = b"supgang/owner-action/v1\0";
-const REQUEST_DOMAIN: &[u8] = b"supgang/action-request/v1\0";
+pub(crate) const ACTION_DOMAIN: &[u8] = b"supgang/owner-action/v1\0";
+pub(crate) const REQUEST_DOMAIN: &[u8] = b"supgang/action-request/v1\0";
 const CHALLENGE_DOMAIN: &[u8] = b"supgang/owner-action-challenge/v1\0";
 const REMAP_CONSUMER: &str = "org.agenxy.Remap";
 const MAX_REMAP_ASSERTION_AGE: u64 = 5 * 60;

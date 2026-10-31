@@ -132,7 +132,7 @@ fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn assert_one_cbor_item(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn assert_one_cbor_item(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = minicbor::Decoder::new(bytes);
     read_generic_cbor_item(&mut reader, 0)?;
     if reader.position() != bytes.len() {
