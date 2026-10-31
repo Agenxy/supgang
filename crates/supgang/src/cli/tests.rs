@@ -1,13 +1,88 @@
-use super::run;
+use super::{doctor::reachability_check, run};
+
+#[test]
+fn every_command_name_is_reserved_against_new_tags() {
+    use clap::CommandFactory;
+    let mut command = super::Cli::command();
+    command.build();
+    for subcommand in command.get_subcommands() {
+        assert!(
+            crate::peer_tag::PeerTag::new(subcommand.get_name()).is_err(),
+            "unreserved command {}",
+            subcommand.get_name()
+        );
+    }
+}
+
+#[test]
+fn mapping_failure_never_implies_a_local_only_network() {
+    let live = ("unavailable".to_owned(), "unknown".to_owned(), 1);
+    let check = reachability_check(Some(&live));
+    assert!(check.detail.contains("1 computer(s) connected now"));
+    assert!(!check.detail.contains("only on its local network"));
+}
+
+fn write_endpoints(path: &std::path::Path, listen: &str, kind: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let document = serde_json::json!({
+        "listen": listen,
+        "candidates": [{"kind": kind, "address": listen}],
+    });
+    crate::artifact::write_new(path, serde_json::to_string(&document)?.as_bytes(), 4 * 1024)?;
+    Ok(())
+}
 
 fn run_json(arguments: &[&str]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut output = Vec::new();
     let mut error = Vec::new();
     let code = run(arguments.iter().copied(), &mut output, &mut error);
     if code != std::process::ExitCode::SUCCESS {
-        return Err(format!("command failed: {}", String::from_utf8_lossy(&error)).into());
+        return Err(format!("command {arguments:?} failed: {}", String::from_utf8_lossy(&error)).into());
     }
     serde_json::from_slice(&output).map_err(Into::into)
+}
+
+#[test]
+fn exposures_lists_saved_policy_without_mapped_addresses() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let state_path = temporary.path().join("state");
+    drop(crate::state::initialize(&state_path)?);
+    let mut policy = crate::tunnel_policy::TunnelPolicy::default();
+    policy.set(crate::record::ServiceName::new("ssh")?, 22)?;
+    policy.set(crate::record::ServiceName::new("preview")?, 14331)?;
+    // The policy file contains an address; the CLI summary must never copy it.
+    policy.mapped.push("8.8.8.8:4433".parse()?);
+    crate::tunnel_policy::save(&state_path, &policy)?;
+    let path = state_path.to_str().ok_or("non-UTF8 test state")?;
+    let output = run_json(&["supgang", "--state-dir", path, "--json", "exposures"])?;
+    assert_eq!(output.get("schema"), Some(&serde_json::json!("supgang.exposures/v1")));
+    assert_eq!(output.get("source"), Some(&serde_json::json!("saved-state")));
+    assert_eq!(
+        output.get("exposures"),
+        Some(&serde_json::json!([
+            {"name": "preview", "loopback_port": 14331},
+            {"name": "ssh", "loopback_port": 22}
+        ]))
+    );
+    assert_eq!(
+        output.get("limits"),
+        Some(&serde_json::json!({
+            "per_peer": 4, "total": 16, "idle_seconds": 7200, "active_total": null
+        }))
+    );
+    assert!(!output.to_string().contains("8.8.8.8"));
+    assert!(!output.to_string().contains("mapped"));
+    let mut human = Vec::new();
+    let mut error = Vec::new();
+    assert_eq!(
+        run(["supgang", "--state-dir", path, "exposures"], &mut human, &mut error),
+        std::process::ExitCode::SUCCESS
+    );
+    let human = String::from_utf8(human)?;
+    assert!(human.contains("preview: 127.0.0.1:14331"));
+    assert!(human.contains("4 per peer, 16 total, 7200 seconds idle"));
+    assert!(!human.contains("8.8.8.8"));
+    assert!(error.is_empty());
+    Ok(())
 }
 
 #[test]
@@ -20,6 +95,68 @@ fn help_and_version_are_successful_stdout_commands() {
         assert!(!output.is_empty());
         assert!(error.is_empty());
     }
+}
+
+#[test]
+fn an_unrelated_active_peer_does_not_verify_a_router_report() {
+    let router_only = ("mapped-unverified".to_owned(), "gateway-reported-address".to_owned(), 1);
+    let check = reachability_check(Some(&router_only));
+    assert_eq!(check.status, "warning");
+    assert!(check.detail.contains("has not proved that it works"));
+
+    let peer_reported = ("mapped-unverified".to_owned(), "peer-reported-address".to_owned(), 1);
+    let check = reachability_check(Some(&peer_reported));
+    assert_eq!(check.status, "warning");
+    assert!(check.detail.contains("has not proved a return path"));
+}
+
+#[test]
+fn background_service_help_uses_plain_lifecycle_commands() -> Result<(), Box<dyn std::error::Error>> {
+    let mut output = Vec::new();
+    let mut error = Vec::new();
+    let code = run(["supgang", "service", "--help"], &mut output, &mut error);
+    assert_eq!(code, std::process::ExitCode::SUCCESS);
+    assert!(error.is_empty());
+    let help = std::str::from_utf8(&output)?;
+    for command in ["install", "status", "start", "stop", "restart", "uninstall"] {
+        assert!(help.contains(command));
+    }
+    assert!(help.contains("Keep Supgang running in the background"));
+
+    output.clear();
+    let code = run(["supgang", "service", "install", "--help"], &mut output, &mut error);
+    assert_eq!(code, std::process::ExitCode::SUCCESS);
+    let install_help = String::from_utf8(output)?;
+    assert!(install_help.contains("--endpoints <PATH>"));
+    assert!(install_help.contains("--anchor"));
+    Ok(())
+}
+
+#[test]
+fn endpoint_addresses_are_not_accepted_as_command_arguments() -> Result<(), Box<dyn std::error::Error>> {
+    for command in ["publish", "run", "anchor"] {
+        let mut output = Vec::new();
+        let mut error = Vec::new();
+        let code = run(["supgang", command, "--help"], &mut output, &mut error);
+        assert_eq!(code, std::process::ExitCode::SUCCESS);
+        let help = String::from_utf8(output)?;
+        for forbidden in ["--local", "--direct", "--listen", "IP:PORT"] {
+            assert!(!help.contains(forbidden), "{command} help exposed {forbidden}");
+        }
+        assert!(help.contains("--endpoints <PATH>"));
+    }
+    Ok(())
+}
+
+#[test]
+fn anchor_help_describes_a_user_owned_meeting_point() -> Result<(), Box<dyn std::error::Error>> {
+    let mut output = Vec::new();
+    let mut error = Vec::new();
+    let code = run(["supgang", "anchor", "--help"], &mut output, &mut error);
+    assert_eq!(code, std::process::ExitCode::SUCCESS);
+    assert!(error.is_empty());
+    assert!(String::from_utf8(output)?.contains("user-owned meeting point"));
+    Ok(())
 }
 
 #[test]
@@ -36,7 +173,12 @@ fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::
     );
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let init: serde_json::Value = serde_json::from_slice(&output)?;
-    assert_eq!(init.get("schema"), Some(&serde_json::json!("supgang.init/v1")));
+    assert_eq!(init.get("schema"), Some(&serde_json::json!("supgang.init/v2")));
+    assert!(
+        init.get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+    );
     assert!(init.get("secret").is_none());
 
     output.clear();
@@ -49,6 +191,14 @@ fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::
     let doctor: serde_json::Value = serde_json::from_slice(&output)?;
     assert_eq!(doctor.get("schema"), Some(&serde_json::json!("supgang.doctor/v1")));
     assert_eq!(doctor.get("public_dependencies"), Some(&serde_json::json!(0)));
+    assert_eq!(doctor.pointer("/custody/provider"), Some(&serde_json::json!("file")));
+    assert_eq!(
+        doctor
+            .pointer("/custody/capabilities")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(4)
+    );
 
     output.clear();
     let code = run(
@@ -58,7 +208,7 @@ fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::
     );
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let status: serde_json::Value = serde_json::from_slice(&output)?;
-    assert_eq!(status.get("schema"), Some(&serde_json::json!("supgang.status/v1")));
+    assert_eq!(status.get("schema"), Some(&serde_json::json!("supgang.status/v4")));
     assert_eq!(status.get("service"), Some(&serde_json::json!("stopped")));
     Ok(())
 }
@@ -84,6 +234,14 @@ fn offline_cli_join_round_trip_uses_recipient_generated_key() -> Result<(), Box<
         "join-request",
         request_text,
     ])?;
+    let expected_node = request_output
+        .get("node_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("request node id missing")?;
+    let expected_hive = initialized
+        .get("hive_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("founder hive id missing")?;
     let invited = run_json(&[
         "supgang",
         "--json",
@@ -94,8 +252,19 @@ fn offline_cli_join_round_trip_uses_recipient_generated_key() -> Result<(), Box<
         bundle_text,
         "--days",
         "30",
+        "--expect-node",
+        expected_node,
     ])?;
-    let join_result = run_json(&["supgang", "--json", "--state-dir", joiner_text, "join", bundle_text])?;
+    let join_result = run_json(&[
+        "supgang",
+        "--json",
+        "--state-dir",
+        joiner_text,
+        "join",
+        bundle_text,
+        "--expect-hive",
+        expected_hive,
+    ])?;
 
     assert_eq!(initialized.get("hive_id"), join_result.get("hive_id"));
     assert_eq!(request_output.get("node_id"), join_result.get("node_id"));
@@ -113,13 +282,15 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
     let request = directory.path().join("join.request");
     let bundle = directory.path().join("join.bundle");
     let contact = directory.path().join("joiner.contact");
+    let endpoints = directory.path().join("joiner.endpoints.json");
     let founder_text = founder.to_str().ok_or("founder path was not UTF-8")?;
     let joiner_text = joiner.to_str().ok_or("joiner path was not UTF-8")?;
     let request_text = request.to_str().ok_or("request path was not UTF-8")?;
     let bundle_text = bundle.to_str().ok_or("bundle path was not UTF-8")?;
     let contact_text = contact.to_str().ok_or("contact path was not UTF-8")?;
+    let endpoints_text = endpoints.to_str().ok_or("endpoint path was not UTF-8")?;
 
-    run_json(&["supgang", "--json", "--state-dir", founder_text, "init"])?;
+    let initialized = run_json(&["supgang", "--json", "--state-dir", founder_text, "init"])?;
     let requested = run_json(&[
         "supgang",
         "--json",
@@ -128,6 +299,14 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         "join-request",
         request_text,
     ])?;
+    let expected_node = requested
+        .get("node_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("request node id missing")?;
+    let expected_hive = initialized
+        .get("hive_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("founder hive id missing")?;
     run_json(&[
         "supgang",
         "--json",
@@ -136,8 +315,31 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         "invite",
         request_text,
         bundle_text,
+        "--expect-node",
+        expected_node,
     ])?;
-    run_json(&["supgang", "--json", "--state-dir", joiner_text, "join", bundle_text])?;
+    run_json(&[
+        "supgang",
+        "--json",
+        "--state-dir",
+        joiner_text,
+        "join",
+        bundle_text,
+        "--expect-hive",
+        expected_hive,
+    ])?;
+    let renamed = run_json(&[
+        "supgang",
+        "--json",
+        "--state-dir",
+        joiner_text,
+        "name",
+        "set",
+        "HomeServer",
+    ])?;
+    assert_eq!(renamed.get("name"), Some(&serde_json::json!("HomeServer")));
+    advertise_dibs(joiner_text)?;
+    write_endpoints(&endpoints, "127.0.0.1:4433", "local")?;
     run_json(&[
         "supgang",
         "--json",
@@ -145,8 +347,8 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         joiner_text,
         "publish",
         contact_text,
-        "--local",
-        "127.0.0.1:4433",
+        "--endpoints",
+        endpoints_text,
     ])?;
     run_json(&["supgang", "--json", "--state-dir", founder_text, "import", contact_text])?;
     let node_id = requested
@@ -163,5 +365,141 @@ fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn
         .and_then(serde_json::Value::as_str)
         .ok_or("resolved address missing")?;
     assert_eq!(address, "127.0.0.1:4433");
+
+    let named = run_json(&[
+        "supgang",
+        "--json",
+        "--state-dir",
+        founder_text,
+        "resolve",
+        "HomeServer",
+    ])?;
+    assert_eq!(named.get("node_id"), requested.get("node_id"));
+    let tagged = run_json(&[
+        "supgang",
+        "--json",
+        "--state-dir",
+        founder_text,
+        "tag",
+        "HomeServer",
+        "home",
+    ])?;
+    assert_eq!(tagged.get("schema"), Some(&serde_json::json!("supgang.peer-tag/v1")));
+    assert_eq!(tagged.get("tag"), Some(&serde_json::json!("home")));
+    let by_tag = run_json(&["supgang", "--json", "--state-dir", founder_text, "home"])?;
+    assert_eq!(by_tag.get("schema"), Some(&serde_json::json!("supgang.peer-search/v2")));
+    assert_eq!(
+        by_tag
+            .get("matches")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|matches| matches.first())
+            .and_then(|matched| matched.get("peer"))
+            .and_then(|peer| peer.get("node_id")),
+        requested.get("node_id")
+    );
+    let by_partial = run_json(&["supgang", "--json", "--state-dir", founder_text, "homes"])?;
+    assert_eq!(
+        by_partial
+            .get("matches")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+    let resolved_tag = run_json(&["supgang", "--json", "--state-dir", founder_text, "resolve", "home"])?;
+    assert_eq!(resolved_tag.get("node_id"), requested.get("node_id"));
+    assert_eq!(resolved_tag.get("tags"), Some(&serde_json::json!(["home"])));
+    assert_dibs_resolved(&resolved_tag);
+    let listed = run_json(&["supgang", "--json", "--state-dir", founder_text])?;
+    assert_eq!(listed.get("schema"), Some(&serde_json::json!("supgang.peers/v6")));
+    assert!(
+        listed
+            .get("this_computer")
+            .and_then(|computer| computer.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+    );
+    let row = listed
+        .get("peers")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|peers| peers.first())
+        .ok_or("listed peer missing")?;
+    assert_eq!(row.get("name"), Some(&serde_json::json!("HomeServer")));
+    assert_eq!(row.get("tags"), Some(&serde_json::json!(["home"])));
+    assert_eq!(
+        row.get("addresses")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|addresses| addresses.first())
+            .and_then(|address| address.get("scope")),
+        Some(&serde_json::json!("local"))
+    );
+    assert_human_fleet_output(founder_text)?;
+    Ok(())
+}
+
+/// The joiner says it runs Dibs on 4777 behind a known key, while its
+/// service is stopped, the way `name set` is done.
+fn advertise_dibs(state: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let pin = "ab".repeat(32);
+    let advertised = run_json(&[
+        "supgang",
+        "--json",
+        "--state-dir",
+        state,
+        "advertise",
+        "dibs",
+        "4777",
+        "--key-pin",
+        &pin,
+    ])?;
+    assert_eq!(
+        advertised.get("schema"),
+        Some(&serde_json::json!("supgang.services/v1"))
+    );
+    assert_eq!(
+        advertised.get("services"),
+        Some(&serde_json::json!([{"name": "dibs", "port": 4777, "key_pin": pin}]))
+    );
+    Ok(())
+}
+
+/// The joiner's advertisement crossed in its signed contact: the founder now
+/// knows what the joiner runs, on which port, with which key.
+fn assert_dibs_resolved(resolved: &serde_json::Value) {
+    assert_eq!(resolved.get("schema"), Some(&serde_json::json!("supgang.resolve/v5")));
+    assert_eq!(
+        resolved.get("services"),
+        Some(&serde_json::json!([{"name": "dibs", "port": 4777, "key_pin": "ab".repeat(32)}]))
+    );
+}
+
+fn assert_human_fleet_output(founder_state: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut human = Vec::new();
+    let mut human_error = Vec::new();
+    assert_eq!(
+        run(["supgang", "--state-dir", founder_state], &mut human, &mut human_error,),
+        std::process::ExitCode::SUCCESS
+    );
+    let human = String::from_utf8(human)?;
+    assert!(human.contains("this computer"));
+    assert!(human.contains("HomeServer (home) ["));
+    assert!(human.contains("127.0.0.1:4433"));
+    assert!(human.contains("connection unknown"));
+    assert!(!human.contains("device-signed"));
+    assert!(human.contains("supgang --help"));
+    assert!(human_error.is_empty());
+
+    let mut detailed = Vec::new();
+    assert_eq!(
+        run(
+            ["supgang", "--state-dir", founder_state, "peers", "--all"],
+            &mut detailed,
+            &mut human_error,
+        ),
+        std::process::ExitCode::SUCCESS
+    );
+    let detailed = String::from_utf8(detailed)?;
+    assert!(detailed.contains("127.0.0.1:4433"));
+    assert!(detailed.contains("preferred"));
+    assert!(detailed.contains("device-signed"));
     Ok(())
 }

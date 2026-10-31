@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.agenxy.supgang-cache-sweep</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/TO/uv</string>
+    <string>run</string>
+    <string>--offline</string>
+    <string>--script</string>
+    <string>/ABSOLUTE/PATH/TO/Supgang/tools/cache_sweep.py</string>
+    <string>--apply</string>
+    <string>--older-than-days</string>
+    <string>30</string>
+  </array>
+  <key>StartInterval</key><integer>604800</integer>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>

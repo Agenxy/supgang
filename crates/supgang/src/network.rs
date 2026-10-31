@@ -1,0 +1,411 @@
+//! Side-effect-free local interface discovery for macOS and Linux.
+
+use std::{collections::BTreeSet, net::IpAddr};
+
+use nix::{ifaddrs::getifaddrs, net::if_::InterfaceFlags, sys::socket::SockaddrStorage};
+use thiserror::Error;
+
+use crate::candidate::{CandidateKind, EndpointCandidate};
+
+pub(crate) const MAX_DIAL_CANDIDATES_PER_ROUND: usize = 4;
+
+/// Applies the same address-family eligibility rules to ephemeral sockets.
+pub(crate) fn address_is_route_compatible(address: std::net::SocketAddr, networks: &[InterfaceNetwork]) -> bool {
+    let transport = crate::candidate::CandidateTransport::QuicV1;
+    EndpointCandidate::new(CandidateKind::Local, transport, address)
+        .or_else(|_| EndpointCandidate::new(CandidateKind::Reflexive, transport, address))
+        .is_ok_and(|candidate| candidate_is_route_compatible(&candidate, networks))
+}
+
+/// One local interface address and its operating-system netmask.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InterfaceNetwork {
+    address: IpAddr,
+    netmask: IpAddr,
+}
+
+impl InterfaceNetwork {
+    pub(crate) const fn new(address: IpAddr, netmask: IpAddr) -> Self {
+        Self { address, netmask }
+    }
+
+    /// Returns this interface address.
+    #[must_use]
+    pub const fn address(self) -> IpAddr {
+        self.address
+    }
+
+    /// Returns whether `remote` is in the same directly attached IP prefix.
+    #[must_use]
+    pub const fn contains(self, remote: IpAddr) -> bool {
+        match (self.address, self.netmask, remote) {
+            (IpAddr::V4(local), IpAddr::V4(mask), IpAddr::V4(peer)) => {
+                u32::from_be_bytes(local.octets()) & u32::from_be_bytes(mask.octets())
+                    == u32::from_be_bytes(peer.octets()) & u32::from_be_bytes(mask.octets())
+            }
+            (IpAddr::V6(local), IpAddr::V6(mask), IpAddr::V6(peer)) => {
+                u128::from_be_bytes(local.octets()) & u128::from_be_bytes(mask.octets())
+                    == u128::from_be_bytes(peer.octets()) & u128::from_be_bytes(mask.octets())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A local interface enumeration failure.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum NetworkError {
+    /// The operating system did not return its interface table.
+    #[error("local network interface enumeration failed")]
+    Enumeration,
+}
+
+/// Returns active IP interfaces, including routed tunnels and bridges.
+///
+/// An interface table is not a routing table. These addresses establish only
+/// address-family availability and on-link preference, never reachability.
+///
+/// # Errors
+///
+/// Returns an error when the operating system cannot enumerate interfaces.
+pub fn interface_networks() -> Result<Vec<InterfaceNetwork>, NetworkError> {
+    enumerate_interfaces(false)
+}
+
+/// Filters automatic advertisements, not the routes an explicit peer may use.
+pub(crate) fn automatic_interface_networks() -> Result<Vec<InterfaceNetwork>, NetworkError> {
+    enumerate_interfaces(true)
+}
+
+fn enumerate_interfaces(automatic: bool) -> Result<Vec<InterfaceNetwork>, NetworkError> {
+    #[cfg(test)]
+    if let Some(view) = simulated::current() {
+        return Ok(view.interfaces());
+    }
+    let mut networks = BTreeSet::new();
+    for interface in getifaddrs().map_err(|_| NetworkError::Enumeration)? {
+        if !interface.flags.contains(InterfaceFlags::IFF_UP) {
+            continue;
+        }
+        if automatic
+            && (interface.flags.contains(InterfaceFlags::IFF_LOOPBACK)
+                || !is_automatic_interface(&interface.interface_name))
+        {
+            continue;
+        }
+        let Some(address) = interface.address.as_ref().and_then(ip_from_storage) else {
+            continue;
+        };
+        let Some(netmask) = interface.netmask.as_ref().and_then(ip_from_storage) else {
+            continue;
+        };
+        if address.is_unspecified() || address.is_multicast() || !same_family(address, netmask) {
+            continue;
+        }
+        networks.insert((address, netmask));
+    }
+    Ok(networks
+        .into_iter()
+        .map(|(address, netmask)| InterfaceNetwork::new(address, netmask))
+        .collect())
+}
+
+fn is_automatic_interface(name: &str) -> bool {
+    const VIRTUAL_PREFIXES: &[&str] = &[
+        "anpi",
+        "awdl",
+        "cni",
+        "docker",
+        "dummy",
+        "flannel",
+        "gif",
+        "ifb",
+        "ipsec",
+        "kube",
+        "llw",
+        "nan",
+        "p2p",
+        "podman",
+        "stf",
+        "tailscale",
+        "tap",
+        "tun",
+        "utun",
+        "veth",
+        "virbr",
+        "wg",
+        "zt",
+    ];
+    !VIRTUAL_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
+/// Returns whether an address shares a directly attached prefix with this host.
+///
+/// Enumeration failure deliberately returns false so callers fall back to a
+/// public candidate instead of presenting a LAN address as preferred.
+#[must_use]
+pub fn is_on_link(remote: IpAddr) -> bool {
+    interface_networks().is_ok_and(|networks| networks.into_iter().any(|network| network.contains(remote)))
+}
+
+pub(crate) fn candidate_dial_order(
+    candidates: &[EndpointCandidate],
+    local_networks: &[InterfaceNetwork],
+) -> Vec<usize> {
+    let preferred_local = candidates.iter().position(|candidate| {
+        candidate.kind() == CandidateKind::Local
+            && local_networks
+                .iter()
+                .any(|network| network.contains(candidate.address().ip()))
+    });
+    let mut indices = (0..candidates.len()).collect::<Vec<_>>();
+    indices.sort_unstable_by_key(|index| {
+        let rank = candidates.get(*index).map_or(6, |candidate| {
+            if Some(*index) == preferred_local {
+                0
+            } else {
+                match candidate.kind() {
+                    CandidateKind::OwnedRelay => 1,
+                    CandidateKind::Mapped => 2,
+                    CandidateKind::Reflexive => 3,
+                    CandidateKind::Direct => 4,
+                    CandidateKind::Local => 5,
+                }
+            }
+        });
+        let route_incompatible = candidates
+            .get(*index)
+            .is_none_or(|candidate| !candidate_is_route_compatible(candidate, local_networks));
+        (route_incompatible, rank, *index)
+    });
+    indices
+}
+
+/// Returns whether the kernel can select a route for this candidate.
+///
+/// Private routes need not be directly attached: VPNs and ordinary routers
+/// may carry them. Off-link private candidates rank behind public candidates,
+/// but remain eligible when the kernel selects a route. This sends no packet
+/// and establishes no evidence that the remote peer is reachable.
+#[must_use]
+pub(crate) fn candidate_is_route_compatible(
+    candidate: &EndpointCandidate,
+    local_networks: &[InterfaceNetwork],
+) -> bool {
+    candidate_has_route(candidate, local_networks, kernel_route_exists)
+}
+
+fn candidate_has_route(
+    candidate: &EndpointCandidate,
+    local_networks: &[InterfaceNetwork],
+    route: impl FnOnce(std::net::SocketAddr) -> bool,
+) -> bool {
+    let remote = candidate.address().ip();
+    if remote.is_loopback() || matches!(remote, IpAddr::V6(ip) if ip.is_unicast_link_local()) {
+        return local_networks.iter().any(|network| network.contains(remote)) && route(candidate.address());
+    }
+    local_networks.iter().any(|network| match (network.address(), remote) {
+        (IpAddr::V4(local), IpAddr::V4(_)) => !local.is_unspecified() && !local.is_loopback() && !local.is_link_local(),
+        (IpAddr::V6(local), IpAddr::V6(_)) => {
+            !local.is_unspecified() && !local.is_loopback() && !local.is_unicast_link_local()
+        }
+        _ => false,
+    }) && route(candidate.address())
+}
+
+fn kernel_route_exists(remote: std::net::SocketAddr) -> bool {
+    #[cfg(test)]
+    if let Some(view) = simulated::current() {
+        return view.route_exists(remote);
+    }
+    // UDP connect asks the kernel to select a route and source address. It
+    // sends no datagram and performs no DNS or application probe.
+    let bind = match remote {
+        std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+        std::net::SocketAddr::V6(_) => std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+    };
+    std::net::UdpSocket::bind(bind).is_ok_and(|socket| {
+        socket.connect(remote).is_ok() && socket.local_addr().is_ok_and(|local| !local.ip().is_unspecified())
+    })
+}
+
+fn ip_from_storage(storage: &SockaddrStorage) -> Option<IpAddr> {
+    storage
+        .as_sockaddr_in()
+        .map(|address| IpAddr::V4(address.ip()))
+        .or_else(|| storage.as_sockaddr_in6().map(|address| IpAddr::V6(address.ip())))
+}
+
+const fn same_family(first: IpAddr, second: IpAddr) -> bool {
+    matches!(
+        (first, second),
+        (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
+    )
+}
+
+#[cfg(test)]
+mod route_tests;
+
+/// Lets a scenario test answer interface and route questions for the
+/// simulated computer whose service runs on the current thread. Each simulated
+/// computer runs its service on its own thread, as the real service does on
+/// its own process, so a thread-local view never leaks between computers.
+#[cfg(test)]
+pub(crate) mod simulated {
+    use std::{cell::RefCell, net::SocketAddr, sync::Arc};
+
+    use super::InterfaceNetwork;
+
+    /// What one simulated computer's operating system would report.
+    pub trait View: Send + Sync {
+        fn interfaces(&self) -> Vec<InterfaceNetwork>;
+        fn route_exists(&self, remote: SocketAddr) -> bool;
+    }
+
+    thread_local! {
+        static VIEW: RefCell<Option<Arc<dyn View>>> = const { RefCell::new(None) };
+    }
+
+    /// Installs `view` for this thread until the guard is dropped.
+    pub fn install(view: Arc<dyn View>) -> Guard {
+        VIEW.with(|slot| *slot.borrow_mut() = Some(view));
+        Guard(())
+    }
+
+    pub(super) fn current() -> Option<Arc<dyn View>> {
+        VIEW.with(|slot| slot.borrow().clone())
+    }
+
+    /// Removes the thread's view when the simulated computer stops.
+    pub struct Guard(());
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            VIEW.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    use super::{
+        InterfaceNetwork, MAX_DIAL_CANDIDATES_PER_ROUND, candidate_dial_order, candidate_is_route_compatible,
+        is_automatic_interface,
+    };
+    use crate::candidate::{CandidateKind, CandidateTransport, EndpointCandidate};
+
+    #[test]
+    fn prefix_matching_is_family_safe() {
+        let v4 = InterfaceNetwork::new(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
+            IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0)),
+        );
+        assert!(v4.contains(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 191))));
+        assert!(!v4.contains(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 191))));
+        assert!(!v4.contains(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn automatic_discovery_excludes_overlay_and_virtual_interfaces() {
+        for physical in [
+            "en0", "en1", "eth0", "wlan0", "wlp2s0", "wwan0", "bond0", "bridge0", "br-lan",
+        ] {
+            assert!(is_automatic_interface(physical), "{physical}");
+        }
+        for virtual_name in ["awdl0", "docker0", "ipsec0", "tailscale0", "utun4", "veth1234", "wg0"] {
+            assert!(!is_automatic_interface(virtual_name), "{virtual_name}");
+        }
+    }
+
+    #[test]
+    fn dial_order_keeps_public_candidates_inside_the_attempt_bound() -> Result<(), Box<dyn std::error::Error>> {
+        let local_networks = [InterfaceNetwork::new(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
+            IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0)),
+        )];
+        let mut candidates = Vec::new();
+        for final_octet in 1..=5 {
+            candidates.push(EndpointCandidate::new(
+                CandidateKind::Local,
+                CandidateTransport::QuicV1,
+                SocketAddr::from(([192, 168, 1, final_octet], 4_433)),
+            )?);
+        }
+        candidates.push(EndpointCandidate::new(
+            CandidateKind::Direct,
+            CandidateTransport::QuicV1,
+            SocketAddr::from(([8, 8, 8, 8], 4_433)),
+        )?);
+
+        let order = candidate_dial_order(&candidates, &local_networks);
+        assert_eq!(order.first().copied(), Some(0));
+        assert_eq!(order.get(1).copied(), Some(5));
+        assert!(
+            order
+                .iter()
+                .take(MAX_DIAL_CANDIDATES_PER_ROUND)
+                .any(|index| *index == 5)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_candidate_outranks_incidental_direct_interfaces() -> Result<(), Box<dyn std::error::Error>> {
+        let mut candidates = (1_u8..=4)
+            .map(|host| {
+                EndpointCandidate::new(
+                    CandidateKind::Direct,
+                    CandidateTransport::QuicV1,
+                    SocketAddr::from(([8, 8, 8, host], 4_433)),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        candidates.push(EndpointCandidate::new(
+            CandidateKind::Mapped,
+            CandidateTransport::QuicV1,
+            SocketAddr::from(([9, 9, 9, 9], 4_433)),
+        )?);
+
+        let order = candidate_dial_order(&candidates, &[]);
+        assert_eq!(order.first().copied(), Some(4));
+        assert!(
+            order
+                .iter()
+                .take(MAX_DIAL_CANDIDATES_PER_ROUND)
+                .any(|index| *index == 4)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn routed_private_addresses_remain_eligible_but_missing_families_do_not() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let ipv4_only = [InterfaceNetwork::new(
+            IpAddr::V4(Ipv4Addr::new(172, 16, 110, 141)),
+            IpAddr::V4(Ipv4Addr::new(255, 255, 0, 0)),
+        )];
+        let off_link = EndpointCandidate::new(
+            CandidateKind::Local,
+            CandidateTransport::QuicV1,
+            SocketAddr::from(([192, 168, 1, 191], 44_330)),
+        )?;
+        let public_ipv4 = EndpointCandidate::new(
+            CandidateKind::Mapped,
+            CandidateTransport::QuicV1,
+            SocketAddr::from(([8, 8, 8, 8], 44_330)),
+        )?;
+        let public_ipv6 = EndpointCandidate::new(
+            CandidateKind::Direct,
+            CandidateTransport::QuicV1,
+            SocketAddr::from((Ipv6Addr::new(0x2600, 0x1700, 0, 0, 0, 0, 0, 1), 44_330)),
+        )?;
+
+        assert!(candidate_is_route_compatible(&off_link, &ipv4_only));
+        assert!(candidate_is_route_compatible(&public_ipv4, &ipv4_only));
+        assert!(!candidate_is_route_compatible(&public_ipv6, &ipv4_only));
+        assert_eq!(candidate_dial_order(&[public_ipv6, public_ipv4], &ipv4_only), [1, 0]);
+        Ok(())
+    }
+}

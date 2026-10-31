@@ -24,6 +24,9 @@ pub enum ArtifactError {
     /// Another user can read or modify the file.
     #[error("offline artifact permissions must be 0600")]
     InsecurePermissions,
+    /// An extended ACL grants access beyond the owner-only mode policy.
+    #[error("offline artifact has a non-owner ACL grant")]
+    InsecureAcl,
     /// The artifact exceeds the caller's protocol budget.
     #[error("offline artifact exceeds its protocol size limit")]
     Oversized,
@@ -60,6 +63,7 @@ pub fn write_new(path: impl AsRef<Path>, bytes: &[u8], maximum: usize) -> Result
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(ArtifactError::AlreadyExists),
         Err(error) => return Err(error.into()),
     };
+    supgang_acl::clear_inherited_acl(&file)?;
     validate(&file)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -88,9 +92,14 @@ pub fn read(path: impl AsRef<Path>, maximum: usize) -> Result<Vec<u8>, ArtifactE
     }
     let capacity = usize::try_from(length).map_err(|_| ArtifactError::Oversized)?;
     let mut bytes = Vec::with_capacity(capacity);
-    file.read_to_end(&mut bytes)?;
+    Read::by_ref(&mut file)
+        .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
         return Err(ArtifactError::Oversized);
+    }
+    if bytes.len() != capacity {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "artifact changed while being read").into());
     }
     Ok(bytes)
 }
@@ -106,16 +115,24 @@ fn validate(file: &File) -> Result<(), ArtifactError> {
     if metadata.mode() & 0o777 != 0o600 {
         return Err(ArtifactError::InsecurePermissions);
     }
+    supgang_acl::reject_non_owner_grants(file).map_err(|error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            ArtifactError::InsecureAcl
+        } else {
+            ArtifactError::Io(error)
+        }
+    })?;
     Ok(())
 }
 
 fn no_follow_flag() -> Result<i32, ArtifactError> {
-    i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| ArtifactError::NotRegularFile)
+    let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+    i32::try_from(flags.bits()).map_err(|_| ArtifactError::NotRegularFile)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
     use super::{ArtifactError, read, write_new};
 
@@ -139,6 +156,17 @@ mod tests {
         write_new(&path, b"bounded", 32)?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
         assert!(matches!(read(&path, 32), Err(ArtifactError::InsecurePermissions)));
+        Ok(())
+    }
+
+    #[test]
+    fn fifo_is_rejected_without_waiting_for_a_writer() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("pipe");
+        let status = Command::new("mkfifo").arg(&path).status()?;
+        assert!(status.success());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        assert!(matches!(read(&path, 32), Err(ArtifactError::NotRegularFile)));
         Ok(())
     }
 }

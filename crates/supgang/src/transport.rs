@@ -15,20 +15,37 @@ use crate::ids::TransportKeyId;
 
 /// Supgang's TLS application protocol identifier.
 pub const ALPN: &[u8] = b"supgang/1";
-/// Maximum accepted bidirectional streams on one peer connection.
-pub const MAX_BIDIRECTIONAL_STREAMS: u32 = 4;
+/// Maximum accepted bidirectional streams on one peer connection: every
+/// tunnel a peer may hold, plus the sync and update streams.
+pub const MAX_BIDIRECTIONAL_STREAMS: u32 = 66;
 /// Maximum accepted one-way control streams on one peer connection.
 pub const MAX_UNIDIRECTIONAL_STREAMS: u32 = 2;
 /// Maximum idle period before transport teardown.
 pub const MAX_IDLE_SECONDS: u64 = 45;
-/// Per-stream receive budget.
-pub const STREAM_RECEIVE_BYTES: u32 = 64 * 1024;
-/// Per-connection receive budget.
-pub const CONNECTION_RECEIVE_BYTES: u32 = 256 * 1024;
+/// Keepalive interval: a live peer is heard from at least this often.
+///
+/// That lets a silent path be judged gone well before the idle timeout, and
+/// it refreshes short UDP mappings in hotel and carrier gateways.
+pub const KEEP_ALIVE_SECONDS: u64 = 5;
+/// Per-stream receive budget. A stream moves at most one window per round
+/// trip, so this is sized for bulk transfer through one tunnel across an ocean:
+/// about 7 MB/s at 150 ms.
+pub const STREAM_RECEIVE_BYTES: u32 = 1024 * 1024;
+/// Per-connection receive budget, shared by every stream to one peer: about
+/// 55 MB/s at 150 ms.
+pub const CONNECTION_RECEIVE_BYTES: u32 = 8 * 1024 * 1024;
+/// Total inbound or outbound unreliable control bytes buffered per connection.
+pub const DATAGRAM_BUFFER_BYTES: usize = 16 * 1024;
 /// Maximum serialized transport certificate size accepted from protected storage.
 pub const MAX_TRANSPORT_CERTIFICATE_BYTES: usize = 8 * 1024;
 /// Maximum serialized transport private-key size accepted from protected storage.
 pub const MAX_TRANSPORT_PRIVATE_KEY_BYTES: usize = 4 * 1024;
+/// Maximum QUIC connection attempts retained before application admission.
+pub const MAX_SERVER_INCOMING: usize = 64;
+/// Maximum buffered handshake bytes retained for one pending connection.
+pub const INCOMING_BUFFER_BYTES: u64 = 64 * 1024;
+/// Maximum buffered handshake bytes retained across all pending connections.
+pub const TOTAL_INCOMING_BUFFER_BYTES: u64 = 1024 * 1024;
 
 /// A generated self-signed transport certificate and its protected private key.
 pub struct TransportIdentity {
@@ -61,9 +78,15 @@ impl TransportIdentity {
     /// Returns an error if the selected audited cryptographic provider cannot
     /// generate or serialize the certificate key.
     pub fn generate() -> Result<Self, TransportError> {
-        let certified = rcgen::generate_simple_self_signed(["supgang.invalid".to_owned()])
+        let mut parameters = rcgen::CertificateParams::new(vec!["supgang.invalid".to_owned()])
             .map_err(|_| TransportError::Certificate)?;
-        Self::from_der(certified.cert.der().to_vec(), certified.signing_key.serialize_der())
+        parameters.distinguished_name = rcgen::DistinguishedName::new();
+        parameters
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Supgang peer transport");
+        let key = rcgen::KeyPair::generate().map_err(|_| TransportError::Certificate)?;
+        let certificate = parameters.self_signed(&key).map_err(|_| TransportError::Certificate)?;
+        Self::from_der(certificate.der().to_vec(), key.serialize_der())
     }
 
     /// Restores a certificate and private key from protected storage.
@@ -112,6 +135,12 @@ impl TransportIdentity {
     ///
     /// Returns an error for an invalid key, certificate, TLS, or QUIC setting.
     pub fn server_config(&self) -> Result<ServerConfig, TransportError> {
+        self.server_config_with_mtu_cap(false)
+    }
+
+    /// Builds the same bounded server with PMTU probing disabled for a path
+    /// that previously exceeded the black-hole threshold.
+    pub(crate) fn server_config_with_mtu_cap(&self, cap_mtu: bool) -> Result<ServerConfig, TransportError> {
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let mut tls = rustls::ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])
@@ -127,7 +156,10 @@ impl TransportIdentity {
         let crypto =
             quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(|_| TransportError::Configuration)?;
         let mut server = ServerConfig::with_crypto(Arc::new(crypto));
-        server.transport_config(Arc::new(bounded_transport()?));
+        server.transport_config(Arc::new(bounded_transport(cap_mtu)?));
+        server.max_incoming(MAX_SERVER_INCOMING);
+        server.incoming_buffer_size(INCOMING_BUFFER_BYTES);
+        server.incoming_buffer_size_total(TOTAL_INCOMING_BUFFER_BYTES);
         Ok(server)
     }
 }
@@ -138,6 +170,14 @@ impl TransportIdentity {
 ///
 /// Returns an error if TLS or QUIC configuration fails.
 pub fn pinned_client_config(expected: TransportKeyId) -> Result<ClientConfig, TransportError> {
+    pinned_client_config_with_mtu_cap(expected, false)
+}
+
+/// Builds a pinned client with PMTU probing disabled after repeated black holes.
+pub(crate) fn pinned_client_config_with_mtu_cap(
+    expected: TransportKeyId,
+    cap_mtu: bool,
+) -> Result<ClientConfig, TransportError> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let verifier = PinnedServerVerifier {
         provider: Arc::clone(&provider),
@@ -153,7 +193,7 @@ pub fn pinned_client_config(expected: TransportKeyId) -> Result<ClientConfig, Tr
     tls.enable_early_data = false;
     let crypto = QuicClientConfig::try_from(tls).map_err(|_| TransportError::Configuration)?;
     let mut client = ClientConfig::new(Arc::new(crypto));
-    client.transport_config(Arc::new(bounded_transport()?));
+    client.transport_config(Arc::new(bounded_transport(cap_mtu)?));
     Ok(client)
 }
 
@@ -178,6 +218,7 @@ pub fn bind(address: SocketAddr) -> Result<(Endpoint, TransportIdentity), Transp
 /// Returns an error when the operating system cannot initialize the runtime.
 pub fn build_runtime() -> Result<tokio::runtime::Runtime, TransportError> {
     tokio::runtime::Builder::new_current_thread()
+        .thread_name("supgang-io")
         .enable_all()
         .build()
         .map_err(TransportError::Runtime)
@@ -260,16 +301,26 @@ impl ServerCertVerifier for PinnedServerVerifier {
     }
 }
 
-fn bounded_transport() -> Result<TransportConfig, TransportError> {
+fn bounded_transport(cap_mtu: bool) -> Result<TransportConfig, TransportError> {
     let mut transport = TransportConfig::default();
     transport.max_concurrent_bidi_streams(MAX_BIDIRECTIONAL_STREAMS.into());
     transport.max_concurrent_uni_streams(MAX_UNIDIRECTIONAL_STREAMS.into());
     transport.stream_receive_window(STREAM_RECEIVE_BYTES.into());
     transport.receive_window(CONNECTION_RECEIVE_BYTES.into());
+    transport.datagram_receive_buffer_size(Some(DATAGRAM_BUFFER_BYTES));
+    transport.datagram_send_buffer_size(DATAGRAM_BUFFER_BYTES);
     let idle = quinn::IdleTimeout::try_from(Duration::from_secs(MAX_IDLE_SECONDS))
         .map_err(|_| TransportError::Configuration)?;
     transport.max_idle_timeout(Some(idle));
-    transport.keep_alive_interval(Some(Duration::from_secs(15)));
+    transport.keep_alive_interval(Some(Duration::from_secs(KEEP_ALIVE_SECONDS)));
+    if cap_mtu {
+        transport.mtu_discovery_config(None);
+    }
+    // Model-based congestion control. Loss-based control reads the few
+    // percent of UDP that hotel and café networks drop as congestion, and at
+    // an ocean's round trip collapses to tens of kilobytes per second
+    // (`service/tests/lossy_path.rs`).
+    transport.congestion_controller_factory(std::sync::Arc::new(quinn::congestion::BbrConfig::default()));
     Ok(transport)
 }
 
@@ -280,8 +331,57 @@ mod tests {
         time::Duration,
     };
 
-    use super::{TransportIdentity, build_runtime, pinned_client_config};
+    use super::{
+        INCOMING_BUFFER_BYTES, MAX_SERVER_INCOMING, TOTAL_INCOMING_BUFFER_BYTES, TransportIdentity, bounded_transport,
+        build_runtime, pinned_client_config,
+    };
     use crate::ids::TransportKeyId;
+
+    const _: () = {
+        assert!(MAX_SERVER_INCOMING == 64);
+        assert!(INCOMING_BUFFER_BYTES == 64 * 1024);
+        assert!(TOTAL_INCOMING_BUFFER_BYTES == 1024 * 1024);
+    };
+
+    #[test]
+    fn transport_subject_is_product_named_without_machine_information() -> Result<(), Box<dyn std::error::Error>> {
+        let identity = TransportIdentity::generate()?;
+        let der = identity.certificate_der();
+        let name = b"Supgang peer transport";
+        assert_eq!(der.windows(name.len()).filter(|value| *value == name).count(), 2);
+        assert!(!der.windows(5).any(|value| value == b"rcgen"));
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_workers_are_identifiable_as_supgang() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = build_runtime()?;
+        let name = runtime.block_on(async {
+            tokio::task::spawn_blocking(|| std::thread::current().name().map(str::to_owned)).await
+        })?;
+        assert_eq!(name.as_deref(), Some("supgang-io"));
+        Ok(())
+    }
+
+    #[test]
+    fn pending_handshake_memory_has_a_fleet_sized_ceiling() -> Result<(), Box<dyn std::error::Error>> {
+        let debug = format!("{:?}", TransportIdentity::generate()?.server_config()?);
+        assert!(debug.contains("max_incoming: 64"));
+        assert!(debug.contains("incoming_buffer_size: 65536"));
+        assert!(debug.contains("incoming_buffer_size_total: 1048576"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_black_hole_replacement_does_not_start_pmtu_probing() -> Result<(), Box<dyn std::error::Error>> {
+        let normal = format!("{:?}", bounded_transport(false)?);
+        let capped = format!("{:?}", bounded_transport(true)?);
+        assert!(normal.contains("mtu_discovery_config: Some("));
+        assert!(capped.contains("mtu_discovery_config: None"));
+        let incoming = format!("{:?}", TransportIdentity::generate()?.server_config_with_mtu_cap(true)?);
+        assert!(incoming.contains("mtu_discovery_config: None"));
+        Ok(())
+    }
 
     #[test]
     fn correct_pin_connects_and_wrong_pin_fails() -> Result<(), Box<dyn std::error::Error>> {

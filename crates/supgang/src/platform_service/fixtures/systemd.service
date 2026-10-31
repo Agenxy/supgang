@@ -1,0 +1,29 @@
+[Unit]
+Description=Supgang peer address discovery
+Documentation=https://agenxy.org/projects/supgang/
+
+[Service]
+Type=simple
+SyslogIdentifier=supgang
+ExecStart="/safe/bin/supgang" --json --state-dir "/safe/state" supervise --anchor --router-mapping
+Restart=always
+RestartSec=5s
+UMask=0077
+StandardOutput=null
+StandardError=null
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="/safe/state"
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=default.target

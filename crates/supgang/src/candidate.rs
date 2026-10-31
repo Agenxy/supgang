@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// The maximum number of candidates accepted in one endpoint record.
-pub const MAX_CANDIDATES: usize = 16;
+pub const MAX_CANDIDATES: usize = 8;
 
 /// The provenance and expected reachability scope of a candidate.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -77,6 +77,7 @@ impl EndpointCandidate {
         transport: CandidateTransport,
         address: SocketAddr,
     ) -> Result<Self, CandidateError> {
+        let address = canonical_socket_address(address);
         validate_address(kind, address)?;
         Ok(Self {
             kind,
@@ -104,6 +105,21 @@ impl EndpointCandidate {
     }
 }
 
+/// Converts IPv4-mapped IPv6 sockets to the one canonical IPv4 form.
+///
+/// This prevents the same network endpoint from bypassing deduplication,
+/// family routing, or per-address admission limits through two spellings.
+#[must_use]
+pub const fn canonical_socket_address(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V6(value) => match value.ip().to_ipv4_mapped() {
+            Some(ipv4) => SocketAddr::new(IpAddr::V4(ipv4), value.port()),
+            None => SocketAddr::V6(value),
+        },
+        SocketAddr::V4(_) => address,
+    }
+}
+
 /// A reason an endpoint candidate was rejected.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum CandidateError {
@@ -128,6 +144,9 @@ pub enum CandidateError {
     /// Non-local candidates must be globally routable unicast addresses.
     #[error("non-local candidate address must be globally routable")]
     NonGlobalScope,
+    /// Globally routed addresses must be classified as direct, observed, or mapped.
+    #[error("globally routable candidate address must not be classified as local")]
+    GlobalMarkedLocal,
 }
 
 fn validate_address(kind: CandidateKind, address: SocketAddr) -> Result<(), CandidateError> {
@@ -144,6 +163,9 @@ fn validate_address(kind: CandidateKind, address: SocketAddr) -> Result<(), Cand
     }
     if is_local_scope(ip) && kind != CandidateKind::Local {
         return Err(CandidateError::LocalScopeMismatch);
+    }
+    if kind == CandidateKind::Local && is_globally_routable(ip) {
+        return Err(CandidateError::GlobalMarkedLocal);
     }
     if kind != CandidateKind::Local && !is_globally_routable(ip) {
         return Err(CandidateError::NonGlobalScope);
@@ -192,7 +214,7 @@ const fn is_globally_routable(ip: IpAddr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
     use super::{CandidateError, CandidateKind, CandidateTransport, EndpointCandidate};
 
@@ -234,5 +256,21 @@ mod tests {
         assert!(
             EndpointCandidate::new(CandidateKind::Direct, transport, SocketAddr::from(([8, 8, 8, 8], 443))).is_ok()
         );
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_candidates_have_one_canonical_form() -> Result<(), Box<dyn std::error::Error>> {
+        let mapped = SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::new(0, 0, 0, 0, 0, u16::MAX, 0x0808, 0x0808),
+            44_330,
+            0,
+            0,
+        ));
+        let candidate = EndpointCandidate::new(CandidateKind::Direct, CandidateTransport::QuicV1, mapped)?;
+        assert_eq!(
+            candidate.address(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 44_330)
+        );
+        Ok(())
     }
 }

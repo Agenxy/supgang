@@ -16,6 +16,9 @@ name = "supgang-quality"
 path = "src/main.rs"
 
 [dependencies]
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+syn = { version = "=2.0.119", default-features = false, features = ["full", "parsing", "visit"] }
 
 [lints]
 workspace = true

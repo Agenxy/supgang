@@ -1,4 +1,8 @@
 //! Device signing identities and domain-separated signatures.
+//!
+//! The isolated threshold prototype uses `supgang/root-step/v1\0` for root
+//! operations. Its P-256 device proofs use `device_key::CONTROL_AUTH_DOMAIN`;
+//! the legacy live root and device signature domains remain separate.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use thiserror::Error;
@@ -113,6 +117,15 @@ impl DeviceIdentity {
     #[must_use]
     pub(crate) const fn secret_bytes(&self) -> [u8; SIGNING_KEY_BYTES] {
         self.seed
+    }
+
+    /// Creates one process-local copy for the bounded network-session actor.
+    ///
+    /// The copy is zeroized independently and is never serialized or exposed
+    /// outside the process. Keeping signing out of the state-owning event loop
+    /// lets local control remain responsive during hostile network timeouts.
+    pub(crate) const fn duplicate_for_network_actor(&self) -> Self {
+        Self { seed: self.seed }
     }
 
     fn signing_key(&self) -> SigningKey {

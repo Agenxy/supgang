@@ -13,6 +13,10 @@ const EXIT_FAILURE: u8 = 1;
 const MAX_SOURCE_LINES: usize = 700;
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 
+mod acceptance;
+mod gate_cache;
+mod installation;
+
 fn main() -> ExitCode {
     let mut output = io::stdout().lock();
     let mut error = io::stderr().lock();
@@ -30,41 +34,33 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
     match mode.and_then(OsStr::to_str) {
         Some("all") => {
             policy(&root)?;
-            run_cargo(&root, &["fmt", "--all", "--", "--check"], output, error)?;
-            run_cargo(
-                &root,
-                &["check", "--workspace", "--all-targets", "--locked"],
-                output,
-                error,
-            )?;
-            run_cargo(
-                &root,
-                &[
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--all-features",
-                    "--locked",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-                output,
-                error,
-            )?;
-            run_cargo(
-                &root,
-                &["test", "--workspace", "--all-targets", "--locked"],
-                output,
-                error,
-            )?;
-            run_cargo_with_env(
-                &root,
-                &["doc", "--workspace", "--no-deps", "--locked"],
-                &[("RUSTDOCFLAGS", "-D warnings")],
-                output,
-                error,
-            )?;
+            writeln!(output, "quality-cache stage=policy status=run").map_err(|error| error.to_string())?;
+            let mut cache = gate_cache::GateCache::open(&root)?;
+            for stage in [
+                gate_cache::Stage::Format,
+                gate_cache::Stage::Check,
+                gate_cache::Stage::Clippy,
+                gate_cache::Stage::Test,
+                gate_cache::Stage::Doc,
+            ] {
+                let missed = cache.missed(stage, output)?;
+                if missed.is_empty() {
+                    continue;
+                }
+                if missed.len() == cache.packages().count() {
+                    run_quality_stage(&root, stage, None, output, error)?;
+                } else {
+                    for package in &missed {
+                        run_quality_stage(&root, stage, Some(package), output, error)?;
+                    }
+                }
+                cache.record_packages(stage, &missed)?;
+            }
+            if !cache.acceptance_hit(output)? {
+                acceptance::run(&root, output, error)?;
+                cache.record_acceptance();
+            }
+            cache.finish(output)?;
             writeln!(output, "Supgang quality gates passed.").map_err(|write_error| write_error.to_string())?;
             Ok(())
         }
@@ -83,6 +79,30 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
         }
         _ => Err("usage: cargo run --locked --package supgang-quality -- all|quick|policy".to_owned()),
     }
+}
+
+fn run_quality_stage(
+    root: &Path,
+    stage: gate_cache::Stage,
+    package: Option<&str>,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> Result<(), String> {
+    let arguments = stage.arguments(package);
+    let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    let scratch = if matches!(stage, gate_cache::Stage::Test) {
+        test_scratch()?
+    } else {
+        None
+    };
+    let mut environment = Vec::new();
+    if let Some(directory) = &scratch {
+        environment.push(("TMPDIR", directory.as_str()));
+    }
+    if matches!(stage, gate_cache::Stage::Doc) {
+        environment.push(("RUSTDOCFLAGS", "-D warnings"));
+    }
+    run_cargo_with_env(root, &arguments, &environment, output, error)
 }
 
 fn run_cargo(root: &Path, arguments: &[&str], output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
@@ -112,8 +132,53 @@ fn run_cargo_with_env(
     }
 }
 
+/// Where the test suites put their temporary state.
+///
+/// Storage refuses any ancestor that other users can write, which is the
+/// point of it, and on Linux the default temporary directory is exactly that:
+/// `/tmp` is world-writable with the sticky bit. Every test that touches
+/// state then fails with `UnsafeAncestor` before testing anything, which is
+/// what the hosted Linux runner reported. `$HOME/.cache` is the user's own,
+/// so the tests exercise the rule there instead of tripping on it.
+///
+/// macOS is left alone: its per-user temporary directory under `/var/folders`
+/// is already owner-only, and the checkout is not a safe alternative there,
+/// because `~/Desktop` carries a sharing ACL the storage rules reject.
+fn test_scratch() -> Result<Option<String>, String> {
+    if cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
+    let scratch = PathBuf::from(home).join(".cache").join("supgang").join("test-tmp");
+    fs::create_dir_all(&scratch)
+        .map_err(|create_error| format!("could not create {}: {create_error}", scratch.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700))
+            .map_err(|mode_error| format!("could not restrict {}: {mode_error}", scratch.display()))?;
+    }
+    scratch
+        .into_os_string()
+        .into_string()
+        .map(Some)
+        .map_err(|_| "the home path is not valid Unicode".to_owned())
+}
+
 fn workspace_root() -> Result<PathBuf, String> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let built = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // A target directory shared between checkouts can leave another checkout's gate binary in
+    // place, and running it would check that checkout instead of this one.
+    if let Some(invoked) = env::var_os("CARGO_MANIFEST_DIR")
+        && Path::new(&invoked) != built
+    {
+        return Err(format!(
+            "this gate binary was built from {}, not from the invoking checkout; rebuild it here or \
+             give each checkout its own target directory",
+            built.display()
+        ));
+    }
+    built
         .parent()
         .and_then(Path::parent)
         .map(Path::to_path_buf)
@@ -132,6 +197,7 @@ fn policy(root: &Path) -> Result<(), String> {
         "crates/supgang-cli/LICENSE",
         "deny.toml",
         "LICENSE",
+        "Makefile",
         "README.md",
         "SECURITY.md",
         "docs/architecture/0001-sovereign-address-plane.md",
@@ -153,9 +219,19 @@ fn policy(root: &Path) -> Result<(), String> {
     inspect_package_identity(root)?;
     inspect_duplicate_dependencies(root)?;
     inspect_dependency_policy(root)?;
+    inspect_install_policy(root)?;
+    installation::inspect(root)?;
     inspect_ci(root)?;
     Ok(())
 }
+
+/// Directory names that hold build output rather than source, and are therefore not
+/// scanned. One entry per toolchain, because Supgang is built for more than one
+/// platform and each brings its own builder: `target` is Cargo's, `.build` is
+/// `SwiftPM`'s, `__pycache__` is `CPython`'s, `node_modules` is npm's. `.git` is not
+/// build output but is likewise not source. A port that introduces another builder
+/// adds its directory here; nothing else in the scanner needs to know.
+const BUILD_OUTPUT: [&str; 5] = [".git", "target", ".build", "__pycache__", "node_modules"];
 
 fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
     let entries = fs::read_dir(directory)
@@ -171,7 +247,11 @@ fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
             ));
         }
         if file_type.is_dir() {
-            if matches!(entry.file_name().to_str(), Some(".git" | "target")) {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| BUILD_OUTPUT.contains(&name))
+            {
                 continue;
             }
             inspect_tree(root, &path)?;
@@ -192,7 +272,10 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
         return Err(format!("shell program is not allowed: {}", display(root, path)));
     }
     let extension = path.extension().and_then(OsStr::to_str);
-    if !matches!(extension, Some("rs" | "toml" | "md" | "json") | None) {
+    if !matches!(
+        extension,
+        Some("rs" | "toml" | "md" | "json" | "py" | "yml" | "yaml") | None
+    ) {
         return Ok(());
     }
     let metadata = fs::metadata(path).map_err(|read_error| read_error.to_string())?;
@@ -201,6 +284,26 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
     }
     let text =
         fs::read_to_string(path).map_err(|read_error| format!("{} is not UTF-8: {read_error}", display(root, path)))?;
+    if extension == Some("py")
+        && (!text.starts_with("#!/usr/bin/env -S uv run --script\n")
+            || !text.contains("# /// script\n")
+            || !text.contains("# dependencies ="))
+    {
+        return Err(format!(
+            "Python helper needs the uv shebang and PEP 723 metadata: {}",
+            display(root, path)
+        ));
+    }
+    for forbidden in [
+        "#!/bin/ba\x73h",
+        "#!/usr/bin/env ba\x73h",
+        "Command::new(\"ba\x73h\")",
+        "shell: ba\x73h",
+    ] {
+        if text.contains(forbidden) {
+            return Err(format!("bash executable is not allowed: {}", display(root, path)));
+        }
+    }
     for forbidden in ["TO\x44O", "FIX\x4dE", "Bea\x63on", "bea\x63on", "\u{2014}"] {
         if text.contains(forbidden) {
             return Err(format!("{} contains forbidden text {forbidden:?}", display(root, path)));
@@ -217,11 +320,23 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
         let unsafe_block = ["unsafe", " {"].concat();
         let unsafe_function = ["unsafe", " fn"].concat();
         let unsafe_implementation = ["unsafe", " impl"].concat();
-        if text.contains(&unsafe_block) || text.contains(&unsafe_function) || text.contains(&unsafe_implementation) {
-            return Err(format!(
-                "portable Supgang source contains unsafe Rust: {}",
-                display(root, path)
-            ));
+        let contains_unsafe =
+            text.contains(&unsafe_block) || text.contains(&unsafe_function) || text.contains(&unsafe_implementation);
+        let relative = display(root, path);
+        installation::source(&relative, &text)?;
+        let is_acl_boundary = relative == "crates/supgang-acl/src/lib.rs";
+        if contains_unsafe && !is_acl_boundary {
+            return Err(format!("portable Supgang source contains unsafe Rust: {relative}"));
+        }
+        if is_acl_boundary {
+            for required in [
+                "#![deny(missing_docs, unsafe_op_in_unsafe_fn, warnings)]",
+                "//! Small safe boundary around platform descriptor-based ACL APIs.",
+            ] {
+                if !text.contains(required) {
+                    return Err(format!("ACL boundary is missing required safety policy {required:?}"));
+                }
+            }
         }
     }
     Ok(())
@@ -246,7 +361,11 @@ fn inspect_workspace_dependencies(root: &Path) -> Result<(), String> {
 
 fn inspect_package_identity(root: &Path) -> Result<(), String> {
     let root_license = fs::read_to_string(root.join("LICENSE")).map_err(|read_error| read_error.to_string())?;
-    for packaged_license in ["crates/supgang/LICENSE", "crates/supgang-cli/LICENSE"] {
+    for packaged_license in [
+        "crates/supgang/LICENSE",
+        "crates/supgang-cli/LICENSE",
+        "crates/supgang-acl/LICENSE",
+    ] {
         let packaged = fs::read_to_string(root.join(packaged_license)).map_err(|read_error| read_error.to_string())?;
         if packaged != root_license {
             return Err(format!(
@@ -273,7 +392,7 @@ fn inspect_package_identity(root: &Path) -> Result<(), String> {
         "name = \"supgang\"",
         "publish = [\"crates-io\"]",
         "name = \"supgang\"\npath = \"src/main.rs\"",
-        "supgang-core = { path = \"../supgang\", version = \"=0.1.0\" }",
+        "supgang-core = { path = \"../supgang\", version = \"=0.2.0-alpha.17\" }",
     ] {
         if !command.contains(required) {
             return Err(format!("command package identity is missing: {required}"));
@@ -284,23 +403,116 @@ fn inspect_package_identity(root: &Path) -> Result<(), String> {
 
 fn inspect_duplicate_dependencies(root: &Path) -> Result<(), String> {
     let lockfile = fs::read_to_string(root.join("Cargo.lock")).map_err(|read_error| read_error.to_string())?;
-    let mut names = Vec::new();
-    for line in lockfile.lines() {
-        let Some(name) = line.strip_prefix("name = \"").and_then(|value| value.strip_suffix('"')) else {
+    let identities = lock_identities(&lockfile)?;
+    for (name, _, _) in &identities {
+        let matching = identities
+            .iter()
+            .filter(|(candidate, _, _)| candidate == name)
+            .collect::<Vec<_>>();
+        if matching.len() < 2 {
             continue;
-        };
-        if names.contains(&name) {
-            if !matches!(
-                name,
-                "getrandom" | "r-efi" | "rand" | "rand_core" | "syn" | "untrusted" | "windows-sys"
-            ) {
-                return Err(format!("duplicate dependency lacks a reviewed exception: {name}"));
+        }
+        for (duplicate, version, source) in matching {
+            let identity = format!("{duplicate}@{version}");
+            if source != "registry+https://github.com/rust-lang/crates.io-index"
+                || !REVIEWED_DUPLICATE_IDENTITIES.contains(&identity.as_str())
+            {
+                return Err(format!(
+                    "duplicate dependency identity lacks a reviewed exception: {identity} from {source}"
+                ));
             }
-        } else {
-            names.push(name);
         }
     }
     Ok(())
+}
+
+const REVIEWED_DUPLICATE_IDENTITIES: &[&str] = &[
+    // FROST 3.0.0 pins curve25519-dalek 4.1.3 and uses rand_core 0.6,
+    // digest 0.10 and postcard's older embedded traits. Keep these exact
+    // identities beside the live crypto stack; see threshold-package-4.md.
+    "base16ct@0.2.0",
+    "base16ct@1.0.0",
+    "block-buffer@0.10.4",
+    "block-buffer@0.12.1",
+    "cpufeatures@0.2.17",
+    "cpufeatures@0.3.0",
+    "crypto-common@0.1.7",
+    "crypto-common@0.2.2",
+    "curve25519-dalek@4.1.3",
+    "curve25519-dalek@5.0.0",
+    "digest@0.10.7",
+    "digest@0.11.3",
+    "embedded-io@0.4.0",
+    "embedded-io@0.6.1",
+    "fiat-crypto@0.2.9",
+    "fiat-crypto@0.3.0",
+    "rand_chacha@0.3.1",
+    "rand_chacha@0.9.0",
+    "rand_core@0.6.4",
+    "serdect@0.2.0",
+    "serdect@0.4.3",
+    "sha2@0.10.9",
+    "sha2@0.11.0",
+    "spin@0.9.9",
+    "spin@0.10.1",
+    "bitflags@1.3.2",
+    "bitflags@2.13.1",
+    "getrandom@0.2.17",
+    "getrandom@0.3.4",
+    "getrandom@0.4.3",
+    "jni-sys@0.3.1",
+    "jni-sys@0.4.1",
+    "r-efi@5.3.0",
+    "r-efi@6.0.0",
+    "rand@0.9.5",
+    "rand@0.10.2",
+    "rand_core@0.9.5",
+    "rand_core@0.10.1",
+    "syn@2.0.119",
+    "syn@3.0.3",
+    "thiserror@1.0.69",
+    "thiserror@2.0.20",
+    "thiserror-impl@1.0.69",
+    "thiserror-impl@2.0.20",
+    "untrusted@0.7.1",
+    "untrusted@0.9.0",
+    "windows-sys@0.45.0",
+    "windows-sys@0.52.0",
+    "windows-sys@0.61.2",
+    "windows-targets@0.42.2",
+    "windows-targets@0.52.6",
+    "windows_aarch64_gnullvm@0.42.2",
+    "windows_aarch64_gnullvm@0.52.6",
+    "windows_aarch64_msvc@0.42.2",
+    "windows_aarch64_msvc@0.52.6",
+    "windows_i686_gnu@0.42.2",
+    "windows_i686_gnu@0.52.6",
+    "windows_i686_msvc@0.42.2",
+    "windows_i686_msvc@0.52.6",
+    "windows_x86_64_gnu@0.42.2",
+    "windows_x86_64_gnu@0.52.6",
+    "windows_x86_64_gnullvm@0.42.2",
+    "windows_x86_64_gnullvm@0.52.6",
+    "windows_x86_64_msvc@0.42.2",
+    "windows_x86_64_msvc@0.52.6",
+];
+
+fn lock_identities(lockfile: &str) -> Result<Vec<(String, String, String)>, String> {
+    let mut identities = Vec::new();
+    for package in lockfile.split("[[package]]").skip(1) {
+        let value = |key: &str| {
+            package.lines().find_map(|line| {
+                line.strip_prefix(key)
+                    .and_then(|value| value.strip_suffix('"'))
+                    .map(str::to_owned)
+            })
+        };
+        let name = value("name = \"").ok_or_else(|| "Cargo.lock package is missing a name".to_owned())?;
+        let version = value("version = \"").ok_or_else(|| format!("Cargo.lock package {name} is missing a version"))?;
+        let source = value("source = \"").unwrap_or_else(|| "workspace".to_owned());
+        identities.push((name, version, source));
+    }
+    Ok(identities)
 }
 
 fn inspect_dependency_policy(root: &Path) -> Result<(), String> {
@@ -319,22 +531,46 @@ fn inspect_dependency_policy(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn inspect_ci(root: &Path) -> Result<(), String> {
-    let workflow =
-        fs::read_to_string(root.join(".github/workflows/ci.yml")).map_err(|read_error| read_error.to_string())?;
-    if workflow.contains("pull_request_target:") || workflow.contains("permissions: write-all") {
-        return Err("CI contains a privileged trigger or broad write permission".to_owned());
+fn inspect_install_policy(root: &Path) -> Result<(), String> {
+    let makefile = fs::read_to_string(root.join("Makefile")).map_err(|read_error| read_error.to_string())?;
+    for required in [
+        "INSTALL_ROOT ?= $(HOME)/.local",
+        "--frozen --force --root \"$(INSTALL_ROOT)\" --path crates/supgang-cli",
+        "\"$(INSTALL_BIN)\" --version",
+    ] {
+        if !makefile.contains(required) {
+            return Err(format!(
+                "local install policy is missing required constraint: {required}"
+            ));
+        }
     }
-    for line in workflow.lines().map(str::trim) {
-        let Some(reference) = line.strip_prefix("uses:").map(str::trim) else {
+    Ok(())
+}
+
+fn inspect_ci(root: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(root.join(".github/workflows")).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if !matches!(path.extension().and_then(OsStr::to_str), Some("yml" | "yaml")) {
             continue;
-        };
-        let Some((action, revision)) = reference.split_once('@') else {
-            return Err(format!("CI action is missing an immutable revision: {reference}"));
-        };
-        let revision = revision.split_ascii_whitespace().next().unwrap_or_default();
-        if action.is_empty() || revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(format!("CI action is not pinned to a full commit: {reference}"));
+        }
+        let workflow = fs::read_to_string(&path).map_err(|read_error| read_error.to_string())?;
+        if workflow.contains("pull_request_target:") || workflow.contains("permissions: write-all") {
+            return Err(format!(
+                "{} contains a privileged trigger or broad write permission",
+                display(root, &path)
+            ));
+        }
+        for line in workflow.lines().map(str::trim) {
+            let Some(reference) = line.strip_prefix("uses:").map(str::trim) else {
+                continue;
+            };
+            let Some((action, revision)) = reference.split_once('@') else {
+                return Err(format!("workflow action is missing an immutable revision: {reference}"));
+            };
+            let revision = revision.split_ascii_whitespace().next().unwrap_or_default();
+            if action.is_empty() || revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(format!("workflow action is not pinned to a full commit: {reference}"));
+            }
         }
     }
     Ok(())

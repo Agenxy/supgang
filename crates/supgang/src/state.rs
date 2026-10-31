@@ -7,26 +7,31 @@ use minicbor::{decode, encode};
 use thiserror::Error;
 
 use crate::{
-    candidate::EndpointCandidate,
-    ids::{NodeId, TransportKeyId},
+    ids::{HiveId, NodeId, TransportKeyId},
     invitation::{InvitationError, JoinBundle, JoinRequest},
     journal::{Journal, JournalError},
     membership::{
         MAX_MEMBERSHIP_LIFETIME_SECONDS, MEMBERSHIP_VERSION, MembershipCertificate, MembershipError, MembershipRoles,
         SignedMembership,
     },
-    record::{Capabilities, ENDPOINT_RECORD_VERSION, EndpointRecord, RecordError, SignedEndpointRecord},
+    profile::PeerName,
+    record::{
+        Capabilities, ENDPOINT_RECORD_VERSION, ENDPOINT_RECORD_VERSION_V2, EndpointClaims, EndpointRecord, RecordError,
+        SignedEndpointRecord,
+    },
     revocation::{REVOCATION_VERSION, RevocationError, RevocationList, SignedRevocationList},
     state_lock::{StateLock, StateLockError},
     storage::{self, LocalIdentity, StorageError},
 };
 
+mod compaction;
 mod event;
 
 use event::{StateEvent, encode_event, replay};
 
 /// Maximum number of authorized devices in one personal hive.
 pub const MAX_HIVE_MEMBERS: usize = 256;
+const AUTHORITATIVE_COMPACTION_THRESHOLD_BYTES: u64 = 1024 * 1024;
 
 /// Replayed authoritative state and its append handle.
 pub struct LocalState {
@@ -37,8 +42,8 @@ pub struct LocalState {
     sequence: u64,
     last_membership_serial: u64,
     event_count: usize,
-    journal: Journal,
-    lock: StateLock,
+    journal: Option<Journal>,
+    lock: Option<StateLock>,
 }
 
 impl core::fmt::Debug for LocalState {
@@ -107,6 +112,36 @@ impl LocalState {
         &self.revocations
     }
 
+    fn journal_mut(&mut self) -> Result<&mut Journal, StateError> {
+        self.journal.as_mut().ok_or(StateError::ReadOnlySnapshot)
+    }
+
+    fn append_authoritative(&mut self, encoded: &[u8]) -> Result<(), StateError> {
+        if let Err(error) = self.compact_if_needed() {
+            if matches!(error, StateError::Journal(_)) {
+                self.journal.take();
+            }
+            return Err(error);
+        }
+        match self.journal_mut()?.append(encoded) {
+            Ok(()) => Ok(()),
+            Err(JournalError::JournalFull) => {
+                self.compact()?;
+                match self.journal_mut()?.append(encoded) {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        self.journal.take();
+                        Err(error.into())
+                    }
+                }
+            }
+            Err(error) => {
+                self.journal.take();
+                Err(error.into())
+            }
+        }
+    }
+
     /// Persists the next endpoint sequence before returning it to a publisher.
     ///
     /// # Errors
@@ -119,7 +154,8 @@ impl LocalState {
             generation: self.generation,
             sequence: next,
         };
-        self.journal.append(&encode_event(&event)?)?;
+        let encoded = encode_event(&event)?;
+        self.append_authoritative(&encoded)?;
         self.sequence = next;
         self.event_count = self.event_count.saturating_add(1);
         Ok(next)
@@ -135,12 +171,17 @@ impl LocalState {
     /// missing local membership, counter exhaustion, and persistence failures.
     pub fn sign_endpoint_record(
         &mut self,
+        display_name: PeerName,
         transport_key_id: TransportKeyId,
-        candidates: Vec<EndpointCandidate>,
-        capabilities: Capabilities,
+        claims: EndpointClaims,
         issued_at: u64,
         expires_at: u64,
     ) -> Result<SignedEndpointRecord, StateError> {
+        let EndpointClaims {
+            candidates,
+            capabilities,
+            services,
+        } = claims;
         let membership = self.local_membership().ok_or(StateError::IdentityMismatch)?;
         if expires_at > membership.certificate.expires_at {
             return Err(RecordError::OutlivesMembership.into());
@@ -156,10 +197,20 @@ impl LocalState {
             return Err(StateError::UnauthorizedCapability);
         }
         let next = self.sequence.checked_add(1).ok_or(StateError::CounterExhausted)?;
+        // A record that advertises nothing is signed at the version every
+        // member reads. Only an advertisement needs the newer version, so it
+        // is the operator who runs `advertise` who decides the fleet must
+        // have upgraded, not every address refresh.
+        let protocol_version = if services.is_empty() {
+            ENDPOINT_RECORD_VERSION_V2
+        } else {
+            ENDPOINT_RECORD_VERSION
+        };
         let mut record = EndpointRecord {
-            protocol_version: ENDPOINT_RECORD_VERSION,
+            protocol_version,
             hive_id: self.identity.hive_id,
             node_id: self.identity.device.node_id(),
+            display_name: Some(display_name),
             transport_key_id,
             generation: self.generation,
             sequence: next,
@@ -167,6 +218,7 @@ impl LocalState {
             expires_at,
             candidates,
             capabilities,
+            services,
         };
         record.canonicalize_candidates();
         record.validate_shape()?;
@@ -219,7 +271,8 @@ impl LocalState {
         let root = self.identity.root.as_ref().ok_or(StateError::AdmissionUnavailable)?;
         let signed = SignedMembership::sign(certificate, root)?;
         let event = StateEvent::Membership(signed.clone());
-        self.journal.append(&encode_event(&event)?)?;
+        let encoded = encode_event(&event)?;
+        self.append_authoritative(&encoded)?;
         self.memberships.insert(node_id, signed.clone());
         self.last_membership_serial = serial;
         self.event_count = self.event_count.saturating_add(1);
@@ -230,17 +283,22 @@ impl LocalState {
     ///
     /// # Errors
     ///
-    /// Rejects an invalid proof of possession, conflicting request for an
-    /// existing node, unavailable root authority, or persistence failure.
+    /// Rejects an invalid proof of possession, a node other than the
+    /// operator-confirmed target, conflicting existing state, unavailable root
+    /// authority, or persistence failure.
     pub fn authorize_join_request(
         &mut self,
         request: &JoinRequest,
+        expected_node: NodeId,
         roles: MembershipRoles,
         issued_at: u64,
         expires_at: u64,
     ) -> Result<SignedMembership, StateError> {
         let key = request.verify()?;
         let node_id = NodeId::from_verifying_key(&key.to_bytes());
+        if node_id != expected_node {
+            return Err(StateError::UnexpectedJoinNode);
+        }
         if let Some(existing) = self.memberships.get(&node_id) {
             if existing.certificate.device_verifying_key == request.device_verifying_key
                 && existing.certificate.admission_nonce == request.nonce
@@ -327,13 +385,16 @@ impl LocalState {
         {
             return Err(StateError::RevocationRollback);
         }
+        if incoming.list.revoked_nodes == self.revocations.list.revoked_nodes {
+            return Ok(false);
+        }
         self.persist_revocations(incoming)?;
         Ok(true)
     }
 
     fn persist_revocations(&mut self, signed: SignedRevocationList) -> Result<(), StateError> {
-        self.journal
-            .append(&encode_event(&StateEvent::Revocation(signed.clone()))?)?;
+        let encoded = encode_event(&StateEvent::Revocation(signed.clone()))?;
+        self.append_authoritative(&encoded)?;
         self.revocations = signed;
         self.event_count = self.event_count.saturating_add(1);
         Ok(())
@@ -372,7 +433,7 @@ pub fn initialize(path: impl AsRef<std::path::Path>) -> Result<LocalState, State
         serial: 1,
         issued_at: now,
         expires_at: now.saturating_add(MAX_MEMBERSHIP_LIFETIME_SECONDS),
-        roles: MembershipRoles::DEVICE,
+        roles: MembershipRoles::DEVICE | MembershipRoles::INTRODUCER,
         admission_nonce: [0; 32],
     };
     let root = initialized
@@ -397,8 +458,8 @@ pub fn initialize(path: impl AsRef<std::path::Path>) -> Result<LocalState, State
         sequence: 0,
         last_membership_serial: 1,
         event_count: 1,
-        journal,
-        lock,
+        journal: Some(journal),
+        lock: Some(lock),
     })
 }
 
@@ -413,7 +474,20 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<LocalState, StateError>
     let lock = StateLock::acquire(path)?;
     let identity = storage::load_identity(path)?;
     let (journal, frames) = storage::open_journal(path)?;
-    replay(identity, journal, lock, &frames)
+    replay(identity, Some(journal), Some(lock), &frames)
+}
+
+/// Reads and cryptographically replays local state without locking or repairing it.
+///
+/// # Errors
+///
+/// Fails closed for the same invalid state as [`open`], while never creating,
+/// truncating, or appending a filesystem entry.
+pub fn open_read_only(path: impl AsRef<std::path::Path>) -> Result<LocalState, StateError> {
+    let path = path.as_ref();
+    let identity = storage::load_identity(path)?;
+    let frames = storage::read_journal(path)?;
+    replay(identity, None, None, &frames)
 }
 
 /// Creates or deterministically re-exports this computer's pending join request.
@@ -437,10 +511,18 @@ pub fn create_join_request(path: impl AsRef<std::path::Path>) -> Result<JoinRequ
 ///
 /// # Errors
 ///
-/// Rejects mismatched requests, expired memberships, conflicting local state,
-/// malformed journals, and storage or persistence failures.
-pub fn install_join_bundle(path: impl AsRef<std::path::Path>, bundle: &JoinBundle) -> Result<LocalState, StateError> {
+/// Rejects a root other than the operator-confirmed hive, mismatched requests,
+/// expired memberships, conflicting local state, malformed journals, and
+/// storage or persistence failures.
+pub fn install_join_bundle(
+    path: impl AsRef<std::path::Path>,
+    bundle: &JoinBundle,
+    expected_hive: HiveId,
+) -> Result<LocalState, StateError> {
     let path = path.as_ref();
+    if HiveId::from_root_verifying_key(&bundle.root_verifying_key) != expected_hive {
+        return Err(StateError::UnexpectedJoinHive);
+    }
     match storage::load_identity(path) {
         Ok(_) => {
             let existing = open(path)?;
@@ -460,8 +542,9 @@ pub fn install_join_bundle(path: impl AsRef<std::path::Path>, bundle: &JoinBundl
 
     let lock = StateLock::acquire(path)?;
     let pending = storage::load_pending_identity(path)?;
-    let root_key = bundle.verify_for_pending(&pending)?;
-    bundle.membership.certificate.validate_time(unix_time()?)?;
+    let now = unix_time()?;
+    let root_key = bundle.verify_for_pending(&pending, now)?;
+    bundle.membership.certificate.validate_time(now)?;
     let expected_event = StateEvent::Genesis {
         membership: bundle.membership.clone(),
         revocations: bundle.revocations.clone(),
@@ -491,6 +574,9 @@ pub enum StateError {
     /// A journal append failed.
     #[error("authoritative state could not be persisted")]
     Journal(#[from] JournalError),
+    /// A mutating operation was attempted through a read-only replay snapshot.
+    #[error("read-only local state cannot be modified")]
+    ReadOnlySnapshot,
     /// A membership was invalid.
     #[error("root-authorized membership failed validation")]
     Membership(#[from] MembershipError),
@@ -527,6 +613,10 @@ pub enum StateError {
     /// A sequence event skipped, repeated, rolled back, or changed generation.
     #[error("authoritative endpoint sequence is not strictly consecutive")]
     InvalidSequence,
+    /// A signed authoritative checkpoint was malformed, misplaced, or did not
+    /// bind the exact compacted authority snapshot.
+    #[error("authoritative state checkpoint failed validation")]
+    InvalidCheckpoint,
     /// Membership serial order skipped, repeated, or rolled back.
     #[error("membership serial is not strictly consecutive")]
     InvalidMembershipSerial,
@@ -560,6 +650,12 @@ pub enum StateError {
     /// Join authorization conflicts with existing local or member state.
     #[error("join authorization conflicts with existing state")]
     JoinMismatch,
+    /// The proved join request did not match the operator-confirmed device.
+    #[error("join request does not match the expected computer identity")]
+    UnexpectedJoinNode,
+    /// The join bundle was not issued by the operator-confirmed hive root.
+    #[error("join bundle does not match the expected hive identity")]
+    UnexpectedJoinHive,
     /// The record advertises a capability not granted to this member.
     #[error("local membership does not grant the requested endpoint capability")]
     UnauthorizedCapability,

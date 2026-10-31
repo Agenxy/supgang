@@ -3,135 +3,34 @@
 use std::{
     ffi::OsString,
     io::{self, Write},
-    net::SocketAddr,
     path::PathBuf,
     process::ExitCode,
     time::SystemTime,
 };
 
-use clap::{Parser, Subcommand, error::ErrorKind};
+use clap::{Parser, error::ErrorKind};
 use serde::Serialize;
 
 use crate::{
-    VERSION, artifact, cli_control, cli_peer, cli_service, control,
-    ids::NodeId,
+    VERSION, artifact, cli_background, cli_control, cli_peer, cli_profile, cli_service, cli_settings, cli_update,
+    control,
+    ids::{HiveId, NodeId},
     invitation::{
         JoinBundle, MAX_JOIN_BUNDLE_BYTES, MAX_JOIN_REQUEST_BYTES, decode_join_bundle, decode_join_request,
         encode_join_bundle, encode_join_request,
     },
+    mcp,
     membership::MembershipRoles,
-    state, storage,
+    profile, service, state, storage,
 };
+
+use crate::cli_args::{Cli, Command};
+pub(crate) use crate::cli_args::{ConfigCommand, NameCommand};
+
+mod doctor;
 
 const EXIT_USAGE: u8 = 2;
 const EXIT_FAILURE: u8 = 3;
-
-/// Supgang's command-line arguments.
-#[derive(Debug, Parser)]
-#[command(
-    name = "supgang",
-    version,
-    about = "Finds the current address of your own computers",
-    disable_help_subcommand = true
-)]
-struct Cli {
-    /// Emit a versioned JSON object instead of human text.
-    #[arg(long, global = true)]
-    json: bool,
-    /// Override the platform state directory.
-    #[arg(long, global = true, value_name = "PATH")]
-    state_dir: Option<PathBuf>,
-    #[command(subcommand)]
-    command: Command,
-}
-
-/// Stable local and peer command surface.
-#[derive(Debug, Subcommand)]
-enum Command {
-    /// Create a new private hive and this computer's identity.
-    Init,
-    /// Validate local security, identity, and durable state.
-    Doctor,
-    /// Show this computer's non-secret hive and node identifiers.
-    Status,
-    /// Create a recipient-bound request on the computer that will join.
-    JoinRequest {
-        /// New owner-only request file to carry to an existing member.
-        #[arg(value_name = "REQUEST_FILE")]
-        output: PathBuf,
-    },
-    /// Root-authorize a signed request and create its response bundle.
-    Invite {
-        /// Owner-only request file from the joining computer.
-        #[arg(value_name = "REQUEST_FILE")]
-        request: PathBuf,
-        /// New owner-only bundle to carry back to the joining computer.
-        #[arg(value_name = "JOIN_BUNDLE")]
-        output: PathBuf,
-        /// Membership lifetime in days, from 1 through 3650.
-        #[arg(long, default_value_t = 365)]
-        days: u16,
-    },
-    /// Install the root-authorized bundle on its intended computer.
-    Join {
-        /// Owner-only bundle returned by an existing member.
-        #[arg(value_name = "JOIN_BUNDLE")]
-        bundle: PathBuf,
-    },
-    /// Create an owner-only signed contact file for another hive member.
-    Publish {
-        /// New contact file to create.
-        #[arg(value_name = "CONTACT_FILE")]
-        output: PathBuf,
-        /// Local/LAN address to advertise; repeat for multiple interfaces.
-        #[arg(long, value_name = "IP:PORT")]
-        local: Vec<SocketAddr>,
-        /// Globally routed direct address to advertise; repeat as needed.
-        #[arg(long, value_name = "IP:PORT")]
-        direct: Vec<SocketAddr>,
-        /// Signed contact lifetime from 1 through 168 hours.
-        #[arg(long, default_value_t = 24)]
-        hours: u16,
-    },
-    /// Verify and remember an owner-only contact file from a hive member.
-    Import {
-        /// Contact file to verify and remember.
-        #[arg(value_name = "CONTACT_FILE")]
-        input: PathBuf,
-    },
-    /// Permanently deny one authorized device identity using the hive root.
-    Revoke {
-        /// Stable 64-character device identifier to revoke.
-        #[arg(value_name = "NODE_ID")]
-        node_id: NodeId,
-    },
-    /// List known peers without disclosing their addresses.
-    Peers,
-    /// Show fresh signed addresses for one exact node identifier.
-    Resolve {
-        /// Stable 64-character node identifier.
-        #[arg(value_name = "NODE_ID")]
-        node_id: NodeId,
-    },
-    /// Run the peer service in the foreground.
-    Run {
-        /// Local UDP socket on which to accept QUIC connections.
-        #[arg(long, value_name = "IP:PORT")]
-        listen: SocketAddr,
-        /// Local/LAN address to advertise; repeat for multiple interfaces.
-        #[arg(long, value_name = "IP:PORT")]
-        local: Vec<SocketAddr>,
-        /// Globally routed direct address to advertise; repeat as needed.
-        #[arg(long, value_name = "IP:PORT")]
-        direct: Vec<SocketAddr>,
-        /// Delay between remembered-peer attempts, from 1 through 3600 seconds.
-        #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..=3_600))]
-        retry_seconds: u64,
-        /// Signed endpoint lifetime, from 1 through 168 hours.
-        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u64).range(1..=168))]
-        record_hours: u64,
-    },
-}
 
 #[derive(Debug, Serialize)]
 struct InitOutput {
@@ -139,6 +38,7 @@ struct InitOutput {
     status: &'static str,
     hive_id: String,
     node_id: String,
+    name: String,
     key_protection: &'static str,
 }
 
@@ -150,6 +50,7 @@ struct DoctorOutput {
     strict_mode: bool,
     public_dependencies: u8,
     checks: Vec<DoctorCheck>,
+    custody: doctor::CustodyOutput,
 }
 
 #[derive(Debug, Serialize)]
@@ -177,8 +78,10 @@ struct JoinOutput {
 /// Parses the process arguments and writes output to the process streams.
 #[must_use]
 pub fn run_from_env() -> ExitCode {
-    let mut stdout = io::stdout().lock();
-    let mut stderr = io::stderr().lock();
+    // Do not hold global stream locks: the MCP subcommand owns stdio for its
+    // asynchronous JSON-RPC transport.
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
     run(std::env::args_os(), &mut stdout, &mut stderr)
 }
 
@@ -210,55 +113,186 @@ where
         Err(storage_error) => return render_error(cli.json, &storage_error.to_string(), output, error),
     };
 
+    if let Some(peer) = cli.peer {
+        return cli_control::peer(&state_directory, &peer, cli.json, output, error);
+    }
+
     match cli.command {
-        Command::Init => init(&state_directory, cli.json, output, error),
-        Command::Doctor => doctor(&state_directory, cli.json, output, error),
-        Command::Status => cli_control::status(&state_directory, cli.json, output, error),
-        Command::JoinRequest { output: request_file } => {
+        Some(Command::Connect { peer, service }) => {
+            crate::cli_tunnel::connect(&state_directory, &peer, &service, cli.json, error)
+        }
+        Some(Command::Forward { listen, peer, service }) => {
+            crate::cli_tunnel::forward(&state_directory, &listen, &peer, &service, cli.json, output, error)
+        }
+        Some(Command::Expose { name, port }) => {
+            crate::cli_tunnel::expose(&state_directory, &name, port, cli.json, output, error)
+        }
+        Some(Command::Unexpose { name }) => {
+            crate::cli_tunnel::expose(&state_directory, &name, 0, cli.json, output, error)
+        }
+        Some(Command::Exposures) => crate::cli_tunnel::exposures(&state_directory, cli.json, output, error),
+        Some(Command::TunnelLimits {
+            per_peer,
+            total,
+            idle_seconds,
+        }) => crate::cli_tunnel::limits(
+            &state_directory,
+            usize::from(per_peer),
+            usize::from(total),
+            idle_seconds,
+            cli.json,
+            output,
+            error,
+        ),
+        None => {
+            let code = cli_control::peers(&state_directory, cli.json, false, output, error);
+            if code == ExitCode::SUCCESS && !cli.json && writeln!(output, "Help: supgang --help").is_err() {
+                return ExitCode::from(EXIT_FAILURE);
+            }
+            code
+        }
+        Some(Command::Init) => init(&state_directory, cli.json, output, error),
+        Some(Command::Doctor { peer }) => doctor::run(&state_directory, peer.as_deref(), cli.json, output, error),
+        Some(Command::Endpoint {
+            command: crate::cli_args::EndpointCommand::AddMapped { from_file },
+        }) => crate::cli_tunnel::add_mapped(&state_directory, &from_file, cli.json, output, error),
+        Some(Command::Config { command }) => {
+            cli_settings::config(&state_directory, command.as_ref(), cli.json, output, error)
+        }
+        Some(Command::Status) => cli_control::status(&state_directory, cli.json, output, error),
+        Some(Command::Name { command }) => cli_profile::name(&state_directory, command, cli.json, output, error),
+        Some(Command::Advertise { name, port, key_pin }) => cli_profile::advertise(
+            &state_directory,
+            cli_profile::Advertise::Add { name, port, key_pin },
+            cli.json,
+            output,
+            error,
+        ),
+        Some(Command::Unadvertise { name }) => cli_profile::advertise(
+            &state_directory,
+            cli_profile::Advertise::Remove { name },
+            cli.json,
+            output,
+            error,
+        ),
+        Some(Command::JoinRequest { output: request_file }) => {
             join_request(&state_directory, &request_file, cli.json, output, error)
         }
-        Command::Invite {
+        Some(Command::Invite {
             request,
             output: bundle_file,
             days,
-        } => invite(&state_directory, &request, &bundle_file, days, cli.json, output, error),
-        Command::Join { bundle } => join(&state_directory, &bundle, cli.json, output, error),
-        Command::Publish {
+            expect_node,
+            introducer,
+        }) => invite(
+            &state_directory,
+            InviteOptions {
+                request_file: &request,
+                bundle_file: &bundle_file,
+                days,
+                expected_node: expect_node,
+                introducer,
+            },
+            cli.json,
+            output,
+            error,
+        ),
+        Some(Command::Join { bundle, expect_hive }) => {
+            join(&state_directory, &bundle, expect_hive, cli.json, output, error)
+        }
+        Some(Command::Publish {
             output: contact_file,
-            local,
-            direct,
+            endpoints,
+            port,
             hours,
-        } => match cli_peer::publish(&state_directory, &contact_file, &local, &direct, hours) {
+        }) => match cli_peer::publish(&state_directory, &contact_file, endpoints.as_deref(), port, hours) {
             Ok(result) => render_publish(&result, cli.json, output, error),
             Err(message) => render_error(cli.json, &message, output, error),
         },
-        Command::Import { input } => match cli_peer::import(&state_directory, &input) {
+        Some(Command::Import { input }) => match cli_peer::import(&state_directory, &input) {
             Ok(result) => render_import(&result, cli.json, output, error),
             Err(message) => render_error(cli.json, &message, output, error),
         },
-        Command::Revoke { node_id } => cli_control::revoke(&state_directory, node_id, cli.json, output, error),
-        Command::Peers => cli_control::peers(&state_directory, cli.json, output, error),
-        Command::Resolve { node_id } => cli_control::resolve(&state_directory, node_id, cli.json, output, error),
-        Command::Run {
-            listen,
-            local,
-            direct,
+        Some(Command::Revoke { node_id }) => cli_control::revoke(&state_directory, node_id, cli.json, output, error),
+        Some(Command::Peers { all }) => cli_control::peers(&state_directory, cli.json, all, output, error),
+        Some(Command::Resolve { peer }) => cli_control::resolve(&state_directory, &peer, cli.json, output, error),
+        Some(Command::Tag { peer, tag }) => cli_control::tag(&state_directory, &peer, tag, cli.json, output, error),
+        Some(Command::Untag { tag }) => cli_control::untag(&state_directory, tag, cli.json, output, error),
+        Some(Command::Mcp) => {
+            if cli.json {
+                render_error(
+                    true,
+                    "mcp reserves standard output for JSON-RPC; omit --json",
+                    output,
+                    error,
+                )
+            } else {
+                match mcp::serve_stdio(state_directory) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(mcp_error) => render_error(false, &mcp_error.to_string(), output, error),
+                }
+            }
+        }
+        Some(Command::Update { command }) => cli_update::update(&state_directory, &command, cli.json, output, error),
+        Some(Command::Service { command }) => {
+            cli_background::service(&state_directory, &command, cli.json, output, error)
+        }
+        Some(Command::Run {
+            endpoints,
+            port,
             retry_seconds,
             record_hours,
-        } => match cli_service::run(
+            router_mapping,
+        }) => match cli_service::run(
             &state_directory,
             cli_service::RunOptions {
-                listen,
-                local: &local,
-                direct: &direct,
+                endpoints: endpoints.as_deref(),
+                port,
                 retry_seconds,
                 record_hours,
+                router_mapping,
+                anchor_mode: false,
                 json: cli.json,
             },
             output,
         ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => render_error(cli.json, &message, output, error),
+        },
+        Some(Command::Anchor {
+            endpoints,
+            port,
+            router_mapping,
+        }) => match cli_service::run(
+            &state_directory,
+            cli_service::RunOptions {
+                endpoints: endpoints.as_deref(),
+                port,
+                retry_seconds: service::DEFAULT_RETRY_SECONDS,
+                record_hours: service::DEFAULT_RECORD_LIFETIME_SECONDS / (60 * 60),
+                router_mapping,
+                anchor_mode: true,
+                json: cli.json,
+            },
+            output,
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => render_error(cli.json, &message, output, error),
+        },
+        Some(Command::Supervise {
+            endpoints,
+            anchor,
+            router_mapping,
+        }) => match crate::update::run_supervisor(
+            &state_directory,
+            crate::update::SupervisorOptions {
+                endpoints: endpoints.as_deref(),
+                anchor,
+                router_mapping,
+            },
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(supervisor_error) => render_error(cli.json, &supervisor_error.to_string(), output, error),
         },
     }
 }
@@ -332,16 +366,23 @@ fn join_request(
     )
 }
 
+#[derive(Clone, Copy)]
+struct InviteOptions<'a> {
+    request_file: &'a PathBuf,
+    bundle_file: &'a PathBuf,
+    days: u16,
+    expected_node: NodeId,
+    introducer: bool,
+}
+
 fn invite(
     state_directory: &PathBuf,
-    request_file: &PathBuf,
-    bundle_file: &PathBuf,
-    days: u16,
+    options: InviteOptions<'_>,
     json: bool,
     output: &mut dyn Write,
     error: &mut dyn Write,
 ) -> ExitCode {
-    if !(1..=3_650).contains(&days) {
+    if !(1..=3_650).contains(&options.days) {
         return render_error(
             json,
             "membership lifetime must be from 1 through 3650 days",
@@ -349,7 +390,7 @@ fn invite(
             error,
         );
     }
-    let request_bytes = match artifact::read(request_file, MAX_JOIN_REQUEST_BYTES) {
+    let request_bytes = match artifact::read(options.request_file, MAX_JOIN_REQUEST_BYTES) {
         Ok(bytes) => bytes,
         Err(artifact_error) => return render_error(json, &artifact_error.to_string(), output, error),
     };
@@ -365,21 +406,28 @@ fn invite(
         Ok(state) => state,
         Err(state_error) => return render_error(json, &state_error.to_string(), output, error),
     };
-    let expires_at = now.saturating_add(u64::from(days) * 24 * 60 * 60);
-    let membership = match local_state.authorize_join_request(&request, MembershipRoles::DEVICE, now, expires_at) {
+    let expires_at = now.saturating_add(u64::from(options.days) * 24 * 60 * 60);
+    let roles = if options.introducer {
+        MembershipRoles::DEVICE | MembershipRoles::INTRODUCER
+    } else {
+        MembershipRoles::DEVICE
+    };
+    let membership = match local_state.authorize_join_request(&request, options.expected_node, roles, now, expires_at) {
         Ok(membership) => membership,
         Err(state_error) => return render_error(json, &state_error.to_string(), output, error),
     };
-    let bundle = JoinBundle::new(
-        &local_state.identity().root_verifying_key,
-        membership,
-        local_state.revocations().clone(),
-    );
+    let Some(root) = local_state.identity().root.as_ref() else {
+        return render_error(json, "this computer does not hold the hive root", output, error);
+    };
+    let bundle = match JoinBundle::new(root, membership, local_state.revocations().clone(), now) {
+        Ok(bundle) => bundle,
+        Err(invitation_error) => return render_error(json, &invitation_error.to_string(), output, error),
+    };
     let bundle_bytes = match encode_join_bundle(&bundle) {
         Ok(bytes) => bytes,
         Err(invitation_error) => return render_error(json, &invitation_error.to_string(), output, error),
     };
-    if let Err(artifact_error) = artifact::write_new(bundle_file, &bundle_bytes, MAX_JOIN_BUNDLE_BYTES) {
+    if let Err(artifact_error) = artifact::write_new(options.bundle_file, &bundle_bytes, MAX_JOIN_BUNDLE_BYTES) {
         return render_error(json, &artifact_error.to_string(), output, error);
     }
     let result = JoinOutput {
@@ -400,6 +448,7 @@ fn invite(
 fn join(
     state_directory: &PathBuf,
     bundle_file: &PathBuf,
+    expected_hive: HiveId,
     json: bool,
     output: &mut dyn Write,
     error: &mut dyn Write,
@@ -412,7 +461,7 @@ fn join(
         Ok(bundle) => bundle,
         Err(invitation_error) => return render_error(json, &invitation_error.to_string(), output, error),
     };
-    let local_state = match state::install_join_bundle(state_directory, &bundle) {
+    let local_state = match state::install_join_bundle(state_directory, &bundle, expected_hive) {
         Ok(state) => state,
         Err(state_error) => return render_error(json, &state_error.to_string(), output, error),
     };
@@ -451,19 +500,26 @@ fn unix_time() -> Result<u64, &'static str> {
 fn init(state_directory: &PathBuf, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
     match state::initialize(state_directory) {
         Ok(state) => {
+            let name = match profile::load_or_create(state_directory, state.identity().device.node_id()) {
+                Ok(name) => name,
+                Err(profile_error) => return render_error(json, &profile_error.to_string(), output, error),
+            };
             let result = InitOutput {
-                schema: "supgang.init/v1",
+                schema: "supgang.init/v2",
                 status: "ok",
                 hive_id: state.identity().hive_id.to_string(),
                 node_id: state.identity().device.node_id().to_string(),
+                name: name.to_string(),
                 key_protection: "owner-only-file",
             };
             if json {
                 render_json(&result, output, error)
             } else if writeln!(
                 output,
-                "Supgang initialized.\nHive: {}\nThis computer: {}\nKey protection: owner-only file (0600)",
-                result.hive_id, result.node_id
+                "Supgang initialized.\nHive: {}\nThis computer: {} [{}]\nKey protection: owner-only file (0600)",
+                result.hive_id,
+                result.name,
+                &result.node_id[..8]
             )
             .is_ok()
             {
@@ -474,133 +530,6 @@ fn init(state_directory: &PathBuf, json: bool, output: &mut dyn Write, error: &m
         }
         Err(storage_error) => render_error(json, &storage_error.to_string(), output, error),
     }
-}
-
-fn doctor(state_directory: &PathBuf, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
-    let mut checks = vec![DoctorCheck {
-        id: "public-dependencies",
-        status: "ok",
-        detail: "strict mode has no hosted discovery, account, telemetry, DNS publisher, or vendor relay".to_owned(),
-    }];
-    let identity_result = storage::load_identity(state_directory);
-    checks.push(match &identity_result {
-        Ok(_) => DoctorCheck {
-            id: "identity",
-            status: "ok",
-            detail: "protected identity is owner-only and its checksum is valid".to_owned(),
-        },
-        Err(storage_error) => DoctorCheck {
-            id: "identity",
-            status: "error",
-            detail: storage_error.to_string(),
-        },
-    });
-    let (state_ok, state_check) = match control::request(state_directory, control::ControlRequest::Status) {
-        Ok(Some(control::ControlReply::Status { value })) => (
-            true,
-            DoctorCheck {
-                id: "authoritative-state",
-                status: "ok",
-                detail: format!(
-                    "running owner service holds {} verified event(s) for {} authorized member(s)",
-                    value.event_count, value.member_count
-                ),
-            },
-        ),
-        Ok(Some(control::ControlReply::Error { message })) => (
-            false,
-            DoctorCheck {
-                id: "authoritative-state",
-                status: "error",
-                detail: message,
-            },
-        ),
-        Ok(Some(_)) => (
-            false,
-            DoctorCheck {
-                id: "authoritative-state",
-                status: "error",
-                detail: "local service returned an unexpected response".to_owned(),
-            },
-        ),
-        Ok(None) => match state::open(state_directory) {
-            Ok(state) if state.revocations().contains(&state.identity().device.node_id()) => (
-                false,
-                DoctorCheck {
-                    id: "authoritative-state",
-                    status: "error",
-                    detail: "local device identity is root-revoked; service startup is denied".to_owned(),
-                },
-            ),
-            Ok(state) => (
-                true,
-                DoctorCheck {
-                    id: "authoritative-state",
-                    status: "ok",
-                    detail: format!(
-                        "root authorization and {} committed event(s) replayed with consecutive counters",
-                        state.event_count()
-                    ),
-                },
-            ),
-            Err(state_error) => (
-                false,
-                DoctorCheck {
-                    id: "authoritative-state",
-                    status: "error",
-                    detail: state_error.to_string(),
-                },
-            ),
-        },
-        Err(control_error) => (
-            false,
-            DoctorCheck {
-                id: "authoritative-state",
-                status: "error",
-                detail: control_error.to_string(),
-            },
-        ),
-    };
-    checks.push(state_check);
-    checks.push(DoctorCheck {
-        id: "key-provider",
-        status: "warning",
-        detail: "identity uses an owner-only file; hardware-backed platform storage is not enabled in this build"
-            .to_owned(),
-    });
-    let failed = identity_result.is_err() || !state_ok || checks.iter().any(|check| check.status == "error");
-    let result = DoctorOutput {
-        schema: "supgang.doctor/v1",
-        status: if failed { "error" } else { "warning" },
-        version: VERSION,
-        strict_mode: true,
-        public_dependencies: 0,
-        checks,
-    };
-    let rendered = if json {
-        render_json(&result, output, error)
-    } else {
-        render_doctor_human(&result, output)
-    };
-    if rendered != ExitCode::SUCCESS {
-        rendered
-    } else if failed {
-        ExitCode::from(EXIT_FAILURE)
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
-fn render_doctor_human(result: &DoctorOutput, output: &mut dyn Write) -> ExitCode {
-    if writeln!(output, "Supgang doctor: {}", result.status).is_err() {
-        return ExitCode::from(EXIT_FAILURE);
-    }
-    for check in &result.checks {
-        if writeln!(output, "[{}] {}: {}", check.status, check.id, check.detail).is_err() {
-            return ExitCode::from(EXIT_FAILURE);
-        }
-    }
-    ExitCode::SUCCESS
 }
 
 pub(crate) fn render_json<T: Serialize>(value: &T, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
