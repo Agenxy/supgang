@@ -27,3 +27,15 @@ A milestone is not complete merely because the build-tree binary passes. Run `ma
 repository verify `command -v supgang`, the installed artifact hash, `supgang --help`, `supgang --json doctor`, and the
 milestone's user-facing behavior. When a milestone changes the fleet protocol or runtime, install the same release
 artifact on every configured physical acceptance peer and repeat the applicable cross-host checks.
+
+## Merging and releases
+
+- The agent that owns a pull request gates it, takes one independent review pass when the change warrants one, and
+  merges it itself once its required checks are green. No pull request waits on the owner's review, and "awaiting
+  review" is never a blocker. A held pull request names its concrete blocker in one line.
+- `main` takes squash merges only, and its ruleset requires the checks to pass. Never bypass them with administrator
+  merges, and never weaken a check to get a merge through.
+- Two steps still need the owner's direct word: a public release (the rehearsal-to-public step, meaning the crates.io
+  publish and the GitHub release), and any licence change.
+- A release is rehearsed first, through a rehearsal channel that serves the exact packaged bytes. It is published from
+  the same commit on `main` that was rehearsed, because each packaged crate records the commit it was built from.
