@@ -1,10 +1,10 @@
 # Release-role provider vectors
 
-**DRAFT - NOT FROZEN.** `manifest.json` lists SHA-256 and the expected acceptance or
+**FROZEN v1.** `manifest.json` lists SHA-256 and the expected acceptance or
 refusal for each file. The bundle joins ADR 0007 release and code-signing role grants,
 their root-signed steps, ADR 0005 shared status, a carried-device owner assertion,
 and carried and unattended release statements. It replaces the earlier
-statement-only draft vectors.
+statement-only vectors.
 
 The 121-file manifest includes two aggregate pre-parse length refusals: 16,385
 bytes for a statement and 262,145 bytes for an authority bundle. ADR 0007

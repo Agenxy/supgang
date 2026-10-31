@@ -302,9 +302,9 @@ The `code-signing` payload is `[[identifier...], certificate:bytes]`:
 
 The owner-action payload is `[target, operations]`, as ADR 0005 defines.
 
-Frozen vectors for grant, status, signed statement and
-assertion are published together, each with a valid form and one tampered form per refusal
-listed under acceptance. Rules for the tampered forms:
+FROZEN v1 vectors for grant, status, signed statement and assertion are published together
+under `docs/vectors/release-roles-v1/`, each with a valid form and one tampered form per
+refusal listed under acceptance. Rules for the tampered forms:
 
 - Each tampered form has exactly one fault. Every signature, possession proof and binding is
   recomputed after the tampering, so a verifier that checks signatures first still reaches
@@ -318,12 +318,13 @@ listed under acceptance. Rules for the tampered forms:
   a refusal for each mixed null of its owner fields.
 - The time rules each have a tampered assertion: `issued_at` one second before the
   statement's `issued_at`, and `issued_at` equal to the statement's `expires_at`.
-- The verification time lies after the assertion's and the owner-action grant's expiry, so
-  the time rules above are exercised rather than hidden.
+- The verification time lies after the assertion's and the first owner-action grant's
+  expiry, so the time rules above are exercised rather than hidden. The separate
+  owner-action grant paired with the assertion-at-expiry refusal remains active then.
 
-They come with a manifest of their SHA-256 hashes, which consumers
-vendor by hash. A vector set is frozen only after the owner has settled the open values in
-ADR 0005 and in this ADR. Until then it is labelled draft.
+The FROZEN v1 manifest has SHA-256
+`536d6edf2d149353deec85a18ddeffedc2a7b8d7087df7fa73390c474b6925f8`.
+Consumers vendor this exact set by that hash; changes to vector bytes require a new version.
 
 ## Code-signing role
 

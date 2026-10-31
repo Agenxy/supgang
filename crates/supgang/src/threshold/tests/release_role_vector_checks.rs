@@ -51,7 +51,7 @@ fn committed_release_role_bundle_has_exact_hashes_and_one_cbor_item() -> TestRes
     let manifest: serde_json::Value = serde_json::from_slice(&fs::read(output.join("manifest.json"))?)?;
     assert_eq!(
         manifest.get("state").and_then(serde_json::Value::as_str),
-        Some("DRAFT - NOT FROZEN")
+        Some("FROZEN v1")
     );
     let files = manifest
         .get("files")

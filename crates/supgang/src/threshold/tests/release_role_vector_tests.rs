@@ -555,7 +555,7 @@ fn generate_release_role_vectors() -> TestResult {
     )?;
 
     let manifest = json!({
-        "state": "DRAFT - NOT FROZEN",
+        "state": "FROZEN v1",
         "protocol": "owner-action-and-release-roles-v1",
         "root_public_key_hex": hex::encode(root_key),
         "hive_hex": hex::encode(hive.as_bytes()),
