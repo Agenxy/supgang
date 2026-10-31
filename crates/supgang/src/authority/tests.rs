@@ -288,8 +288,12 @@ fn older_epoch_is_refused_and_advance_clears_prior_authority() -> TestResult {
     }
     .apply(Some(&first), hive(), &key, &mut store, NOW, NOW + 1000)?;
     assert_eq!(next.content.epoch, 1);
-    assert!(next.content.certificates.is_empty());
-    assert!(next.content.revocations.ids.is_empty());
+    assert!(next.content.certificates.is_empty(), "{:?}", next.content.certificates);
+    assert!(
+        next.content.revocations.ids.is_empty(),
+        "{:?}",
+        next.content.revocations.ids
+    );
     let mut v = AuthorityVerifier::new(hive());
     v.accept(first.clone(), key.public_key(), NOW)?;
     v.accept(next.clone(), key.public_key(), NOW)?;

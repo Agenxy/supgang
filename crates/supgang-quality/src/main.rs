@@ -14,6 +14,7 @@ const MAX_SOURCE_LINES: usize = 700;
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 
 mod acceptance;
+mod drift;
 mod gate_cache;
 mod installation;
 
@@ -77,7 +78,8 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
             policy(&root)?;
             writeln!(output, "Supgang repository policy passed.").map_err(|write_error| write_error.to_string())
         }
-        _ => Err("usage: cargo run --locked --package supgang-quality -- all|quick|policy".to_owned()),
+        Some("drift") => drift::run(&root, output),
+        _ => Err("usage: cargo run --locked --package supgang-quality -- all|quick|policy|drift".to_owned()),
     }
 }
 
@@ -435,7 +437,7 @@ const REVIEWED_DUPLICATE_IDENTITIES: &[&str] = &[
     "block-buffer@0.10.4",
     "block-buffer@0.12.1",
     "cpufeatures@0.2.17",
-    "cpufeatures@0.3.0",
+    "cpufeatures@0.3.1",
     "crypto-common@0.1.7",
     "crypto-common@0.2.2",
     "curve25519-dalek@4.1.3",
@@ -456,7 +458,7 @@ const REVIEWED_DUPLICATE_IDENTITIES: &[&str] = &[
     "spin@0.9.9",
     "spin@0.10.1",
     "bitflags@1.3.2",
-    "bitflags@2.13.1",
+    "bitflags@2.13.2",
     "getrandom@0.2.17",
     "getrandom@0.3.4",
     "getrandom@0.4.3",
@@ -465,11 +467,15 @@ const REVIEWED_DUPLICATE_IDENTITIES: &[&str] = &[
     "r-efi@5.3.0",
     "r-efi@6.0.0",
     "rand@0.9.5",
-    "rand@0.10.2",
+    "rand@0.10.3",
     "rand_core@0.9.5",
     "rand_core@0.10.1",
     "syn@2.0.119",
-    "syn@3.0.3",
+    "syn@3.0.9",
+    // Build-time proc-macro helpers only: ICU 2.4's yoke and zerofrom derives need
+    // synstructure 0.14 while asn1-rs-derive 0.6 still needs 0.13. Nothing ships at runtime.
+    "synstructure@0.13.2",
+    "synstructure@0.14.0",
     "thiserror@1.0.69",
     "thiserror@2.0.20",
     "thiserror-impl@1.0.69",

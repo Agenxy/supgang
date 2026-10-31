@@ -272,11 +272,8 @@ mod tests {
         assert_eq!(restored.addresses(peer, pin, &matching).len(), 8);
         assert!(restored.addresses(peer, pin, &matching).contains(&private));
         assert_eq!(restored.addresses(peer, pin, &[]).len(), 7);
-        assert!(
-            restored
-                .addresses(peer, TransportKeyId::from_bytes([8; 32]), &matching)
-                .is_empty()
-        );
+        let found = restored.addresses(peer, TransportKeyId::from_bytes([8; 32]), &matching);
+        assert!(found.is_empty(), "{found:?}");
         assert!(RouteHistory::open(temporary.path(), DeviceIdentity::generate()?.node_id(), 8, true).is_err());
         Ok(())
     }

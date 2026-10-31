@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(loaded.device.node_id(), expected_node);
         assert_eq!(loaded.hive_id, expected_hive);
         let (_, frames) = open_journal(&path)?;
-        assert!(frames.is_empty());
+        assert!(frames.is_empty(), "{frames:?}");
         Ok(())
     }
 

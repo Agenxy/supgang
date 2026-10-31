@@ -263,7 +263,8 @@ fn a_roaming_host_changes_addresses_and_loses_its_old_network() -> TestResult {
     assert_eq!(stats.dropped(Discard::NoRoute), 1);
 
     network.move_host(laptop, None)?;
-    assert!(network.host_addresses(laptop)?.is_empty());
+    let host_addresses = network.host_addresses(laptop)?;
+    assert!(host_addresses.is_empty(), "{host_addresses:?}");
     Ok(())
 }
 
