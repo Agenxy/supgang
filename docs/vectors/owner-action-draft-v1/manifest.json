@@ -1,0 +1,91 @@
+{
+  "files": [
+    {
+      "bytes": 455,
+      "expectation": "accept: typed grant payload",
+      "file": "grant.cbor",
+      "sha256": "6ae51bae942aade7387642aef2f8f4f936b4270b13dc8fdb61da0f79e989389e"
+    },
+    {
+      "bytes": 573,
+      "expectation": "accept: root step content",
+      "file": "grant-step.cbor",
+      "sha256": "426a22e7acaecf9dcf114b5844592bd8eb746ca929f2d2fa9796264416f09784"
+    },
+    {
+      "bytes": 64,
+      "expectation": "accept: root signature over step domain and content",
+      "file": "grant-step.sig",
+      "sha256": "c397e3cc98e5147544ccbfd45a2796c637863851108744df99137efd0826403c"
+    },
+    {
+      "bytes": 166,
+      "expectation": "accept: root-signed draft renewal terms",
+      "file": "status-policy.cbor",
+      "sha256": "ddba32553d6034affbd5308851d579c85bb9c6e3e0f21f97196ba979277f43c1"
+    },
+    {
+      "bytes": 264,
+      "expectation": "accept: root-signed initial lease at time 1020",
+      "file": "status.cbor",
+      "sha256": "6a6eadc26f48ec76056eeecc666648602f545437c2268580fe3ec349f0d29923"
+    },
+    {
+      "bytes": 156,
+      "expectation": "accept: provider-level target challenge",
+      "file": "challenge.cbor",
+      "sha256": "37a66df6a990a7633ef9d561a961b732d26b7581cda753300d0a47ec1aa8fbfd"
+    },
+    {
+      "bytes": 45,
+      "expectation": "accept: opaque provider-level request bytes",
+      "file": "request.bin",
+      "sha256": "683815ebf13ef920d8f70820673d6b99ba69a5abd53f8f5288eb4cb550cdfb7e"
+    },
+    {
+      "bytes": 375,
+      "expectation": "accept: exact grant/challenge/request binding at time 1020",
+      "file": "assertion.cbor",
+      "sha256": "a3429da775ca05a3c94ed9bd0dd8d08be6b48a04eeacc616c2cd57cd9ed91f68"
+    },
+    {
+      "bytes": 375,
+      "expectation": "reject: case-folded consumer identity",
+      "file": "assertion-wrong-case.cbor",
+      "sha256": "068e9df321d523092df60d739e710c208d73a032cca1975f7f96d6626e4aae76"
+    },
+    {
+      "bytes": 375,
+      "expectation": "reject: changed canonical request digest",
+      "file": "assertion-wrong-request.cbor",
+      "sha256": "9007fe2022d7c0982f9071d168e0d7a174908da72f5e4148bc289c60373fe8b4"
+    },
+    {
+      "bytes": 264,
+      "expectation": "reject: invalid root signature",
+      "file": "status-bad-signature.cbor",
+      "sha256": "315e76bde479e59327272dbb215c8ad0c8c2b73f0844d7369c4edd6e3ac39c78"
+    },
+    {
+      "bytes": 264,
+      "expectation": "reject: signed lease names another budget",
+      "file": "status-wrong-budget.cbor",
+      "sha256": "af74e8dbd50ac8735dffde80d9b641ecddc73deb4c20e48dc4a3cd35481e9992"
+    }
+  ],
+  "hive_hex": "e9089bac250fcc592a3a3578a962c256a1c4fc2c5be326066dfd693a1fb0f8f0",
+  "note": "Disposable test keys. Request bytes are opaque Supgang-provider input, not a canonical Remap effect request. No live issuer or physical acceptance is claimed.",
+  "pending": [
+    "durable current-head issuer and target ledgers",
+    "release-role codec and conformance vectors",
+    "physical hardware proof"
+  ],
+  "protocol": "owner-action-v1-proposal",
+  "root_head_hex": "426a22e7acaecf9dcf114b5844592bd8eb746ca929f2d2fa9796264416f09784",
+  "root_public_key_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+  "signer_public_key_hex": "031e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896e",
+  "source_commit": "regenerate from current source; no immutable commit pin yet",
+  "state": "DRAFT - NOT FROZEN",
+  "target_hex": "0808080808080808080808080808080808080808080808080808080808080808",
+  "verification_time": 1020
+}

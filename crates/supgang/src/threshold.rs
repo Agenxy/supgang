@@ -15,8 +15,11 @@ use zeroize::Zeroize as _;
 
 pub mod control_auth;
 pub mod founding;
+pub mod owner_action;
 pub mod regroup;
 pub mod session;
+pub mod status;
+pub mod status_renewal;
 pub mod step;
 
 #[cfg(test)]
