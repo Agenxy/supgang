@@ -8,6 +8,7 @@ use super::{Digest, Error, MAX_RECORDS, MAX_STEP_BYTES, array, canonical, fixed,
 use crate::ids::{HiveId, NodeId};
 
 mod chain;
+pub mod grant;
 pub use chain::{Chain, Conflict, Outcome, Status};
 
 /// Domain prepended to canonical step bytes for ordinary Ed25519 signing.
@@ -34,6 +35,10 @@ pub enum Operation {
     SetRecoveryGroup,
     /// Admit a pending roster to an isolated DKG, not application membership.
     AdmitRoster,
+    /// Issue one typed grant; currently only owner-action policy is implemented.
+    Grant,
+    /// Monotonically revoke one typed grant.
+    RevokeGrant,
 }
 
 impl Operation {
@@ -48,6 +53,8 @@ impl Operation {
             Self::Succession => "succession",
             Self::SetRecoveryGroup => "set-recovery-group",
             Self::AdmitRoster => "admit-roster",
+            Self::Grant => "grant",
+            Self::RevokeGrant => "revoke-grant",
         }
     }
 
@@ -62,6 +69,8 @@ impl Operation {
             "succession" => Ok(Self::Succession),
             "set-recovery-group" => Ok(Self::SetRecoveryGroup),
             "admit-roster" => Ok(Self::AdmitRoster),
+            "grant" => Ok(Self::Grant),
+            "revoke-grant" => Ok(Self::RevokeGrant),
             _ => Err(Error::Invalid),
         }
     }
@@ -99,6 +108,7 @@ impl RootStep {
         if self.sequence == 0 || self.payload.len() > 12 * 1024 {
             return Err(Error::Bound);
         }
+        grant::validate_step(self)?;
         let mut e = Encoder::new(Vec::new());
         e.array(10)?
             .u8(1)?
