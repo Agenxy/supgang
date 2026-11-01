@@ -1,7 +1,8 @@
 //! Context-sensitive signature verification precedes chain mutation or fork evidence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use super::grant::{Grant, Revocation};
 use super::{Digest, Error, MAX_RECORDS, Operation, Records, SignedStep};
 use crate::{
     ids::HiveId,
@@ -69,6 +70,9 @@ pub struct Chain {
     children: BTreeMap<Digest, Digest>,
     active: Vec<Digest>,
     recovery_proofs: BTreeMap<u64, (SignedStep, RecoveryDescriptor)>,
+    grants: BTreeMap<[u8; 16], Grant>,
+    used_grant_ids: BTreeSet<[u8; 16]>,
+    grant_revocation_serial: u64,
     status: Status,
     recovery_fork: bool,
     conflict: Option<Conflict>,
@@ -107,6 +111,9 @@ impl Chain {
             children: BTreeMap::new(),
             active: Vec::new(),
             recovery_proofs: BTreeMap::new(),
+            grants: BTreeMap::new(),
+            used_grant_ids: BTreeSet::new(),
+            grant_revocation_serial: 0,
             status: Status::Active,
             recovery_fork: false,
             conflict: None,
@@ -162,6 +169,18 @@ impl Chain {
     #[must_use]
     pub fn pending_count(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Active typed grant in this in-memory model; not service authorization.
+    #[must_use]
+    pub fn grant(&self, id: &[u8; 16]) -> Option<&Grant> {
+        (self.status == Status::Active).then(|| self.grants.get(id)).flatten()
+    }
+
+    /// Highest accepted grant-and-role revocation serial, never reset by recovery.
+    #[must_use]
+    pub const fn grant_revocation_serial(&self) -> u64 {
+        self.grant_revocation_serial
     }
 
     /// Verifies authority and ordering; holds unknown predecessors, detects forks.
@@ -266,7 +285,9 @@ impl Chain {
         if step.predecessor != self.tip {
             return Err(Error::Authority);
         }
+        self.validate_grant_transition(step)?;
         self.children.insert(step.predecessor, digest);
+        self.apply_grant_transition(step)?;
         self.records.insert(digest, signed);
         self.contexts.insert(digest, next.clone());
         self.current = next;
@@ -312,6 +333,9 @@ impl Chain {
         };
         self.active = self.ancestry(step.predecessor);
         self.active.push(digest);
+        // Recovery deliberately discards all owner-action grants. A successor
+        // root must issue fresh IDs; retired identities and serials remain spent.
+        self.grants.clear();
         self.pending.clear();
         self.children.clear();
         self.recovery_proofs
@@ -331,6 +355,44 @@ impl Chain {
         }
         self.conflict = Some(Conflict { first, second: signed });
         self.status = Status::Halted;
+    }
+
+    fn validate_grant_transition(&self, step: &super::RootStep) -> Result<(), Error> {
+        match step.operation {
+            Operation::Grant => {
+                let grant = Grant::decode(&step.payload)?;
+                if self.used_grant_ids.len() >= MAX_RECORDS || self.used_grant_ids.contains(&grant.id) {
+                    return Err(Error::Authority);
+                }
+            }
+            Operation::RevokeGrant => {
+                let revoke = Revocation::decode(&step.payload)?;
+                if self.grants.get(&revoke.id).map(|grant| grant.kind) != Some(revoke.kind)
+                    || revoke.serial != self.grant_revocation_serial.checked_add(1).ok_or(Error::Bound)?
+                {
+                    return Err(Error::Authority);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn apply_grant_transition(&mut self, step: &super::RootStep) -> Result<(), Error> {
+        match step.operation {
+            Operation::Grant => {
+                let grant = Grant::decode(&step.payload)?;
+                self.used_grant_ids.insert(grant.id);
+                self.grants.insert(grant.id, grant);
+            }
+            Operation::RevokeGrant => {
+                let revoke = Revocation::decode(&step.payload)?;
+                self.grants.remove(&revoke.id);
+                self.grant_revocation_serial = revoke.serial;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn ancestry(&self, mut predecessor: Digest) -> Vec<Digest> {
