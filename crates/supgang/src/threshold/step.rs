@@ -9,6 +9,7 @@ use crate::ids::{HiveId, NodeId};
 
 mod chain;
 pub mod grant;
+pub mod role_grant;
 pub use chain::{Chain, Conflict, Outcome, Status};
 
 /// Domain prepended to canonical step bytes for ordinary Ed25519 signing.
@@ -35,7 +36,7 @@ pub enum Operation {
     SetRecoveryGroup,
     /// Admit a pending roster to an isolated DKG, not application membership.
     AdmitRoster,
-    /// Issue one typed grant; currently only owner-action policy is implemented.
+    /// Issue one typed owner-action, release or code-signing grant.
     Grant,
     /// Monotonically revoke one typed grant.
     RevokeGrant,
@@ -105,10 +106,14 @@ impl RootStep {
     /// # Errors
     /// Refuses zero sequence or a payload/record exceeding the byte ceiling.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        grant::validate_step(self)?;
+        self.encode_structural()
+    }
+
+    fn encode_structural(&self) -> Result<Vec<u8>, Error> {
         if self.sequence == 0 || self.payload.len() > 12 * 1024 {
             return Err(Error::Bound);
         }
-        grant::validate_step(self)?;
         let mut e = Encoder::new(Vec::new());
         e.array(10)?
             .u8(1)?
@@ -128,7 +133,10 @@ impl RootStep {
         Ok(bytes)
     }
 
-    /// Bounded strict decoding with re-encoding equality, including trailing data.
+    /// Bounded structural decoding with re-encoding equality, including trailing data.
+    ///
+    /// Grant payload semantics, including certificate parsing, are checked only
+    /// by `SignedStep::verify` after the root signature succeeds.
     ///
     /// # Errors
     /// Refuses nonminimal integers, indefinite lengths, unknown tags and bounds.
@@ -152,7 +160,7 @@ impl RootStep {
             proposed_at: d.u64()?,
             proposer: NodeId::from_bytes(fixed(&mut d)?),
         };
-        canonical(bytes, &result.encode()?)?;
+        canonical(bytes, &result.encode_structural()?)?;
         Ok(result)
     }
 
@@ -161,7 +169,7 @@ impl RootStep {
     /// # Errors
     /// Refuses malformed or oversized steps.
     pub fn digest(&self) -> Result<Digest, Error> {
-        Ok(hash(&self.encode()?))
+        Ok(hash(&self.encode_structural()?))
     }
 
     /// Exact Ed25519 signing message: domain followed by the whole canonical step.
@@ -170,7 +178,7 @@ impl RootStep {
     /// Refuses malformed or oversized steps.
     pub fn message(&self) -> Result<Vec<u8>, Error> {
         let mut message = DOMAIN.to_vec();
-        message.extend_from_slice(&self.encode()?);
+        message.extend_from_slice(&self.encode_structural()?);
         Ok(message)
     }
 
@@ -191,6 +199,27 @@ pub struct SignedStep {
 }
 
 impl SignedStep {
+    /// Verify raw root-step bytes before decoding any grant payload.
+    ///
+    /// # Errors
+    /// Refuses an invalid signature, malformed step, or invalid grant policy.
+    pub fn decode_verified(bytes: &[u8], signature: [u8; 64], public_key: &[u8; 32]) -> Result<Self, Error> {
+        if bytes.len() > MAX_STEP_BYTES {
+            return Err(Error::Bound);
+        }
+        let key = ed25519_dalek::VerifyingKey::from_bytes(public_key).map_err(|_| Error::Proof)?;
+        if key.is_weak() {
+            return Err(Error::Proof);
+        }
+        let mut message = DOMAIN.to_vec();
+        message.extend_from_slice(bytes);
+        key.verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&signature))
+            .map_err(|_| Error::Proof)?;
+        let step = RootStep::decode(bytes)?;
+        grant::validate_step(&step)?;
+        Ok(Self { step, signature })
+    }
+
     /// Strict Ed25519 verification used by the real verifier library.
     ///
     /// # Errors
@@ -204,7 +233,8 @@ impl SignedStep {
             &self.step.message()?,
             &ed25519_dalek::Signature::from_bytes(&self.signature),
         )
-        .map_err(|_| Error::Proof)
+        .map_err(|_| Error::Proof)?;
+        grant::validate_step(&self.step)
     }
 }
 

@@ -40,6 +40,7 @@ semver.workspace = true
 thiserror.workspace = true
 tough.workspace = true
 url.workspace = true
+x509-parser.workspace = true
 zeroize.workspace = true
 rustix.workspace = true
 quinn.workspace = true
