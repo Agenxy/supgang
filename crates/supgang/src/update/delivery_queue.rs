@@ -227,7 +227,8 @@ mod tests {
         let delivery = *loaded.deliveries.first().ok_or("missing queued delivery")?;
         assert_eq!(delivery.digest, first_digest);
         finish_peer_delivery(&state, delivery.target, delivery.digest)?;
-        assert!(load_peer_deliveries(&state, now)?.deliveries.is_empty());
+        let deliveries = load_peer_deliveries(&state, now)?.deliveries;
+        assert!(deliveries.is_empty(), "{deliveries:?}");
         Ok(())
     }
 
@@ -241,12 +242,10 @@ mod tests {
         fs::set_permissions(&source, fs::Permissions::from_mode(0o600))?;
         let digest = crate::update::prepare_outbound(&state, &source)?;
         let _queued = queue_peer_delivery(&state, NodeId::from_bytes([9; 32]), digest, 100)?;
-        assert!(
-            load_peer_deliveries(&state, 100 + DELIVERY_LIFETIME_SECONDS)?
-                .deliveries
-                .is_empty()
-        );
-        assert!(load_peer_deliveries(&state, 100)?.deliveries.is_empty());
+        let deliveries = load_peer_deliveries(&state, 100 + DELIVERY_LIFETIME_SECONDS)?.deliveries;
+        assert!(deliveries.is_empty(), "{deliveries:?}");
+        let deliveries = load_peer_deliveries(&state, 100)?.deliveries;
+        assert!(deliveries.is_empty(), "{deliveries:?}");
         Ok(())
     }
 
@@ -263,12 +262,12 @@ mod tests {
         let supervisor_lock = crate::update::UpdateLock::acquire(&state)?;
         assert_eq!(load_peer_deliveries(&state, 101)?.deliveries.len(), 1);
         let deferred = load_peer_deliveries(&state, 100 + DELIVERY_LIFETIME_SECONDS)?;
-        assert!(deferred.deliveries.is_empty());
+        assert!(deferred.deliveries.is_empty(), "{:?}", deferred.deliveries);
         assert!(deferred.cleanup_needed);
         drop(supervisor_lock);
         super::prune_expired_peer_deliveries(&state, 100 + DELIVERY_LIFETIME_SECONDS)?;
         let recovered = load_peer_deliveries(&state, 100)?;
-        assert!(recovered.deliveries.is_empty());
+        assert!(recovered.deliveries.is_empty(), "{:?}", recovered.deliveries);
         assert!(!recovered.cleanup_needed);
         Ok(())
     }

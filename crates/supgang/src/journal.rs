@@ -591,7 +591,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("state.journal");
         let (mut journal, empty) = Journal::open(&path)?;
-        assert!(empty.is_empty());
+        assert!(empty.is_empty(), "{empty:?}");
         journal.append(b"first")?;
         journal.append(b"second")?;
         drop(journal);
@@ -618,7 +618,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("state.journal");
         let (mut journal, empty) = Journal::open(&path)?;
-        assert!(empty.is_empty());
+        assert!(empty.is_empty(), "{empty:?}");
         journal.append(b"old")?;
         journal.append(b"latest")?;
         let before = journal.byte_len()?;

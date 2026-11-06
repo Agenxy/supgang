@@ -23,19 +23,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install the Python script runner
-        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.11.16"
-          python-version: "3.13.13"
+          version: "0.13.6"
+          python-version: "3.15.2"
           enable-cache: false
       - name: Install the pinned Python interpreter
         # setup-uv only selects this version; the gate runs uv offline, so the
         # interpreter must already be installed.
-        run: uv python install 3.13.13
+        run: uv python install 3.15.2
       - name: Run repository gate
         env:
           SUPGANG_QUALITY_CACHE: off
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install cargo-audit
@@ -63,11 +63,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Enforce dependency policy
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          rust-version: "1.97.1"
+          rust-version: "1.99.1"
           command: check licenses sources
