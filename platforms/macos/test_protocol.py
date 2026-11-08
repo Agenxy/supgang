@@ -30,6 +30,8 @@ def main() -> None:
                  version + b"probe\nextra\n", version + b"probe", version + b"unknown\n",
                  version + b"generate --maybe\n", version + b"public --sealed zz\n",
                  version + b"public --sealed AA\n", version + b"sign --sealed 01 00\n",
+                 version + b"generate-agreement --presence\n", version + b"agree --sealed 01\n",
+                 version + b"agree --sealed 01 00\n", version + b"agree --sealed 01 " + b"AA" * 33 + b"\n",
                  b"a" * 16385 + b"\n"]
     for request in malformed:
         assert exchange(request) == version + b"error protocol\n", "malformed framing was not refused"

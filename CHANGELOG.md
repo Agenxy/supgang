@@ -8,6 +8,15 @@ The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Add `supgang vault` (ADR 0009). It keeps the tokens that agents and tools need sealed to this
+  Mac's Secure Enclave, so they stop prompting for keychain access.
+  - `add` reads a hidden paste, stdin or one login-keychain item.
+  - `run --env VAR=name -- PROGRAM` hands a secret only to that program's environment.
+  - `get` writes to a pipe and refuses a terminal.
+  - Every read is audited before it is released, without the value.
+  - Any program running as the owner can read the vault. Telling one program from another waits
+    for a stable code signature (ADR 0007).
+  - `make install` now builds and installs the `supgang-secure-enclave` helper beside `supgang`.
 - Patch RustSec advisories: `quinn-proto` 0.11.19 (peer-triggered panics and memory growth),
   `rustls` 0.23.46, `rustls-webpki` 0.103.16, `crypto-bigint`, `ctutils`, and `tokio` 1.53.3
   (unsound `AsyncFd` constructors). Record the unmaintained-only `atomic-polyfill` advisory, reached

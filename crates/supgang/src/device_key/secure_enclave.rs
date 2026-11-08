@@ -97,6 +97,49 @@ impl DeviceSigner for EnclaveSigner {
     }
 }
 
+/// Creates an unattended Secure Enclave key-agreement key for the secret vault.
+/// Returns its restore record and 33-byte compressed public key.
+///
+/// # Errors
+/// Refuses when the helper or hardware is unavailable or answers out of protocol.
+pub fn generate_agreement() -> Result<(SealedKey, Vec<u8>), CustodyError> {
+    let response = helper::invoke("generate-agreement", Duration::from_mins(1))?;
+    let fields: Vec<_> = response.split(' ').collect();
+    let ["agreement", blob, public] = fields.as_slice() else {
+        return Err(UnavailableReason::HelperProtocol.into());
+    };
+    let sealed = SealedKey {
+        kind: CustodyKind::SecureEnclave,
+        bytes: decode_hex(blob)?,
+    };
+    sealed.require_kind(CustodyKind::SecureEnclave)?;
+    Ok((sealed, decode_hex(public)?))
+}
+
+/// The raw P-256 shared secret between a vault agreement key and one peer key.
+///
+/// # Errors
+/// Refuses another custody kind, an unavailable helper and protocol violations.
+pub fn agree(sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>, CustodyError> {
+    sealed.require_kind(CustodyKind::SecureEnclave)?;
+    let request = Zeroizing::new(format!(
+        "agree --sealed {} {}",
+        hex::encode(&sealed.bytes),
+        hex::encode(peer)
+    ));
+    let response = helper::invoke(&request, Duration::from_secs(5))?;
+    let raw = response
+        .strip_prefix("agree ")
+        .ok_or(UnavailableReason::HelperProtocol)?;
+    let bytes = Zeroizing::new(decode_hex(raw)?);
+    let mut secret = Zeroizing::new([0_u8; 32]);
+    if bytes.len() != secret.len() {
+        return Err(UnavailableReason::HelperProtocol.into());
+    }
+    secret.copy_from_slice(&bytes);
+    Ok(secret)
+}
+
 fn decode_hex(value: &str) -> Result<Vec<u8>, UnavailableReason> {
     if !value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return Err(UnavailableReason::HelperProtocol);
