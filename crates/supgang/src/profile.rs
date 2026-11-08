@@ -354,7 +354,8 @@ mod tests {
         let local = state::initialize(&state_path)?;
         let node = local.identity().device.node_id();
         let automatic = load_or_create(&state_path, node)?;
-        assert!(!automatic.as_str().is_empty());
+        let name = automatic.as_str();
+        assert!(!name.is_empty(), "{name:?}");
         set(&state_path, &PeerName::new("HomeServer")?)?;
         assert_eq!(load_or_create(&state_path, node)?.as_str(), "HomeServer");
         assert_eq!(

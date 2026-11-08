@@ -81,7 +81,7 @@ fn exposures_lists_saved_policy_without_mapped_addresses() -> Result<(), Box<dyn
     assert!(human.contains("preview: 127.0.0.1:14331"));
     assert!(human.contains("4 per peer, 16 total, 7200 seconds idle"));
     assert!(!human.contains("8.8.8.8"));
-    assert!(error.is_empty());
+    assert!(error.is_empty(), "{error:?}");
     Ok(())
 }
 
@@ -92,8 +92,8 @@ fn help_and_version_are_successful_stdout_commands() {
         let mut error = Vec::new();
         let code = run(["supgang", argument], &mut output, &mut error);
         assert_eq!(code, std::process::ExitCode::SUCCESS);
-        assert!(!output.is_empty());
-        assert!(error.is_empty());
+        assert!(!output.is_empty(), "{output:?}");
+        assert!(error.is_empty(), "{error:?}");
     }
 }
 
@@ -116,7 +116,7 @@ fn background_service_help_uses_plain_lifecycle_commands() -> Result<(), Box<dyn
     let mut error = Vec::new();
     let code = run(["supgang", "service", "--help"], &mut output, &mut error);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
-    assert!(error.is_empty());
+    assert!(error.is_empty(), "{error:?}");
     let help = std::str::from_utf8(&output)?;
     for command in ["install", "status", "start", "stop", "restart", "uninstall"] {
         assert!(help.contains(command));
@@ -154,7 +154,7 @@ fn anchor_help_describes_a_user_owned_meeting_point() -> Result<(), Box<dyn std:
     let mut error = Vec::new();
     let code = run(["supgang", "anchor", "--help"], &mut output, &mut error);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
-    assert!(error.is_empty());
+    assert!(error.is_empty(), "{error:?}");
     assert!(String::from_utf8(output)?.contains("user-owned meeting point"));
     Ok(())
 }
@@ -486,7 +486,7 @@ fn assert_human_fleet_output(founder_state: &str) -> Result<(), Box<dyn std::err
     assert!(human.contains("connection unknown"));
     assert!(!human.contains("device-signed"));
     assert!(human.contains("supgang --help"));
-    assert!(human_error.is_empty());
+    assert!(human_error.is_empty(), "{human_error:?}");
 
     let mut detailed = Vec::new();
     assert_eq!(

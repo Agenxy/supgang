@@ -54,7 +54,8 @@ fn unreachable_current_records_do_not_delay_the_only_usable_historical_family() 
     assert_eq!(addresses, &["8.8.8.8:44330".parse()?]);
     assert_eq!(eligible_hints(&hints, &[ipv6]).len(), 6);
     assert_eq!(eligible_hints(&hints, &[ipv4, ipv6]).len(), 7);
-    assert!(eligible_hints(&hints, &[]).is_empty());
+    let eligible = eligible_hints(&hints, &[]);
+    assert!(eligible.is_empty(), "{eligible:?}");
     let mut seen = std::collections::BTreeSet::new();
     for cycle in 0..16 {
         let candidates = recovery_candidates(&hints, &[ipv4, ipv6], cycle);
@@ -89,6 +90,7 @@ fn unreachable_current_records_do_not_delay_the_only_usable_historical_family() 
         7,
         "every eligible historical address must receive an attempt"
     );
-    assert!(recovery_candidates(&hints, &[], 0).is_empty());
+    let candidates = recovery_candidates(&hints, &[], 0);
+    assert!(candidates.is_empty(), "{candidates:?}");
     Ok(())
 }
