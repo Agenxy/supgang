@@ -39,7 +39,7 @@ thiserror = { version = "=2.0.20", default-features = false }
 tough = { version = "=0.24.0", default-features = false }
 url = { version = "=2.5.8", default-features = false }
 zeroize = { version = "=1.9.0", default-features = false }
-rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std", "termios"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["event", "fs", "process", "std", "termios"] }
 quinn = { version = "=0.11.11", default-features = false, features = ["bloom", "runtime-tokio", "rustls-aws-lc-rs"] }
 rcgen = { version = "=0.14.9", default-features = false, features = ["aws_lc_rs", "crypto", "zeroize"] }
 rmcp = { version = "=3.1.3", default-features = false, features = ["server"] }

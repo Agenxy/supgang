@@ -107,7 +107,8 @@ addresses.
   - Tunnel setup against a service that never answers gives up at its caller's deadline (300 ms),
     not after the 10 s setup timeout.
   - A reply sent one byte every 100 ms still ends at a 500 ms deadline. Every read and write is
-    cut to the time left on the frame's deadline, rather than given a fresh timeout.
+    cut to the time left on the frame's deadline, rather than given a fresh timeout. The socket
+    waits in `poll`, because on macOS changing a socket timeout fails once the peer has closed.
 - `cli_tunnel/tests.rs`:
   - `connect` waits through both retryable refusals and announces once.
   - It returns any other refusal after one attempt.

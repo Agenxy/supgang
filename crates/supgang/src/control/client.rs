@@ -14,6 +14,7 @@ use super::{
     bounded_length, encode_request, validate_existing_socket_metadata, validate_peer_blocking,
 };
 use crate::{ids::NodeId, storage};
+use rustix::event::{PollFd, PollFlags, Timespec};
 
 /// How long an owner's command waits for the service. A loaded computer can
 /// leave the service's single thread unscheduled for seconds; an owner's
@@ -52,6 +53,9 @@ pub fn connect_service_by(
         unresponsive @ ControlError::Unresponsive { .. } => unresponsive.to_string(),
         _ => fallback.to_owned(),
     };
+    stream
+        .set_nonblocking(true)
+        .map_err(|_| "local tunnel nonblocking setup failed")?;
     let mut bounded = ByDeadline {
         stream: &mut stream,
         deadline,
@@ -69,15 +73,6 @@ pub fn connect_service_by(
         ControlReply::Error { message } => return Err(message),
         _ => return Err("local runtime does not support service tunnels; refresh its installed artifact".to_owned()),
     }
-    stream
-        .set_read_timeout(None)
-        .map_err(|_| "local tunnel timeout removal failed")?;
-    stream
-        .set_write_timeout(None)
-        .map_err(|_| "local tunnel timeout removal failed")?;
-    stream
-        .set_nonblocking(true)
-        .map_err(|_| "local tunnel nonblocking setup failed")?;
     Ok(stream)
 }
 
@@ -175,31 +170,52 @@ fn peer_pid(stream: &BlockingUnixStream) -> Result<u32, ControlError> {
 }
 
 /// A stream whose every read and write gives up at one deadline, so a frame
-/// that arrives in pieces cannot stretch the bound one timeout per piece.
+/// that arrives in pieces cannot stretch the bound one timeout per piece. The
+/// socket is nonblocking and waits in `poll`: changing a socket timeout fails
+/// on macOS once the peer has closed, even with its reply still unread.
 struct ByDeadline<'a> {
     stream: &'a mut BlockingUnixStream,
     deadline: Instant,
 }
 
 impl ByDeadline<'_> {
-    fn remaining(&self) -> io::Result<Duration> {
-        Some(self.deadline.saturating_duration_since(Instant::now()))
-            .filter(|left| !left.is_zero())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
+    fn ready(&self, flags: PollFlags) -> io::Result<()> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        let timeout = Timespec {
+            tv_sec: left.as_secs().try_into().unwrap_or(i64::MAX),
+            tv_nsec: left.subsec_nanos().into(),
+        };
+        let mut descriptors = [PollFd::new(&*self.stream, flags)];
+        match rustix::event::poll(&mut descriptors, Some(&timeout)) {
+            Ok(0) => Err(io::ErrorKind::TimedOut.into()),
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
 impl Read for ByDeadline<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.stream.set_read_timeout(Some(self.remaining()?))?;
-        self.stream.read(buffer)
+        loop {
+            match self.stream.read(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.ready(PollFlags::IN)?,
+                result => return result,
+            }
+        }
     }
 }
 
 impl Write for ByDeadline<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.stream.set_write_timeout(Some(self.remaining()?))?;
-        self.stream.write(bytes)
+        loop {
+            match self.stream.write(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.ready(PollFlags::OUT)?,
+                result => return result,
+            }
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
