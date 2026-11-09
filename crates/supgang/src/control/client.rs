@@ -37,41 +37,33 @@ pub fn connect_service_by(
     name: [u8; 16],
     deadline: Instant,
 ) -> Result<BlockingUnixStream, String> {
-    let remaining = || {
-        Some(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(TUNNEL_SETUP_TIMEOUT),
-        )
-        .filter(|left| !left.is_zero())
-        .ok_or_else(|| ControlError::Unresponsive { seconds: 0 }.to_string())
-    };
+    let deadline = deadline.min(Instant::now() + TUNNEL_SETUP_TIMEOUT);
+    let allowed = deadline.saturating_duration_since(Instant::now());
+    if allowed.is_zero() {
+        return Err(ControlError::Unresponsive { seconds: 0 }.to_string());
+    }
     let directory = storage::validate_directory(state_directory).map_err(|_| "local service state is unsafe")?;
     let path = directory.join(CONTROL_SOCKET_FILE_NAME);
     let metadata = fs::symlink_metadata(&path).map_err(|_| "start the local Supgang service before connecting")?;
     validate_existing_socket_metadata(&metadata).map_err(|_| "local service socket is unsafe")?;
     let mut stream = BlockingUnixStream::connect(path).map_err(|_| "local Supgang service is unavailable")?;
     validate_peer_blocking(&stream).map_err(|_| "local service belongs to another user")?;
-    let failed = |error, timeout, fallback: &str| match timed_out(error, timeout) {
+    let failed = |error, fallback: &str| match timed_out(error, allowed) {
         unresponsive @ ControlError::Unresponsive { .. } => unresponsive.to_string(),
         _ => fallback.to_owned(),
     };
-    let timeout = remaining()?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|_| "local tunnel timeout setup failed")?;
+    let mut bounded = ByDeadline {
+        stream: &mut stream,
+        deadline,
+    };
     write_blocking_frame(
-        &mut stream,
+        &mut bounded,
         &encode_request(ControlRequest::Connect { target, name }),
         MAX_REQUEST_BYTES,
     )
-    .map_err(|error| failed(error, timeout, "local tunnel request failed"))?;
-    let timeout = remaining()?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|_| "local tunnel timeout setup failed")?;
-    let bytes = read_blocking_frame(&mut stream, MAX_RESPONSE_BYTES)
-        .map_err(|error| failed(error, timeout, "local tunnel setup failed"))?;
+    .map_err(|error| failed(error, "local tunnel request failed"))?;
+    let bytes = read_blocking_frame(&mut bounded, MAX_RESPONSE_BYTES)
+        .map_err(|error| failed(error, "local tunnel setup failed"))?;
     match serde_json::from_slice::<ControlReply>(&bytes).map_err(|_| "local tunnel reply is invalid")? {
         ControlReply::Connected => {}
         ControlReply::Error { message } => return Err(message),
@@ -182,7 +174,40 @@ fn peer_pid(stream: &BlockingUnixStream) -> Result<u32, ControlError> {
         .ok_or(ControlError::WrongPeer)
 }
 
-fn write_blocking_frame(stream: &mut BlockingUnixStream, bytes: &[u8], maximum: usize) -> Result<(), ControlError> {
+/// A stream whose every read and write gives up at one deadline, so a frame
+/// that arrives in pieces cannot stretch the bound one timeout per piece.
+struct ByDeadline<'a> {
+    stream: &'a mut BlockingUnixStream,
+    deadline: Instant,
+}
+
+impl ByDeadline<'_> {
+    fn remaining(&self) -> io::Result<Duration> {
+        Some(self.deadline.saturating_duration_since(Instant::now()))
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
+    }
+}
+
+impl Read for ByDeadline<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(buffer)
+    }
+}
+
+impl Write for ByDeadline<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+fn write_blocking_frame(stream: &mut impl Write, bytes: &[u8], maximum: usize) -> Result<(), ControlError> {
     if bytes.is_empty() || bytes.len() > maximum {
         return Err(ControlError::InvalidRequest);
     }
@@ -192,7 +217,7 @@ fn write_blocking_frame(stream: &mut BlockingUnixStream, bytes: &[u8], maximum: 
     Ok(())
 }
 
-fn read_blocking_frame(stream: &mut BlockingUnixStream, maximum: usize) -> Result<Vec<u8>, ControlError> {
+fn read_blocking_frame(stream: &mut impl Read, maximum: usize) -> Result<Vec<u8>, ControlError> {
     let mut length_bytes = [0_u8; 4];
     stream.read_exact(&mut length_bytes)?;
     let length = bounded_length(length_bytes, maximum, ControlError::InvalidResponse)?;
