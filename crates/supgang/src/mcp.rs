@@ -15,7 +15,7 @@ use rmcp::{
     model::{
         CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverResult, Icon,
         Implementation, InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
-        ProtocolVersion, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+        ProtocolVersion, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
     },
     service::RequestContext,
 };
@@ -228,7 +228,7 @@ fn mark_data_uri() -> String {
 }
 
 impl ServerHandler for SupgangMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let implementation = Implementation::new("org.agenxy.supgang", VERSION)
             .with_title("Supgang")
             .with_description("Finds the current address of your own computers")
@@ -238,7 +238,7 @@ impl ServerHandler for SupgangMcp {
                     .with_mime_type("image/svg+xml")
                     .with_sizes(vec!["any".to_owned()]),
             ]);
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(implementation)
             .with_instructions(INSTRUCTIONS)

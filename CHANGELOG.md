@@ -26,6 +26,9 @@ that a remote refresh to this source runs under probation.
   - Any program running as the owner can read the vault. Telling one program from another waits
     for a stable code signature (ADR 0007).
   - `make install` now builds and installs the `supgang-secure-enclave` helper beside `supgang`.
+- Move `rmcp` to 3.9.0 for RUSTSEC-2026-0457, -0461 and -0462. All three are in its HTTP and OAuth
+  code. Supgang uses only the stdio server, so it was not exposed, but the audit gate denies every
+  advisory. Use the renamed `ServerConfig` and `ClientConfig` types.
 - Patch RustSec advisories: `quinn-proto` 0.11.19 (peer-triggered panics and memory growth),
   `rustls` 0.23.46, `rustls-webpki` 0.103.16, `crypto-bigint`, `ctutils`, and `tokio` 1.53.3
   (unsound `AsyncFd` constructors). Record the unmaintained-only `atomic-polyfill` advisory, reached
