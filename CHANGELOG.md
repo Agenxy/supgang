@@ -8,6 +8,15 @@ The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Wait up to 45 s in `supgang connect` while the service reconnects the peer. After a wake or a
+  network change the service needs 7 to 26 s to reconnect. During that time `connect`, and so an
+  SSH `ProxyCommand` or a supervised SSH forward, failed at once with "the peer is not connected
+  right now". It now prints one line to stderr and retries once a second. Any other refusal still
+  returns at once. Setup, including that wait, takes at most 45 s from the start of `connect` to
+  the first application byte: each wait for the service is cut to the time left.
+- `supgang tunnel-limits` no longer resets limits that were left out. A bare `tunnel-limits`
+  saved the defaults (4 per peer, 16 total, two hours), which quietly undid raised limits. It now
+  only shows the limits, and each flag changes only its own limit.
 - Add `supgang vault` (ADR 0009). It keeps the tokens that agents and tools need sealed to this
   Mac's Secure Enclave, so they stop prompting for keychain access.
   - `add` reads a hidden paste, stdin or one login-keychain item.
