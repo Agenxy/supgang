@@ -105,6 +105,11 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
     },
+    /// Keep tokens sealed to this Mac's Secure Enclave for your agents and tools.
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
     /// Show this computer's non-secret hive and node identifiers.
     Status,
     /// Show or change this computer's signed human-readable name.
@@ -372,4 +377,46 @@ pub enum ServiceCommand {
     Restart,
     /// Remove the background service without deleting Supgang data.
     Uninstall,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VaultCommand {
+    /// List stored secret names and notes; never their values.
+    List,
+    /// Store a secret read from stdin, or from a login-keychain item.
+    Add {
+        /// Lowercase name, e.g. github or anthropic-api.
+        name: String,
+        /// Short note on what the secret is for.
+        #[arg(long, default_value = "")]
+        note: String,
+        /// Replace a secret already stored under this name.
+        #[arg(long)]
+        replace: bool,
+        /// Copy the password of this login-keychain item (approve once).
+        #[arg(long, value_name = "SERVICE")]
+        from_keychain: Option<String>,
+        /// Keychain account, when several items share the service.
+        #[arg(long, value_name = "ACCOUNT", requires = "from_keychain")]
+        account: Option<String>,
+    },
+    /// Run a program with named secrets in its environment, never in its arguments.
+    Run {
+        /// An environment variable and a secret name, joined by `=`; repeat for several.
+        #[arg(long = "env", value_name = "VAR=NAME", required = true)]
+        env: Vec<String>,
+        /// The program and its arguments, after --.
+        #[arg(last = true, required = true, value_name = "PROGRAM")]
+        command: Vec<std::ffi::OsString>,
+    },
+    /// Write one secret to stdout for a pipe; refuses a terminal.
+    Get {
+        /// The secret's name.
+        name: String,
+    },
+    /// Delete one secret.
+    Remove {
+        /// The secret's name.
+        name: String,
+    },
 }

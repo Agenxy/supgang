@@ -25,9 +25,12 @@ endif
 endif
 	$(CARGO_CACHE) --profile release -- $(CARGO) install --frozen --force --root "$(INSTALL_ROOT)" --path crates/supgang-cli
 ifeq ($(shell uname -s),Darwin)
+	uv run --offline --script platforms/macos/build.py --beside "$(INSTALL_BIN)"
 ifneq ($(strip $(MACOS_CODESIGN_IDENTITY)),)
 	/usr/bin/codesign --force --sign "$(MACOS_CODESIGN_IDENTITY)" --identifier "org.agenxy.supgang.runtime" --options runtime --timestamp=none "$(INSTALL_BIN)"
 	/usr/bin/codesign --verify --strict --verbose=2 "$(INSTALL_BIN)"
+	/usr/bin/codesign --force --sign "$(MACOS_CODESIGN_IDENTITY)" --identifier "org.agenxy.supgang.secure-enclave" --options runtime --timestamp=none "$(INSTALL_ROOT)/bin/supgang-secure-enclave"
+	/usr/bin/codesign --verify --strict --verbose=2 "$(INSTALL_ROOT)/bin/supgang-secure-enclave"
 endif
 endif
 	"$(INSTALL_BIN)" --version

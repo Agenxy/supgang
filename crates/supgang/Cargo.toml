@@ -19,6 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait.workspace = true
+chacha20poly1305.workspace = true
 clap.workspace = true
 ed25519-dalek.workspace = true
 frost-core.workspace = true
@@ -27,6 +28,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 gethostname.workspace = true
 hex.workspace = true
+hkdf.workspace = true
 jiff.workspace = true
 minicbor.workspace = true
 p256.workspace = true

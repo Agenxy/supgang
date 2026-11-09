@@ -60,6 +60,7 @@ const RESERVED_TAGS: &[&str] = &[
     "unadvertise",
     "unexpose",
     "update",
+    "vault",
 ];
 
 /// A shell-friendly local nickname that never replaces a stable node ID.

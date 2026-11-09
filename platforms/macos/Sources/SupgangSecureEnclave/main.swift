@@ -98,12 +98,45 @@ private func generate(presence: Bool) throws -> String {
     return "generate \(CustodyWire.hex(key.dataRepresentation)) \(CustodyWire.hex(key.publicKey.compressedRepresentation))"
 }
 
+/// The vault's key-agreement key: unattended, so agents can read granted
+/// secrets without a prompt, and bound to this device's Secure Enclave.
+private func generateAgreement() throws -> String {
+    guard SecureEnclave.isAvailable else { throw Refusal.noHardware }
+    var error: Unmanaged<CFError>?
+    guard let access = SecAccessControlCreateWithFlags(
+        nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, [.privateKeyUsage], &error
+    ) else {
+        let code = error.map { CFErrorGetCode($0.takeRetainedValue()) } ?? -1
+        throw Refusal.refused(Int32(clamping: code))
+    }
+    let key = try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access, authenticationContext: context())
+    guard key.dataRepresentation.count <= 4096 else { throw Refusal.protocolError }
+    return "agreement \(CustodyWire.hex(key.dataRepresentation)) \(CustodyWire.hex(key.publicKey.compressedRepresentation))"
+}
+
+/// Raw P-256 x-coordinate shared secret with one compressed peer key. The
+/// caller derives every key from it; nothing here is stored.
+private func agree(blob: Data, peer: Data) throws -> String {
+    guard peer.count == 33 else { throw Refusal.protocolError }
+    guard SecureEnclave.isAvailable else { throw Refusal.noHardware }
+    let key = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob, authenticationContext: context())
+    let other = try P256.KeyAgreement.PublicKey(compressedRepresentation: peer)
+    let secret = try key.sharedSecretFromKeyAgreement(with: other)
+    return "agree \(secret.withUnsafeBytes { CustodyWire.hex($0) })"
+}
+
 private func run(_ fields: [Substring]) throws -> String {
     if fields == ["probe"] {
         return "probe \(CustodyWire.name) \(SecureEnclave.isAvailable ? "ready" : "no-hardware")"
     }
     if fields == ["generate", "--presence"] { return try generate(presence: true) }
     if fields == ["generate", "--no-presence"] { return try generate(presence: false) }
+    if fields == ["generate-agreement"] { return try generateAgreement() }
+    if fields.count == 4, fields[0] == "agree", fields[1] == "--sealed" {
+        return try agree(
+            blob: CustodyWire.decode(fields[2], maximum: 4096), peer: CustodyWire.decode(fields[3], maximum: 33)
+        )
+    }
     guard fields.count == 3 || fields.count == 4, fields[1] == "--sealed" else {
         throw Refusal.protocolError
     }

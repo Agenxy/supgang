@@ -590,6 +590,34 @@ returned only after a tool call, so configure the client according to the privac
 As elsewhere in Supgang, `device-signed` proves which authorized device made a claim; it does not
 prove that the address is reachable or that the device is uncompromised.
 
+## Keep agent tokens in the vault
+
+On a Mac, Supgang can hold the tokens your agents and tools need, sealed to that Mac's Secure
+Enclave, so they stop asking for keychain access. `make install` places the
+`supgang-secure-enclave` helper the vault needs beside `supgang`.
+
+```text
+supgang vault add github --note "gh for agents"            # paste the token; it is not shown
+supgang vault add openai --from-keychain "OpenAI API Key"   # approve one keychain copy
+supgang vault list
+supgang vault run --env GH_TOKEN=github -- gh pr list
+supgang vault get openai | some-tool --api-key-stdin
+supgang vault remove github
+```
+
+- `run` replaces itself with the program and puts each secret only in that program's environment.
+  Prefer it to `get`, so that tokens stay out of agent transcripts.
+- `get` writes to a pipe and refuses a terminal.
+- Each secret is encrypted to an enclave key that never leaves the Mac. The vault file holds only
+  ciphertext.
+- Every use is recorded, without the value, in `vault-audit.log` in the state directory.
+
+Any program running as your macOS user can read any secret in the vault. That is the cost of no
+prompts. Keep tokens that move money, unlock account recovery or control your identity out of
+it. [ADR 0009](docs/architecture/0009-secret-vault.md) records the design, its bounds and the
+slices still to come: host-bound git credentials, sharing with your other computers through the
+hive, and Touch ID-held secrets.
+
 ## Revoke a computer
 
 Run this on the root-authority computer:

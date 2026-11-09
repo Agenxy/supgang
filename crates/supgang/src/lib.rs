@@ -16,6 +16,7 @@ pub(crate) mod cli_service;
 pub(crate) mod cli_settings;
 pub(crate) mod cli_tunnel;
 pub(crate) mod cli_update;
+pub(crate) mod cli_vault;
 pub mod contact;
 pub(crate) mod control;
 pub mod device_key;
@@ -54,6 +55,7 @@ pub mod trust_profile;
 pub(crate) mod tunnel_policy;
 pub mod update;
 pub(crate) mod update_wire;
+pub mod vault;
 pub mod wire;
 
 /// Current product and wire-protocol version.

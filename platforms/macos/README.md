@@ -33,6 +33,8 @@ supgang/custody/v1 generate --presence
 supgang/custody/v1 generate --no-presence
 supgang/custody/v1 public --sealed <blob-hex>
 supgang/custody/v1 sign --sealed <blob-hex> <32-byte-digest-hex>
+supgang/custody/v1 generate-agreement
+supgang/custody/v1 agree --sealed <blob-hex> <33-byte-compressed-peer-key-hex>
 ```
 
 Success responses start with `supgang/custody/v1 ok` followed by:
@@ -43,6 +45,8 @@ Success responses start with `supgang/custody/v1 ok` followed by:
 | generate | `generate <blob-hex> <compressed-public-key-hex>` |
 | public | `public <compressed-public-key-hex>` |
 | sign | `sign <raw-signature-hex>` |
+| generate-agreement | `agreement <blob-hex> <compressed-public-key-hex>` |
+| agree | `agree <32-byte-shared-secret-hex>` |
 
 Errors start with `supgang/custody/v1 error`, then `no-hardware`,
 `owner-declined-presence`, `protocol`, or `refused <signed-integer>`.
@@ -58,6 +62,11 @@ signature against the restored public key and the requested message. The
 Swift digest overload signs the supplied SHA-256 digest without hashing it
 again. Presence keys use `[.privateKeyUsage, .userPresence]` with a fresh
 authentication context and no Touch ID reuse interval.
+
+The two agreement operations serve the secret vault (ADR 0009). The
+agreement key is unattended, `AfterFirstUnlockThisDeviceOnly`, so agents read
+granted secrets without a prompt. `agree` returns the raw P-256 x-coordinate;
+Rust derives every key from it and stores nothing it returns.
 
 Rust enforces the deadline, kills and reaps a hanging child, and accepts only
 one in-flight helper operation. The standalone helper expects its pipe caller
@@ -82,7 +91,7 @@ uv run --offline --script platforms/macos/test_protocol.py --helper /selected/la
 
 The helper is a custody primitive. It does not show or authorize a typed
 authority transaction. ADR 0003 records that remaining policy requirement;
-it must be met before live authority integration. Existing service-copy and
-update-slot installers carry only Supgang today. They do not distribute this
+it must be met before live authority integration. `make install` places the helper beside the installed `supgang`. Existing
+service-copy and update-slot installers carry only Supgang today. They do not distribute this
 optional sibling automatically; those contexts report `HelperMissing` until
 the helper is installed beside the executable they actually run.
