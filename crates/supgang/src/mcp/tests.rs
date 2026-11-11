@@ -9,7 +9,7 @@ use std::{
 
 use rmcp::{
     ClientServiceExt, ServiceExt,
-    model::{ClientInfo, ProtocolVersion},
+    model::{ClientConfig, ProtocolVersion},
     service::ClientLifecycleMode,
 };
 use serde_json::{Value, json};
@@ -161,7 +161,7 @@ async fn official_sdk_clients_use_legacy_initialize_and_modern_discover() -> Res
 
     let (client_transport, server_transport) = tokio::io::duplex(super::transport::MAX_MCP_RESPONSE_BYTES * 4);
     let legacy_server = spawn_server(directory.path(), server_transport);
-    let mut legacy_info = ClientInfo::default();
+    let mut legacy_info = ClientConfig::default();
     legacy_info.protocol_version = ProtocolVersion::V_2025_11_25;
     let legacy = legacy_info.serve(client_transport).await?;
     assert_eq!(
@@ -177,7 +177,7 @@ async fn official_sdk_clients_use_legacy_initialize_and_modern_discover() -> Res
 
     let (client_transport, server_transport) = tokio::io::duplex(super::transport::MAX_MCP_RESPONSE_BYTES * 4);
     let modern_server = spawn_server(directory.path(), server_transport);
-    let modern = ClientInfo::default()
+    let modern = ClientConfig::default()
         .serve_with_lifecycle(
             client_transport,
             ClientLifecycleMode::Discover {

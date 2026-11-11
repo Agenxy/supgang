@@ -8,6 +8,15 @@ The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Wait up to 45 s in `supgang connect` while the service reconnects the peer. After a wake or a
+  network change the service needs 7 to 26 s to reconnect. During that time `connect`, and so an
+  SSH `ProxyCommand` or a supervised SSH forward, failed at once with "the peer is not connected
+  right now". It now prints one line to stderr and retries once a second. Any other refusal still
+  returns at once. Setup, including that wait, takes at most 45 s from the start of `connect` to
+  the first application byte: each wait for the service is cut to the time left.
+- `supgang tunnel-limits` no longer resets limits that were left out. A bare `tunnel-limits`
+  saved the defaults (4 per peer, 16 total, two hours), which quietly undid raised limits. It now
+  only shows the limits, and each flag changes only its own limit.
 - Add `supgang vault` (ADR 0009). It keeps the tokens that agents and tools need sealed to this
   Mac's Secure Enclave, so they stop prompting for keychain access.
   - `add` reads a hidden paste, stdin or one login-keychain item.
@@ -17,6 +26,9 @@ that a remote refresh to this source runs under probation.
   - Any program running as the owner can read the vault. Telling one program from another waits
     for a stable code signature (ADR 0007).
   - `make install` now builds and installs the `supgang-secure-enclave` helper beside `supgang`.
+- Move `rmcp` to 3.9.0 for RUSTSEC-2026-0457, -0461 and -0462. All three are in its HTTP and OAuth
+  code. Supgang uses only the stdio server, so it was not exposed, but the audit gate denies every
+  advisory. Use the renamed `ServerConfig` and `ClientConfig` types.
 - Patch RustSec advisories: `quinn-proto` 0.11.19 (peer-triggered panics and memory growth),
   `rustls` 0.23.46, `rustls-webpki` 0.103.16, `crypto-bigint`, `ctutils`, and `tokio` 1.53.3
   (unsound `AsyncFd` constructors). Record the unmaintained-only `atomic-polyfill` advisory, reached

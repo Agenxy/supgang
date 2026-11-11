@@ -85,6 +85,84 @@ fn client_treats_a_safe_stale_socket_as_service_stopped() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn tunnel_setup_gives_up_at_its_callers_deadline() -> Result<(), Box<dyn std::error::Error>> {
+    // `connect` retries setup while a peer reconnects; a retry that starts
+    // just before its deadline must not then wait a full setup timeout.
+    let temporary = tempfile::tempdir()?;
+    let state_directory = temporary.path().join("state");
+    fs::create_dir(&state_directory)?;
+    fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
+    let socket = state_directory.join(super::CONTROL_SOCKET_FILE_NAME);
+    let _silent = BlockingUnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(300);
+    let result = super::connect_service_by(
+        &state_directory,
+        crate::ids::NodeId::from_bytes([7; 32]),
+        [0; 16],
+        deadline,
+    );
+    let elapsed = started.elapsed();
+    let Err(message) = result else {
+        return Err("a silent service admitted a tunnel".into());
+    };
+    assert!(message.contains("did not answer within 1 s"), "{message}");
+    assert!(elapsed < std::time::Duration::from_secs(1), "waited {elapsed:?}");
+    let passed = super::connect_service_by(
+        &state_directory,
+        crate::ids::NodeId::from_bytes([7; 32]),
+        [0; 16],
+        std::time::Instant::now(),
+    );
+    assert!(passed.is_err());
+    Ok(())
+}
+
+#[test]
+fn a_reply_that_trickles_in_cannot_stretch_the_setup_deadline() -> Result<(), Box<dyn std::error::Error>> {
+    // A per-read timeout would restart with every byte; the deadline must not.
+    use std::io::{Read, Write};
+    let temporary = tempfile::tempdir()?;
+    let state_directory = temporary.path().join("state");
+    fs::create_dir(&state_directory)?;
+    fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
+    let socket = state_directory.join(super::CONTROL_SOCKET_FILE_NAME);
+    let listener = BlockingUnixListener::bind(&socket)?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+    let service = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut request = [0_u8; 64];
+        let _read = stream.read(&mut request)?;
+        // A frame header announcing 64 bytes, then one byte every 100 ms.
+        stream.write_all(&64_u32.to_be_bytes())?;
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if stream.write_all(b" ").is_err() {
+                break;
+            }
+        }
+        Ok(())
+    });
+
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(500);
+    let result = super::connect_service_by(
+        &state_directory,
+        crate::ids::NodeId::from_bytes([7; 32]),
+        [0; 16],
+        deadline,
+    );
+    let elapsed = started.elapsed();
+    assert!(result.is_err(), "a trickled, incomplete reply admitted a tunnel");
+    assert!(elapsed < std::time::Duration::from_millis(900), "waited {elapsed:?}");
+    drop(result);
+    service.join().map_err(|_| "service thread panicked")??;
+    Ok(())
+}
+
+#[test]
 fn a_service_that_accepts_but_never_answers_is_reported_as_unresponsive() -> Result<(), Box<dyn std::error::Error>> {
     // A heavily loaded computer can leave the service unscheduled after the
     // kernel has accepted the connection. The owner must be told that, within

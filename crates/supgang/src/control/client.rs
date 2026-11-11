@@ -6,7 +6,7 @@ use std::{
     io::{self, Read, Write},
     os::unix::net::UnixStream as BlockingUnixStream,
     path::Path,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use super::{
@@ -14,6 +14,7 @@ use super::{
     bounded_length, encode_request, validate_existing_socket_metadata, validate_peer_blocking,
 };
 use crate::{ids::NodeId, storage};
+use rustix::event::{PollFd, PollFlags, Timespec};
 
 /// How long an owner's command waits for the service. A loaded computer can
 /// leave the service's single thread unscheduled for seconds; an owner's
@@ -25,44 +26,53 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const TUNNEL_SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn connect_service(state_directory: &Path, target: NodeId, name: [u8; 16]) -> Result<BlockingUnixStream, String> {
+    connect_service_by(state_directory, target, name, Instant::now() + TUNNEL_SETUP_TIMEOUT)
+}
+
+/// Opens a tunnel as `connect_service` does, but gives up at `deadline`: every
+/// wait for the service is cut to the time left, so a caller's overall bound
+/// holds however late its last attempt starts.
+pub fn connect_service_by(
+    state_directory: &Path,
+    target: NodeId,
+    name: [u8; 16],
+    deadline: Instant,
+) -> Result<BlockingUnixStream, String> {
+    let deadline = deadline.min(Instant::now() + TUNNEL_SETUP_TIMEOUT);
+    let allowed = deadline.saturating_duration_since(Instant::now());
+    if allowed.is_zero() {
+        return Err(ControlError::Unresponsive { seconds: 0 }.to_string());
+    }
     let directory = storage::validate_directory(state_directory).map_err(|_| "local service state is unsafe")?;
     let path = directory.join(CONTROL_SOCKET_FILE_NAME);
     let metadata = fs::symlink_metadata(&path).map_err(|_| "start the local Supgang service before connecting")?;
     validate_existing_socket_metadata(&metadata).map_err(|_| "local service socket is unsafe")?;
     let mut stream = BlockingUnixStream::connect(path).map_err(|_| "local Supgang service is unavailable")?;
-    stream
-        .set_read_timeout(Some(TUNNEL_SETUP_TIMEOUT))
-        .map_err(|_| "local tunnel timeout setup failed")?;
-    stream
-        .set_write_timeout(Some(TUNNEL_SETUP_TIMEOUT))
-        .map_err(|_| "local tunnel timeout setup failed")?;
     validate_peer_blocking(&stream).map_err(|_| "local service belongs to another user")?;
-    let failed = |error, fallback: &str| match timed_out(error, TUNNEL_SETUP_TIMEOUT) {
+    let failed = |error, fallback: &str| match timed_out(error, allowed) {
         unresponsive @ ControlError::Unresponsive { .. } => unresponsive.to_string(),
         _ => fallback.to_owned(),
     };
+    stream
+        .set_nonblocking(true)
+        .map_err(|_| "local tunnel nonblocking setup failed")?;
+    let mut bounded = ByDeadline {
+        stream: &mut stream,
+        deadline,
+    };
     write_blocking_frame(
-        &mut stream,
+        &mut bounded,
         &encode_request(ControlRequest::Connect { target, name }),
         MAX_REQUEST_BYTES,
     )
     .map_err(|error| failed(error, "local tunnel request failed"))?;
-    let bytes = read_blocking_frame(&mut stream, MAX_RESPONSE_BYTES)
+    let bytes = read_blocking_frame(&mut bounded, MAX_RESPONSE_BYTES)
         .map_err(|error| failed(error, "local tunnel setup failed"))?;
     match serde_json::from_slice::<ControlReply>(&bytes).map_err(|_| "local tunnel reply is invalid")? {
         ControlReply::Connected => {}
         ControlReply::Error { message } => return Err(message),
         _ => return Err("local runtime does not support service tunnels; refresh its installed artifact".to_owned()),
     }
-    stream
-        .set_read_timeout(None)
-        .map_err(|_| "local tunnel timeout removal failed")?;
-    stream
-        .set_write_timeout(None)
-        .map_err(|_| "local tunnel timeout removal failed")?;
-    stream
-        .set_nonblocking(true)
-        .map_err(|_| "local tunnel nonblocking setup failed")?;
     Ok(stream)
 }
 
@@ -138,7 +148,7 @@ fn timed_out(error: ControlError, timeout: Duration) -> ControlError {
     match error {
         ControlError::Io(io) if matches!(io.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
             ControlError::Unresponsive {
-                seconds: timeout.as_secs(),
+                seconds: timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0),
             }
         }
         other => other,
@@ -159,7 +169,61 @@ fn peer_pid(stream: &BlockingUnixStream) -> Result<u32, ControlError> {
         .ok_or(ControlError::WrongPeer)
 }
 
-fn write_blocking_frame(stream: &mut BlockingUnixStream, bytes: &[u8], maximum: usize) -> Result<(), ControlError> {
+/// A stream whose every read and write gives up at one deadline, so a frame
+/// that arrives in pieces cannot stretch the bound one timeout per piece. The
+/// socket is nonblocking and waits in `poll`: changing a socket timeout fails
+/// on macOS once the peer has closed, even with its reply still unread.
+struct ByDeadline<'a> {
+    stream: &'a mut BlockingUnixStream,
+    deadline: Instant,
+}
+
+impl ByDeadline<'_> {
+    fn ready(&self, flags: PollFlags) -> io::Result<()> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        let timeout = Timespec {
+            tv_sec: left.as_secs().try_into().unwrap_or(i64::MAX),
+            tv_nsec: left.subsec_nanos().into(),
+        };
+        let mut descriptors = [PollFd::new(&*self.stream, flags)];
+        match rustix::event::poll(&mut descriptors, Some(&timeout)) {
+            Ok(0) => Err(io::ErrorKind::TimedOut.into()),
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Read for ByDeadline<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.stream.read(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.ready(PollFlags::IN)?,
+                result => return result,
+            }
+        }
+    }
+}
+
+impl Write for ByDeadline<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        loop {
+            match self.stream.write(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.ready(PollFlags::OUT)?,
+                result => return result,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+fn write_blocking_frame(stream: &mut impl Write, bytes: &[u8], maximum: usize) -> Result<(), ControlError> {
     if bytes.is_empty() || bytes.len() > maximum {
         return Err(ControlError::InvalidRequest);
     }
@@ -169,7 +233,7 @@ fn write_blocking_frame(stream: &mut BlockingUnixStream, bytes: &[u8], maximum: 
     Ok(())
 }
 
-fn read_blocking_frame(stream: &mut BlockingUnixStream, maximum: usize) -> Result<Vec<u8>, ControlError> {
+fn read_blocking_frame(stream: &mut impl Read, maximum: usize) -> Result<Vec<u8>, ControlError> {
     let mut length_bytes = [0_u8; 4];
     stream.read_exact(&mut length_bytes)?;
     let length = bounded_length(length_bytes, maximum, ControlError::InvalidResponse)?;

@@ -137,9 +137,11 @@ where
             idle_seconds,
         }) => crate::cli_tunnel::limits(
             &state_directory,
-            usize::from(per_peer),
-            usize::from(total),
-            idle_seconds,
+            crate::cli_tunnel::LimitChanges {
+                per_peer: per_peer.map(usize::from),
+                total: total.map(usize::from),
+                idle_seconds,
+            },
             cli.json,
             output,
             error,

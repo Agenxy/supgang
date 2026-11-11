@@ -21,6 +21,9 @@ use crate::{cli_peer, ids::NodeId, storage, tunnel_policy::ExposureSnapshot};
 /// Filename of the private local-control socket inside protected state.
 pub const CONTROL_SOCKET_FILE_NAME: &str = "control.sock";
 pub const STARTUP_ID_ENV: &str = "SUPGANG_STARTUP_ID";
+/// Tunnel refusals that end on their own once the service reconnects the peer.
+pub const PEER_NOT_CONNECTED: &str = "the peer is not connected right now; Supgang keeps reconnecting on its own. Retry shortly, or check `supgang peers`";
+pub const PEER_AUTHORIZATION_LAPSED: &str = "the peer's session authorization has lapsed; Supgang renews it on its next contact. Retry shortly, or check `supgang peers`";
 
 pub fn startup_id() -> String {
     std::env::var(STARTUP_ID_ENV)
@@ -606,7 +609,7 @@ mod client;
 
 #[cfg(test)]
 use client::request_within;
-pub use client::{connect_service, probe, request, request_observed};
+pub use client::{connect_service, connect_service_by, probe, request, request_observed};
 
 #[cfg(test)]
 mod tests;

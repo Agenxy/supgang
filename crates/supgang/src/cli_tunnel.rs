@@ -1,6 +1,11 @@
 //! Owner exposure commands and byte-only peer service transport.
 
-use std::{io::Write, path::Path, process::ExitCode};
+use std::{
+    io::Write,
+    path::Path,
+    process::ExitCode,
+    time::{Duration, Instant},
+};
 
 use crate::{
     cli::{render_error, render_json},
@@ -56,6 +61,40 @@ pub fn add_mapped(
     }
 }
 
+/// The most `connect` spends setting up a tunnel, from its start to the first
+/// application byte, including any wait for a peer the service is reconnecting.
+/// A roam or wake takes 7 to 26 s; QUIC's idle timeout ends a stale path at 45 s.
+const RECONNECT_WAIT: Duration = Duration::from_secs(45);
+const RECONNECT_RETRY: Duration = Duration::from_secs(1);
+
+/// Retries `attempt` while it is refused only because the peer is between
+/// connections, so an SSH started just after a wake or network change waits
+/// for the reconnect instead of failing. Any other refusal returns at once.
+/// `attempt` must itself give up at `deadline`; no retry starts after it.
+fn wait_for_peer<T>(
+    deadline: Instant,
+    retry: Duration,
+    mut attempt: impl FnMut() -> Result<T, String>,
+    mut announce: impl FnMut(),
+) -> Result<T, String> {
+    let mut announced = false;
+    loop {
+        match attempt() {
+            Err(message)
+                if (message == control::PEER_NOT_CONNECTED || message == control::PEER_AUTHORIZATION_LAPSED)
+                    && Instant::now() + retry < deadline =>
+            {
+                if !announced {
+                    announce();
+                    announced = true;
+                }
+                std::thread::sleep(retry);
+            }
+            result => return result,
+        }
+    }
+}
+
 pub fn connect(directory: &Path, peer: &str, name: &str, json: bool, error: &mut dyn Write) -> ExitCode {
     let result = (|| {
         if json {
@@ -68,8 +107,22 @@ pub fn connect(directory: &Path, peer: &str, name: &str, json: bool, error: &mut
         // leaves only its stdin and stdout, which the ssh process holds, to end it.
         // Already leading a group, as an interactive shell may arrange, is fine.
         let _session = rustix::process::setsid();
+        // Resolving the name waits at most the owner timeout, well inside this.
+        let deadline = Instant::now() + RECONNECT_WAIT;
         let target = cli_control::resolve_peer_node(directory, peer)?;
-        let stream = control::connect_service(directory, target, tunnel_policy::encoded_name(&name))?;
+        let name = tunnel_policy::encoded_name(&name);
+        let stream = wait_for_peer(
+            deadline,
+            RECONNECT_RETRY,
+            || control::connect_service_by(directory, target, name, deadline),
+            || {
+                let _write = writeln!(
+                    error,
+                    "{peer} is reconnecting; waiting up to {} s",
+                    RECONNECT_WAIT.as_secs()
+                );
+            },
+        )?;
         let runtime = transport::build_runtime().map_err(|_| "service transport runtime setup failed")?;
         runtime.block_on(async {
             let socket = tokio::net::UnixStream::from_std(stream).map_err(|_| "local tunnel socket setup failed")?;
@@ -137,8 +190,9 @@ pub fn expose(
     }
 }
 
-pub fn exposures(directory: &Path, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
-    let result = (|| match control::request(directory, ControlRequest::Exposures)
+/// The exposures and limits in force: the running service's, else the saved policy.
+fn snapshot(directory: &Path) -> Result<(&'static str, tunnel_policy::ExposureSnapshot), String> {
+    match control::request(directory, ControlRequest::Exposures)
         .map_err(|failure| request_failed(&failure, "local exposure listing request failed"))?
     {
         Some(ControlReply::Exposures { value }) => Ok(("running-service", value)),
@@ -153,8 +207,11 @@ pub fn exposures(directory: &Path, json: bool, output: &mut dyn Write, error: &m
                 tunnel_policy::ExposureSnapshot::from_policy(&policy, None),
             ))
         }
-    })();
-    match result {
+    }
+}
+
+pub fn exposures(directory: &Path, json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
+    match snapshot(directory) {
         Err(message) => render_error(json, &message, output, error),
         Ok((source, snapshot)) if json => render_json(
             &serde_json::json!({
@@ -200,16 +257,31 @@ pub fn exposures(directory: &Path, json: bool, output: &mut dyn Write, error: &m
     }
 }
 
+/// The limits an owner asked to change; each one left out keeps its saved value.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LimitChanges {
+    pub per_peer: Option<usize>,
+    pub total: Option<usize>,
+    pub idle_seconds: Option<u64>,
+}
+
 pub fn limits(
     directory: &Path,
-    per_peer: usize,
-    total: usize,
-    idle_seconds: u64,
+    changes: LimitChanges,
     json: bool,
     output: &mut dyn Write,
     error: &mut dyn Write,
 ) -> ExitCode {
+    // Without a change this only shows the limits. Saving defaults here once
+    // silently undid an owner's raised limits.
+    if changes.per_peer.is_none() && changes.total.is_none() && changes.idle_seconds.is_none() {
+        return exposures(directory, json, output, error);
+    }
     let result = (|| {
+        let saved = snapshot(directory)?.1.limits;
+        let per_peer = changes.per_peer.unwrap_or(saved.per_peer);
+        let total = changes.total.unwrap_or(saved.total);
+        let idle_seconds = changes.idle_seconds.unwrap_or(saved.idle_seconds);
         // A running service owns the policy and rewrites it on exposure
         // changes, so it saves the limits itself; a boot service cannot be
         // stopped without an administrator, and restarting it needs none.
@@ -258,3 +330,6 @@ pub fn limits(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

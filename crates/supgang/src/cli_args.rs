@@ -75,17 +75,19 @@ pub enum Command {
     Unexpose { name: String },
     /// List named loopback exposures and tunnel limits without changing policy.
     Exposures,
-    /// Set bounded tunnel admission and idle limits.
+    /// Show tunnel admission and idle limits, or change the ones given.
+    ///
+    /// A limit left out keeps its saved value; with none given, nothing changes.
     TunnelLimits {
-        /// Concurrent streams per peer, 1 through 64; default 4.
-        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
-        per_peer: u16,
-        /// Concurrent streams in this runtime, 1 through 128; default 16.
-        #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u16).range(1..=128))]
-        total: u16,
-        /// No-byte idle deadline, 60 through 86400 seconds; default two hours.
-        #[arg(long, default_value_t = 7_200, value_parser = clap::value_parser!(u64).range(60..=86_400))]
-        idle_seconds: u64,
+        /// Concurrent streams per peer, 1 through 64; a new computer starts at 4.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=64))]
+        per_peer: Option<u16>,
+        /// Concurrent streams in this runtime, 1 through 128; a new computer starts at 16.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=128))]
+        total: Option<u16>,
+        /// No-byte idle deadline, 60 through 86400 seconds; a new computer starts at two hours.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(60..=86_400))]
+        idle_seconds: Option<u64>,
     },
     /// Create a new private hive and this computer's identity.
     Init,

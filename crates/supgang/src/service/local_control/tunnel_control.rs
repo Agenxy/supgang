@@ -57,12 +57,8 @@ impl Refusal {
     pub(super) const fn message(self) -> &'static str {
         match self {
             Self::Revoked => "the peer is revoked; tunnels to it are refused",
-            Self::NotConnected => {
-                "the peer is not connected right now; Supgang keeps reconnecting on its own. Retry shortly, or check `supgang peers`"
-            }
-            Self::Unauthorized => {
-                "the peer's session authorization has lapsed; Supgang renews it on its next contact. Retry shortly, or check `supgang peers`"
-            }
+            Self::NotConnected => control::PEER_NOT_CONNECTED,
+            Self::Unauthorized => control::PEER_AUTHORIZATION_LAPSED,
             Self::RuntimeFull => {
                 "every tunnel this computer allows is in use; close idle sessions or raise the total with `supgang tunnel-limits`"
             }
