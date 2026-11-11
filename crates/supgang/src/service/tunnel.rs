@@ -180,9 +180,11 @@ pub(super) async fn outgoing(
             let message = if matches!(failure, Ok(Err(SetupFailure::Refused))) {
                 "the peer refused the service; check its exposure and runtime version"
             } else {
-                // A slow but live session must keep its other tunnels. Retire
-                // only a path that fails the bounded transport liveness probe.
-                if !super::liveness::is_live(active.connection()).await {
+                // A missed probe is inconclusive on a delayed or congested
+                // path. Only a transport-confirmed close may retire the
+                // session and its other tunnels.
+                if !super::liveness::is_live(active.connection()).await && active.connection().close_reason().is_some()
+                {
                     active.invalidate(b"tunnel setup failed");
                 }
                 crate::control::PEER_SESSION_FAILED

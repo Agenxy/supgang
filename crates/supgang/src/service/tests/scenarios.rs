@@ -142,10 +142,13 @@ fn asymmetric_rtt_rejection_preserves_the_old_tunnel_without_redial_loop() -> Re
     let laptop = world.fleet.computer(LAPTOP)?;
     world.network.move_host(laptop.host, Some(away))?;
     eventually(ROAMING, || {
-        Ok(connection(laptop, solis.node)?.filter(SocketAddr::is_ipv6))
+        let local = connection(laptop, solis.node)?;
+        let remote = connection(solis, laptop.node)?;
+        Ok(local.filter(|address| address.is_ipv6() && remote.is_some_and(|address| address.is_ipv6())))
     })?
-    .ok_or("the initial IPv6 session did not form")?;
-    let mut master = open_tunnel(laptop, solis.node, "ssh")?;
+    .ok_or("both peers did not establish the initial IPv6 session")?;
+    let mut master = open_tunnel(laptop, solis.node, "ssh")
+        .map_err(|error| format!("initial tunnel setup before RTT impairment: {error}"))?;
     master.write_all(b"before")?;
     world.fleet.keep_old_rtt_view(SOLIS, Duration::from_secs(8))?;
     world.fleet.shorten_drain(LAPTOP, Duration::from_secs(8))?;
