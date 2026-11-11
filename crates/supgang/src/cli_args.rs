@@ -47,7 +47,11 @@ pub enum EndpointCommand {
 /// Stable local and peer command surface.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Show the binary's static capabilities without reading state or contacting a service.
+    Capabilities,
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
+    ///
+    /// Exit 0 on success, 75 for a transient setup failure, or 3 for refusal or misconfiguration.
     Connect {
         /// Unique signed peer name, local tag, fingerprint or node identity.
         peer: String,

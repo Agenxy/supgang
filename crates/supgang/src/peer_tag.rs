@@ -31,6 +31,7 @@ const TEMPORARY_ATTEMPTS: usize = 8;
 const RESERVED_TAGS: &[&str] = &[
     "advertise",
     "anchor",
+    "capabilities",
     "connect",
     "doctor",
     "endpoint",

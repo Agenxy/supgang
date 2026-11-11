@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{LimitChanges, limits, wait_for_peer};
+use super::{LimitChanges, connect_failure_code, limits, wait_for_peer};
 use crate::{control, state, tunnel_policy};
 
 const SHORT: Duration = Duration::from_millis(1);
@@ -21,13 +21,38 @@ fn connect_waits_through_a_reconnect_and_announces_once() {
             match attempts.get() {
                 1 => Err(control::PEER_NOT_CONNECTED.to_owned()),
                 2 => Err(control::PEER_AUTHORIZATION_LAPSED.to_owned()),
+                3 => Err(control::PEER_SESSION_FAILED.to_owned()),
                 _ => Ok("stream"),
             }
         },
         || announcements.set(announcements.get() + 1),
     );
     assert_eq!(result, Ok("stream"));
-    assert_eq!((attempts.get(), announcements.get()), (3, 1));
+    assert_eq!((attempts.get(), announcements.get()), (4, 1));
+}
+
+#[test]
+fn connect_exit_codes_distinguish_transient_failure_from_refusal() {
+    for message in [
+        control::PEER_NOT_CONNECTED,
+        control::PEER_AUTHORIZATION_LAPSED,
+        control::PEER_SESSION_FAILED,
+        "local Supgang service is unavailable",
+        "start the local Supgang service before connecting",
+    ] {
+        assert_eq!(connect_failure_code(message), ExitCode::from(75), "{message}");
+    }
+    let unresponsive = control::ControlError::Unresponsive { seconds: 10 }.to_string();
+    assert_eq!(connect_failure_code(&unresponsive), ExitCode::from(75));
+    for message in [
+        "the peer refused the service; check its exposure and runtime version",
+        "the peer is revoked; tunnels to it are refused",
+        "every tunnel allowed to this peer is in use",
+        "no known peer with that name",
+        "service name is invalid",
+    ] {
+        assert_eq!(connect_failure_code(message), ExitCode::from(3), "{message}");
+    }
 }
 
 #[test]

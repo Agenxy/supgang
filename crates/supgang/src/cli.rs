@@ -108,6 +108,9 @@ where
             return ExitCode::from(EXIT_USAGE);
         }
     };
+    if matches!(cli.command, Some(Command::Capabilities)) {
+        return capabilities(cli.json, output, error);
+    }
     let state_directory = match cli.state_dir.map_or_else(storage::default_state_directory, Ok) {
         Ok(path) => path,
         Err(storage_error) => return render_error(cli.json, &storage_error.to_string(), output, error),
@@ -118,6 +121,7 @@ where
     }
 
     match cli.command {
+        Some(Command::Capabilities) => unreachable!("capabilities returns before state lookup"),
         Some(Command::Connect { peer, service }) => {
             crate::cli_tunnel::connect(&state_directory, &peer, &service, cli.json, error)
         }
@@ -297,6 +301,25 @@ where
             Ok(()) => ExitCode::SUCCESS,
             Err(supervisor_error) => render_error(cli.json, &supervisor_error.to_string(), output, error),
         },
+    }
+}
+
+fn capabilities(json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
+    const CAPABILITY: &str = "connect-exit-codes-v1";
+    if json {
+        render_json(
+            &serde_json::json!({
+                "schema": "supgang.capabilities/v1",
+                "version": VERSION,
+                "capabilities": [CAPABILITY],
+            }),
+            output,
+            error,
+        )
+    } else if writeln!(output, "Supgang {VERSION} capabilities: {CAPABILITY}").is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_FAILURE)
     }
 }
 

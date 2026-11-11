@@ -24,6 +24,7 @@ pub const STARTUP_ID_ENV: &str = "SUPGANG_STARTUP_ID";
 /// Tunnel refusals that end on their own once the service reconnects the peer.
 pub const PEER_NOT_CONNECTED: &str = "the peer is not connected right now; Supgang keeps reconnecting on its own. Retry shortly, or check `supgang peers`";
 pub const PEER_AUTHORIZATION_LAPSED: &str = "the peer's session authorization has lapsed; Supgang renews it on its next contact. Retry shortly, or check `supgang peers`";
+pub const PEER_SESSION_FAILED: &str = "the session to the peer failed during tunnel setup; Supgang reconnects on its own. Retry shortly, or check `supgang peers`";
 
 pub fn startup_id() -> String {
     std::env::var(STARTUP_ID_ENV)

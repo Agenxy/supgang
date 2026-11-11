@@ -8,6 +8,15 @@ The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Distinguish an explicit service refusal from a failed peer session during tunnel setup. A
+  refused service exits 3 immediately; a stale or temporarily unavailable session is retried
+  within `connect`'s existing 45-second setup deadline and exits 75 (EX_TEMPFAIL) if still down.
+  A local service that is unavailable or unresponsive also exits 75. The binary-only
+  `supgang --json capabilities` command advertises `connect-exit-codes-v1` for automation, with
+  no state, service or network access. An older peer that drops an unexposed-service stream
+  without an explicit refusal yields transient exit 75 after the 45-second deadline; newer
+  peers return exit 3 immediately. A missed liveness probe during setup leaves an otherwise
+  open session and its existing tunnels intact.
 - Wait up to 45 s in `supgang connect` while the service reconnects the peer. After a wake or a
   network change the service needs 7 to 26 s to reconnect. During that time `connect`, and so an
   SSH `ProxyCommand` or a supervised SSH forward, failed at once with "the peer is not connected

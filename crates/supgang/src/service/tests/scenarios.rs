@@ -142,10 +142,19 @@ fn asymmetric_rtt_rejection_preserves_the_old_tunnel_without_redial_loop() -> Re
     let laptop = world.fleet.computer(LAPTOP)?;
     world.network.move_host(laptop.host, Some(away))?;
     eventually(ROAMING, || {
-        Ok(connection(laptop, solis.node)?.filter(SocketAddr::is_ipv6))
+        let local = connection(laptop, solis.node)?;
+        let remote = connection(solis, laptop.node)?;
+        // The old home-LAN IPv6 session can still be reported on both ends
+        // just after the move. Solis must observe the laptop's new cellular
+        // source address before this scenario opens its first tunnel.
+        let cellular_source = remote.is_some_and(|address| {
+            matches!(address.ip(), IpAddr::V6(source) if source.segments().get(..4) == CELLULAR_PREFIX.segments().get(..4))
+        });
+        Ok(local.filter(|address| address.is_ipv6() && cellular_source))
     })?
-    .ok_or("the initial IPv6 session did not form")?;
-    let mut master = open_tunnel(laptop, solis.node, "ssh")?;
+    .ok_or("both peers did not establish the initial cellular IPv6 session")?;
+    let mut master = open_tunnel(laptop, solis.node, "ssh")
+        .map_err(|error| format!("initial tunnel setup before RTT impairment: {error}"))?;
     master.write_all(b"before")?;
     world.fleet.keep_old_rtt_view(SOLIS, Duration::from_secs(8))?;
     world.fleet.shorten_drain(LAPTOP, Duration::from_secs(8))?;
@@ -305,6 +314,7 @@ fn travel(world: &World, spec: SiteSpec) -> Result<(), Error> {
 }
 
 mod same_subnet;
+mod tunnel_setup;
 
 /// A refused tunnel says which limit or state refused it and what to do, so
 /// the owner can tell a full tunnel budget from a peer that is reconnecting.

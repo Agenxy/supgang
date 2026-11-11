@@ -2,6 +2,7 @@
 
 use std::{
     io::Write,
+    os::unix::net::UnixStream,
     path::Path,
     process::ExitCode,
     time::{Duration, Instant},
@@ -11,6 +12,7 @@ use crate::{
     cli::{render_error, render_json},
     cli_control,
     control::{self, ControlReply, ControlRequest},
+    ids::NodeId,
     record::ServiceName,
     state, transport, tunnel_policy,
 };
@@ -67,7 +69,7 @@ pub fn add_mapped(
 const RECONNECT_WAIT: Duration = Duration::from_secs(45);
 const RECONNECT_RETRY: Duration = Duration::from_secs(1);
 
-/// Retries `attempt` while it is refused only because the peer is between
+/// Retries `attempt` while it fails only because the peer is between
 /// connections, so an SSH started just after a wake or network change waits
 /// for the reconnect instead of failing. Any other refusal returns at once.
 /// `attempt` must itself give up at `deadline`; no retry starts after it.
@@ -81,7 +83,9 @@ fn wait_for_peer<T>(
     loop {
         match attempt() {
             Err(message)
-                if (message == control::PEER_NOT_CONNECTED || message == control::PEER_AUTHORIZATION_LAPSED)
+                if (message == control::PEER_NOT_CONNECTED
+                    || message == control::PEER_AUTHORIZATION_LAPSED
+                    || message == control::PEER_SESSION_FAILED)
                     && Instant::now() + retry < deadline =>
             {
                 if !announced {
@@ -93,6 +97,46 @@ fn wait_for_peer<T>(
             result => return result,
         }
     }
+}
+
+/// `EX_TEMPFAIL` is reserved for conditions a later attempt can resolve.
+pub fn connect_failure_code(message: &str) -> ExitCode {
+    if matches!(
+        message,
+        control::PEER_NOT_CONNECTED | control::PEER_AUTHORIZATION_LAPSED | control::PEER_SESSION_FAILED
+    ) || message.starts_with("the local Supgang service did not answer within ")
+        || matches!(
+            message,
+            "local Supgang service is unavailable" | "start the local Supgang service before connecting"
+        )
+    {
+        ExitCode::from(75)
+    } else {
+        ExitCode::from(3)
+    }
+}
+
+/// Opens the service stream within the one caller-owned setup deadline.
+pub fn wait_for_tunnel(
+    directory: &Path,
+    target: NodeId,
+    peer: &str,
+    name: [u8; 16],
+    deadline: Instant,
+    error: &mut dyn Write,
+) -> Result<UnixStream, String> {
+    wait_for_peer(
+        deadline,
+        RECONNECT_RETRY,
+        || control::connect_service_by(directory, target, name, deadline),
+        || {
+            let _write = writeln!(
+                error,
+                "{peer} is reconnecting; waiting up to {} s",
+                RECONNECT_WAIT.as_secs()
+            );
+        },
+    )
 }
 
 pub fn connect(directory: &Path, peer: &str, name: &str, json: bool, error: &mut dyn Write) -> ExitCode {
@@ -111,18 +155,7 @@ pub fn connect(directory: &Path, peer: &str, name: &str, json: bool, error: &mut
         let deadline = Instant::now() + RECONNECT_WAIT;
         let target = cli_control::resolve_peer_node(directory, peer)?;
         let name = tunnel_policy::encoded_name(&name);
-        let stream = wait_for_peer(
-            deadline,
-            RECONNECT_RETRY,
-            || control::connect_service_by(directory, target, name, deadline),
-            || {
-                let _write = writeln!(
-                    error,
-                    "{peer} is reconnecting; waiting up to {} s",
-                    RECONNECT_WAIT.as_secs()
-                );
-            },
-        )?;
+        let stream = wait_for_tunnel(directory, target, peer, name, deadline, error)?;
         let runtime = transport::build_runtime().map_err(|_| "service transport runtime setup failed")?;
         runtime.block_on(async {
             let socket = tokio::net::UnixStream::from_std(stream).map_err(|_| "local tunnel socket setup failed")?;
@@ -135,7 +168,7 @@ pub fn connect(directory: &Path, peer: &str, name: &str, json: bool, error: &mut
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             let _write = writeln!(error, "{message}");
-            ExitCode::from(3)
+            connect_failure_code(&message)
         }
     }
 }
