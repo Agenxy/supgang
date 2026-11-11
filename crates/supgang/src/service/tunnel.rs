@@ -97,13 +97,18 @@ pub(super) async fn incoming(
         let mut bytes = [0; 16];
         receive.read_exact(&mut bytes).await.map_err(|_| ())?;
         let name = tunnel_policy::decoded_name(bytes).map_err(|_| ())?;
-        let port = policy.borrow().port(&name).ok_or(())?;
+        let port = policy.borrow().port(&name);
+        let Some(port) = port else {
+            let _refusal = send.write_all(&[0]).await;
+            return Err(());
+        };
         if !authorization.is_current(unix_time().map_err(|_| ())?) {
             return Err(());
         }
-        let socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
-            .await
-            .map_err(|_| ())?;
+        let Ok(socket) = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await else {
+            let _refusal = send.write_all(&[0]).await;
+            return Err(());
+        };
         if !authorization.is_current(unix_time().map_err(|_| ())?) {
             return Err(());
         }
@@ -134,6 +139,11 @@ pub(super) async fn incoming(
     }
 }
 
+enum SetupFailure {
+    Refused,
+    SessionFailed,
+}
+
 pub(super) async fn outgoing(
     mut local: tokio::net::UnixStream,
     active: ActiveConnection,
@@ -146,32 +156,46 @@ pub(super) async fn outgoing(
     let setup = async {
         let (mut send, mut receive) = peer_stream::open(active.connection(), StreamKind::Service)
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| SetupFailure::SessionFailed)?;
         send.write_all(&tunnel_policy::encoded_name(&name))
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| SetupFailure::SessionFailed)?;
         let mut accepted = [0];
-        receive.read_exact(&mut accepted).await.map_err(|_| ())?;
+        receive
+            .read_exact(&mut accepted)
+            .await
+            .map_err(|_| SetupFailure::SessionFailed)?;
         if accepted != [1] {
-            return Err(());
+            return Err(SetupFailure::Refused);
         }
         Ok((send, receive))
     };
     let setup = tokio::select! {
         result = tokio::time::timeout(SETUP_TIMEOUT, setup) => result,
-        () = active.authorization().wait_until_invalid(unix_time().unwrap_or(u64::MAX)) => return,
+        () = active.authorization().wait_until_invalid(unix_time().unwrap_or(u64::MAX)) => Ok(Err(SetupFailure::SessionFailed)),
     };
-    let Ok(Ok((send, receive))) = setup else {
-        let _reply = crate::control::write_reply(
-            &mut local,
-            &crate::control::ControlReply::Error {
-                message:
-                    "peer refused the service or service setup timed out; check target exposure and runtime version"
-                        .to_owned(),
-            },
-        )
-        .await;
-        return;
+    let (send, receive) = match setup {
+        Ok(Ok(streams)) => streams,
+        failure => {
+            let message = if matches!(failure, Ok(Err(SetupFailure::Refused))) {
+                "the peer refused the service; check its exposure and runtime version"
+            } else {
+                // A slow but live session must keep its other tunnels. Retire
+                // only a path that fails the bounded transport liveness probe.
+                if !super::liveness::is_live(active.connection()).await {
+                    active.invalidate(b"tunnel setup failed");
+                }
+                crate::control::PEER_SESSION_FAILED
+            };
+            let _reply = crate::control::write_reply(
+                &mut local,
+                &crate::control::ControlReply::Error {
+                    message: message.to_owned(),
+                },
+            )
+            .await;
+            return;
+        }
     };
     if crate::control::write_reply_open(&mut local, &crate::control::ControlReply::Connected)
         .await

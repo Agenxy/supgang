@@ -32,6 +32,11 @@ that named IPv4 loopback service. `supgang connect solis ssh` carries applicatio
 stdout through the existing authenticated QUIC connection. SSH still checks its own host key and
 user credentials. `supgang unexpose ssh` removes the grant and closes existing peer sessions before
 acknowledging the change. No public TCP SSH port or arbitrary destination proxy is added.
+For an SSH `ProxyCommand`, `connect` exits 0 after a completed tunnel, 75 when the peer session
+or local service is temporarily unavailable after its bounded 45-second setup wait, and 3 for a
+peer refusal or misconfiguration. It keeps the reason on stderr. `supgang --json capabilities`
+reports the binary-only `connect-exit-codes-v1` capability without reading state or contacting a
+service; automation can use it to distinguish this contract from older builds of the same version.
 `supgang exposures` lists named loopback ports and tunnel limits without changing policy;
 `supgang --json exposures` emits the versioned `supgang.exposures/v1` schema. It reads the
 running service when available and protected saved state otherwise. The listing omits peer

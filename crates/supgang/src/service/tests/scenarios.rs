@@ -305,6 +305,7 @@ fn travel(world: &World, spec: SiteSpec) -> Result<(), Error> {
 }
 
 mod same_subnet;
+mod tunnel_setup;
 
 /// A refused tunnel says which limit or state refused it and what to do, so
 /// the owner can tell a full tunnel budget from a peer that is reconnecting.

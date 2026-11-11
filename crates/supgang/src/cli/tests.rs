@@ -42,6 +42,35 @@ fn run_json(arguments: &[&str]) -> Result<serde_json::Value, Box<dyn std::error:
 }
 
 #[test]
+fn capabilities_are_static_and_work_without_state() -> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let missing = temporary.path().join("no-state");
+    let missing = missing.to_str().ok_or("temporary path was not UTF-8")?;
+    assert_eq!(
+        run_json(&["supgang", "--state-dir", missing, "--json", "capabilities"])?,
+        serde_json::json!({
+            "schema": "supgang.capabilities/v1",
+            "version": crate::VERSION,
+            "capabilities": ["connect-exit-codes-v1"],
+        })
+    );
+    assert!(!std::path::Path::new(missing).exists());
+    let mut output = Vec::new();
+    let mut error = Vec::new();
+    assert_eq!(
+        run(
+            ["supgang", "--state-dir", missing, "capabilities"],
+            &mut output,
+            &mut error
+        ),
+        std::process::ExitCode::SUCCESS
+    );
+    assert!(String::from_utf8(output)?.contains("connect-exit-codes-v1"));
+    assert_eq!(error.len(), 0);
+    Ok(())
+}
+
+#[test]
 fn exposures_lists_saved_policy_without_mapped_addresses() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     let state_path = temporary.path().join("state");
