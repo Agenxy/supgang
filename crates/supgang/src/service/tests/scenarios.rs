@@ -144,9 +144,15 @@ fn asymmetric_rtt_rejection_preserves_the_old_tunnel_without_redial_loop() -> Re
     eventually(ROAMING, || {
         let local = connection(laptop, solis.node)?;
         let remote = connection(solis, laptop.node)?;
-        Ok(local.filter(|address| address.is_ipv6() && remote.is_some_and(|address| address.is_ipv6())))
+        // The old home-LAN IPv6 session can still be reported on both ends
+        // just after the move. Solis must observe the laptop's new cellular
+        // source address before this scenario opens its first tunnel.
+        let cellular_source = remote.is_some_and(|address| {
+            matches!(address.ip(), IpAddr::V6(source) if source.segments().get(..4) == CELLULAR_PREFIX.segments().get(..4))
+        });
+        Ok(local.filter(|address| address.is_ipv6() && cellular_source))
     })?
-    .ok_or("both peers did not establish the initial IPv6 session")?;
+    .ok_or("both peers did not establish the initial cellular IPv6 session")?;
     let mut master = open_tunnel(laptop, solis.node, "ssh")
         .map_err(|error| format!("initial tunnel setup before RTT impairment: {error}"))?;
     master.write_all(b"before")?;
