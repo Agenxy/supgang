@@ -8,6 +8,10 @@ The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- When only the CLI is updated, an older installed service can still return one ambiguous
+  setup-failure reply for either a refusal or a timeout. `connect` now retries that exact legacy
+  reply within its existing 45-second deadline and exits 75 if it persists, so automation never
+  mistakes a transient departed-path failure for a definite refusal (exit 3).
 - Distinguish an explicit service refusal from a failed peer session during tunnel setup. A
   refused service exits 3 immediately; a stale or temporarily unavailable session is retried
   within `connect`'s existing 45-second setup deadline and exits 75 (EX_TEMPFAIL) if still down.

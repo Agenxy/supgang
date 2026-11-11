@@ -85,7 +85,8 @@ fn wait_for_peer<T>(
             Err(message)
                 if (message == control::PEER_NOT_CONNECTED
                     || message == control::PEER_AUTHORIZATION_LAPSED
-                    || message == control::PEER_SESSION_FAILED)
+                    || message == control::PEER_SESSION_FAILED
+                    || message == control::LEGACY_SETUP_FAILED)
                     && Instant::now() + retry < deadline =>
             {
                 if !announced {
@@ -103,7 +104,10 @@ fn wait_for_peer<T>(
 pub fn connect_failure_code(message: &str) -> ExitCode {
     if matches!(
         message,
-        control::PEER_NOT_CONNECTED | control::PEER_AUTHORIZATION_LAPSED | control::PEER_SESSION_FAILED
+        control::PEER_NOT_CONNECTED
+            | control::PEER_AUTHORIZATION_LAPSED
+            | control::PEER_SESSION_FAILED
+            | control::LEGACY_SETUP_FAILED
     ) || message.starts_with("the local Supgang service did not answer within ")
         || matches!(
             message,
