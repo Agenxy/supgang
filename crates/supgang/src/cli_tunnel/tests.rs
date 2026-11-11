@@ -22,13 +22,20 @@ fn connect_waits_through_a_reconnect_and_announces_once() {
                 1 => Err(control::PEER_NOT_CONNECTED.to_owned()),
                 2 => Err(control::PEER_AUTHORIZATION_LAPSED.to_owned()),
                 3 => Err(control::PEER_SESSION_FAILED.to_owned()),
+                4 => Err(control::LEGACY_SETUP_FAILED.to_owned()),
                 _ => Ok("stream"),
             }
         },
         || announcements.set(announcements.get() + 1),
     );
     assert_eq!(result, Ok("stream"));
-    assert_eq!((attempts.get(), announcements.get()), (4, 1));
+    assert_eq!((attempts.get(), announcements.get()), (5, 1));
+}
+
+#[test]
+fn legacy_setup_reply_is_transient_even_when_the_old_service_cannot_disambiguate_it() {
+    assert_eq!(connect_failure_code(control::LEGACY_SETUP_FAILED), ExitCode::from(75));
+    assert_ne!(connect_failure_code(control::LEGACY_SETUP_FAILED), ExitCode::from(3));
 }
 
 #[test]
@@ -37,6 +44,7 @@ fn connect_exit_codes_distinguish_transient_failure_from_refusal() {
         control::PEER_NOT_CONNECTED,
         control::PEER_AUTHORIZATION_LAPSED,
         control::PEER_SESSION_FAILED,
+        control::LEGACY_SETUP_FAILED,
         "local Supgang service is unavailable",
         "start the local Supgang service before connecting",
     ] {

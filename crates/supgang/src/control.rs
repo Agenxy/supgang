@@ -25,6 +25,9 @@ pub const STARTUP_ID_ENV: &str = "SUPGANG_STARTUP_ID";
 pub const PEER_NOT_CONNECTED: &str = "the peer is not connected right now; Supgang keeps reconnecting on its own. Retry shortly, or check `supgang peers`";
 pub const PEER_AUTHORIZATION_LAPSED: &str = "the peer's session authorization has lapsed; Supgang renews it on its next contact. Retry shortly, or check `supgang peers`";
 pub const PEER_SESSION_FAILED: &str = "the session to the peer failed during tunnel setup; Supgang reconnects on its own. Retry shortly, or check `supgang peers`";
+/// Older services send this ambiguous reply for both refusal and setup timeout; current services do not emit it.
+pub const LEGACY_SETUP_FAILED: &str =
+    "peer refused the service or service setup timed out; check target exposure and runtime version";
 
 pub fn startup_id() -> String {
     std::env::var(STARTUP_ID_ENV)
