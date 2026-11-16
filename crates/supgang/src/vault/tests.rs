@@ -281,6 +281,33 @@ fn edited_signing_public_key_fails_authentication() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn canonical_downgrades_cannot_export_a_signing_seed() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    keygen(&path, &Software, "launcher", "")?;
+    let file = path.join(VAULT_FILE_NAME);
+    let original = fs::read(&file)?;
+
+    for version in [2_u8, 1] {
+        let mut document = decode(&original)?;
+        document.version = version;
+        if version == 2 {
+            let entry = document.entries.get_mut(0).ok_or("missing signing entry")?;
+            entry.kind = super::Kind::Secret;
+            entry.signing_public = None;
+        }
+        let downgraded = super::format::encode(&document)?;
+        // The hostile document is canonical, so only authentication can stop export.
+        assert!(decode(&downgraded).is_ok());
+        fs::write(&file, &downgraded)?;
+        assert!(matches!(
+            reveal(&path, &Software, "launcher", Some("get")),
+            Err(VaultError::Corrupt)
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn signing_context_and_digest_are_bound() -> Result<(), Box<dyn std::error::Error>> {
     let (_temporary, path) = state_directory()?;
     let identity = keygen(&path, &Software, "launcher", "")?;

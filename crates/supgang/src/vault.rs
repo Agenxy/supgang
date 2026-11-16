@@ -479,6 +479,10 @@ fn cipher(
 
 /// `domain || name || 0 || ephemeral || stored_at (big-endian) || note`: every
 /// field of the entry except the ciphertext and nonce, so editing any fails.
+/// Signing entries append `\0signing-ed25519\0 || public` to prevent decoding
+/// them as exportable secrets. This suffix cannot be forged through `note`
+/// because `validate_note`, called on both add and decode, forbids control
+/// characters including NUL. Keep that restriction if the note grammar changes.
 fn associated_data(
     name: &str,
     note: &str,
