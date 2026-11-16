@@ -53,6 +53,7 @@ const RESERVED_TAGS: &[&str] = &[
     "revoke",
     "run",
     "service",
+    "sign",
     "status",
     "supervise",
     "tag",

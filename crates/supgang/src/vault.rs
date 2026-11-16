@@ -22,10 +22,18 @@ use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit,
     aead::{Aead, Payload},
 };
-use minicbor::{Decoder, Encoder};
 use p256::{PublicKey, SecretKey, elliptic_curve::sec1::ToSec1Point};
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+mod format;
+mod signing;
+
+use format::{decode, encode};
+use signing::fingerprint;
+#[cfg(test)]
+use signing::{SIGN_DOMAIN, framed_message};
+pub use signing::{SignedDigest, SigningPublic, keygen, public_key, sign, validate_context};
 
 use crate::{
     artifact,
@@ -47,14 +55,14 @@ pub const MAX_NAME_BYTES: usize = 64;
 pub const MAX_NOTE_BYTES: usize = 200;
 
 const ENTRY_DOMAIN: &[u8] = b"supgang/vault-entry/v1\0";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const LOCK_FILE_NAME: &str = "vault.lock";
 const AUDIT_LOCK_FILE_NAME: &str = "vault-audit.lock";
 const PUBLIC_BYTES: usize = 33;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 const MAX_KEY_RECORD_BYTES: usize = 4 * 1024 + 16;
-const MAX_ENTRY_BYTES: usize = MAX_NAME_BYTES + MAX_NOTE_BYTES + PUBLIC_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + 64;
+const MAX_ENTRY_BYTES: usize = MAX_NAME_BYTES + MAX_NOTE_BYTES + PUBLIC_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + 128;
 const MAX_VAULT_BYTES: usize = MAX_KEY_RECORD_BYTES + PUBLIC_BYTES + MAX_SECRETS * MAX_ENTRY_BYTES + 64;
 const MAX_AUDIT_BYTES: u64 = 256 * 1024;
 const TEMPORARY_ATTEMPTS: usize = 8;
@@ -71,11 +79,20 @@ pub enum VaultError {
     /// The secret is empty or larger than the vault accepts.
     #[error("a secret must be 1 to 8192 bytes")]
     InvalidSecret,
+    /// The signing request is malformed.
+    #[error("signing context must be 1 to 64 ASCII bytes from [a-z0-9._-], and --sha256 must be 64 hex characters")]
+    InvalidSigningRequest,
+    /// Signing keys are never exportable.
+    #[error("signing keys cannot be exported with vault get or vault run; use supgang sign")]
+    SigningKeyNotExportable,
+    /// The entry is not a signing key.
+    #[error("the named vault entry is not an Ed25519 signing key")]
+    NotSigningKey,
     /// No secret has this name.
     #[error("no secret named {0} in this computer's vault")]
     NotFound(String),
     /// A secret already has this name and replacement was not requested.
-    #[error("a secret named {0} already exists; pass --replace to change it")]
+    #[error("a vault entry named {0} already exists")]
     AlreadyExists(String),
     /// The vault holds its maximum number of secrets.
     #[error("the vault already holds 128 secrets; remove one first")]
@@ -153,10 +170,31 @@ pub struct Summary {
     pub stored_at: u64,
     /// Plaintext length in bytes.
     pub bytes: usize,
+    /// Entry kind.
+    pub kind: &'static str,
+    /// Lowercase SHA-256 of the raw Ed25519 public key, when applicable.
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Kind {
+    Secret,
+    SigningEd25519,
+}
+
+impl Kind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Secret => "secret",
+            Self::SigningEd25519 => "signing-ed25519",
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
 struct Entry {
+    kind: Kind,
+    signing_public: Option<[u8; 32]>,
     name: String,
     note: String,
     stored_at: u64,
@@ -172,11 +210,14 @@ impl Entry {
             note: self.note.clone(),
             stored_at: self.stored_at,
             bytes: self.ciphertext.len().saturating_sub(TAG_BYTES),
+            kind: self.kind.label(),
+            fingerprint: self.signing_public.map(|key| fingerprint(&key)),
         }
     }
 }
 
 struct Document {
+    version: u8,
     key: SealedKey,
     public: [u8; PUBLIC_BYTES],
     entries: Vec<Entry>,
@@ -224,6 +265,7 @@ pub fn add(
     let mut document = load(&directory)?.map_or_else(
         || {
             enclave.generate().map(|(key, public)| Document {
+                version: VERSION,
                 key,
                 public,
                 entries: Vec::new(),
@@ -238,7 +280,7 @@ pub fn add(
     if existing.is_none() && document.entries.len() >= MAX_SECRETS {
         return Err(VaultError::Full);
     }
-    let entry = seal(&document.public, name, note, unix_now(), secret)?;
+    let entry = seal(&document.public, name, note, unix_now(), secret, Kind::Secret, None)?;
     let summary = entry.summary();
     if let Some(index) = existing {
         document.entries.remove(index);
@@ -278,6 +320,9 @@ pub fn reveal(
             .iter()
             .find(|entry| entry.name == name)
             .ok_or_else(|| VaultError::NotFound(name.to_owned()))?;
+        if entry.kind != Kind::Secret {
+            return Err(VaultError::SigningKeyNotExportable);
+        }
         let shared = enclave.agree(&document.key, &entry.ephemeral)?;
         open(&shared, &document.public, entry)
     })();
@@ -347,6 +392,8 @@ fn seal(
     note: &str,
     stored_at: u64,
     secret: &[u8],
+    kind: Kind,
+    signing_public: Option<[u8; 32]>,
 ) -> Result<Entry, VaultError> {
     let recipient = PublicKey::from_sec1_bytes(public).map_err(|_| VaultError::Corrupt)?;
     let ephemeral_secret = random_secret_key()?;
@@ -357,11 +404,13 @@ fn seal(
     let cipher = cipher(&raw, &ephemeral, public, name)?;
     let mut nonce = [0_u8; NONCE_BYTES];
     getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-    let aad = associated_data(name, note, stored_at, &ephemeral);
+    let aad = associated_data(name, note, stored_at, &ephemeral, kind, signing_public.as_ref());
     let ciphertext = cipher
         .encrypt(&nonce.into(), Payload { msg: secret, aad: &aad })
         .map_err(|_| VaultError::InvalidSecret)?;
     Ok(Entry {
+        kind,
+        signing_public,
         name: name.to_owned(),
         note: note.to_owned(),
         stored_at,
@@ -386,7 +435,14 @@ fn random_secret_key() -> Result<SecretKey, VaultError> {
 
 fn open(shared: &[u8; 32], public: &[u8; PUBLIC_BYTES], entry: &Entry) -> Result<Zeroizing<Vec<u8>>, VaultError> {
     let cipher = cipher(shared, &entry.ephemeral, public, &entry.name)?;
-    let aad = associated_data(&entry.name, &entry.note, entry.stored_at, &entry.ephemeral);
+    let aad = associated_data(
+        &entry.name,
+        &entry.note,
+        entry.stored_at,
+        &entry.ephemeral,
+        entry.kind,
+        entry.signing_public.as_ref(),
+    );
     cipher
         .decrypt(
             &entry.nonce.into(),
@@ -423,88 +479,32 @@ fn cipher(
 
 /// `domain || name || 0 || ephemeral || stored_at (big-endian) || note`: every
 /// field of the entry except the ciphertext and nonce, so editing any fails.
-fn associated_data(name: &str, note: &str, stored_at: u64, ephemeral: &[u8; PUBLIC_BYTES]) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(ENTRY_DOMAIN.len() + name.len() + 1 + PUBLIC_BYTES + 8 + note.len());
+/// Signing entries append `\0signing-ed25519\0 || public` to prevent decoding
+/// them as exportable secrets. This suffix cannot be forged through `note`
+/// because `validate_note`, called on both add and decode, forbids control
+/// characters including NUL. Keep that restriction if the note grammar changes.
+fn associated_data(
+    name: &str,
+    note: &str,
+    stored_at: u64,
+    ephemeral: &[u8; PUBLIC_BYTES],
+    kind: Kind,
+    signing_public: Option<&[u8; 32]>,
+) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(ENTRY_DOMAIN.len() + name.len() + 1 + PUBLIC_BYTES + 8 + note.len() + 48);
     aad.extend_from_slice(ENTRY_DOMAIN);
     aad.extend_from_slice(name.as_bytes());
     aad.push(0);
     aad.extend_from_slice(ephemeral);
     aad.extend_from_slice(&stored_at.to_be_bytes());
     aad.extend_from_slice(note.as_bytes());
+    if kind == Kind::SigningEd25519 {
+        aad.extend_from_slice(b"\0signing-ed25519\0");
+        if let Some(public) = signing_public {
+            aad.extend_from_slice(public);
+        }
+    }
     aad
-}
-
-/// Canonical CBOR `[1, key-record, public, [[name, note, stored_at, ephemeral, nonce, ciphertext]...]]`.
-fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-    let key = Zeroizing::new(document.key.encode()?);
-    let mut e = Encoder::new(Vec::new());
-    let entries = u64::try_from(document.entries.len()).map_err(|_| VaultError::Corrupt)?;
-    let mut result = e
-        .array(4)
-        .and_then(|e| e.u8(VERSION))
-        .and_then(|e| e.bytes(&key))
-        .and_then(|e| e.bytes(&document.public))
-        .and_then(|e| e.array(entries))
-        .map(|_| ());
-    for entry in &document.entries {
-        result = result.and_then(|()| {
-            e.array(6)
-                .and_then(|e| e.str(&entry.name))
-                .and_then(|e| e.str(&entry.note))
-                .and_then(|e| e.u64(entry.stored_at))
-                .and_then(|e| e.bytes(&entry.ephemeral))
-                .and_then(|e| e.bytes(&entry.nonce))
-                .and_then(|e| e.bytes(&entry.ciphertext))
-                .map(|_| ())
-        });
-    }
-    result.map_err(|_| VaultError::Corrupt)?;
-    Ok(Zeroizing::new(e.into_writer()))
-}
-
-fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
-    let parse = || -> Result<Document, minicbor::decode::Error> {
-        let invalid = |reason| minicbor::decode::Error::message(reason);
-        let mut d = Decoder::new(bytes);
-        if d.array()? != Some(4) || d.u8()? != VERSION {
-            return Err(invalid("vault version"));
-        }
-        let key = SealedKey::decode(d.bytes()?).map_err(|_| invalid("vault key"))?;
-        let public = compressed_point(d.bytes()?).map_err(|_| invalid("vault public key"))?;
-        let count = d.array()?.ok_or_else(|| invalid("vault entries"))?;
-        if count > MAX_SECRETS as u64 {
-            return Err(invalid("vault entries"));
-        }
-        let mut entries = Vec::new();
-        for _ in 0..count {
-            if d.array()? != Some(6) {
-                return Err(invalid("vault entry"));
-            }
-            let entry = Entry {
-                name: d.str()?.to_owned(),
-                note: d.str()?.to_owned(),
-                stored_at: d.u64()?,
-                ephemeral: compressed_point(d.bytes()?).map_err(|_| invalid("vault entry key"))?,
-                nonce: d.bytes()?.try_into().map_err(|_| invalid("vault entry nonce"))?,
-                ciphertext: d.bytes()?.to_vec(),
-            };
-            let length = entry.ciphertext.len();
-            if validate_name(&entry.name).is_err()
-                || validate_note(&entry.note).is_err()
-                || !(TAG_BYTES + 1..=TAG_BYTES + MAX_SECRET_BYTES).contains(&length)
-                || entries.last().is_some_and(|last: &Entry| last.name >= entry.name)
-            {
-                return Err(invalid("vault entry"));
-            }
-            entries.push(entry);
-        }
-        Ok(Document { key, public, entries })
-    };
-    let document = parse().map_err(|_| VaultError::Corrupt)?;
-    if encode(&document)?.as_slice() != bytes {
-        return Err(VaultError::Corrupt);
-    }
-    Ok(document)
 }
 
 fn load(directory: &Path) -> Result<Option<Document>, VaultError> {

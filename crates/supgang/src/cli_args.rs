@@ -116,6 +116,17 @@ pub enum Command {
         #[command(subcommand)]
         command: VaultCommand,
     },
+    /// Sign a SHA-256 digest with a non-exportable vault key.
+    Sign {
+        /// Vault signing-key name.
+        name: String,
+        /// Bounded ASCII domain for this signature.
+        #[arg(long)]
+        context: String,
+        /// Exactly 64 hexadecimal characters for the message SHA-256.
+        #[arg(long)]
+        sha256: String,
+    },
     /// Show this computer's non-secret hive and node identifiers.
     Status,
     /// Show or change this computer's signed human-readable name.
@@ -389,6 +400,19 @@ pub enum ServiceCommand {
 pub enum VaultCommand {
     /// List stored secret names and notes; never their values.
     List,
+    /// Generate a non-exportable Ed25519 signing key in this Mac's vault.
+    Keygen {
+        /// Signing algorithm; currently only ed25519.
+        #[arg(long, value_parser = ["ed25519"])]
+        signing: String,
+        /// Lowercase vault entry name.
+        name: String,
+        /// Short note on what the key is for.
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// Show a signing key's public key and fingerprint.
+    PublicKey { name: String },
     /// Store a secret read from stdin, or from a login-keychain item.
     Add {
         /// Lowercase name, e.g. github or anthropic-api.

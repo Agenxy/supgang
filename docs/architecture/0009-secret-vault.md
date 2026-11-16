@@ -1,7 +1,7 @@
 # ADR 0009: A secret vault sealed to each Mac's Secure Enclave
 
 Status: Accepted. The owner asked for it on 6 Nov 2026 and approved building it on 8 Nov. Slice 1
-(below) is implemented; later slices are not.
+(below) and the Ed25519 signing addendum are implemented; later slices are not.
 
 Date: 2026-11-08
 
@@ -76,6 +76,34 @@ It does **not** stop one of the owner's programs from reading a secret another w
 have. An agent misled by text it read could ask for a token. The defence is to keep anything
 that moves money, unlocks recovery or controls identity out of the vault. Slice 4 below is the
 one that adds a real boundary between programs.
+
+## Addendum: non-exportable Ed25519 signing entries (16 Nov 2026)
+
+`vault keygen --signing ed25519 NAME` requires terminal stdin and generates a random 32-byte seed
+in process. The seed is sealed in the same vault; the public key is returned as 64 lowercase hex
+characters. The fingerprint is lowercase SHA-256 hex of the raw 32-byte public key, with no prefix.
+Keygen never overwrites an entry. `vault list` shows the kind and fingerprint. `vault public-key`
+returns the public key and fingerprint. `vault get` and `vault run` refuse signing entries.
+
+The vault document's canonical CBOR version 2 adds an entry kind and, for signing entries, the
+public key. Version 1 secrets remain readable and retain their version 1 encryption binding when
+the document is upgraded. A signing entry's kind and public key are additionally authenticated
+by the encryption associated data. Before returning a signature, Supgang writes the read audit,
+opens the seed, verifies its derived public key against the stored public key, signs, and zeroizes
+the opened seed and signing key. An audit failure returns no signature.
+
+`sign NAME --context CONTEXT --sha256 DIGEST` accepts a 1–64 byte ASCII context from
+`[a-z0-9._-]` and exactly 32 digest bytes encoded as 64 hex characters. It signs
+`b"supgang-sign/v1\0" || context || b"\0" || digest32` with Ed25519. The JSON schema is
+`supgang.signature/v1`; signatures and public keys are raw bytes encoded as lowercase hex.
+Independent verification needs no Supgang instance. The
+[sign-v1 vector](../vectors/sign-v1/agenxy-launcher-install.json) includes the exact public test
+artifact bytes and their digest. The fixed seed is used only by tests; production keys come from
+OS randomness.
+
+The Secure Enclave supports the vault's P-256 agreement key, not an Ed25519 signing key. Ed25519
+seeds are therefore sealed at rest and briefly used in process memory. Until program identity
+enforcement is implemented, any process running as this macOS user can ask Supgang to sign.
 
 ## Later slices (not built)
 
