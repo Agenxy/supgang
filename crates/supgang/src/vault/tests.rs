@@ -1,11 +1,13 @@
 use std::fs;
 
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use p256::{PublicKey, SecretKey, elliptic_curve::sec1::ToSec1Point};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::{
     AUDIT_FILE_NAME, Enclave, MAX_AUDIT_BYTES, MAX_SECRET_BYTES, VAULT_FILE_NAME, VaultError, add, append_audit,
-    decode, list, remove, reveal, validate_name,
+    decode, keygen, list, public_key, remove, reveal, save, sign, validate_context, validate_name,
 };
 use crate::{
     device_key::custody::{CustodyKind, SealedKey},
@@ -193,6 +195,197 @@ fn a_read_that_cannot_be_recorded_releases_nothing() -> Result<(), Box<dyn std::
         reveal(&path, &Software, "token", None),
         Err(VaultError::Audit)
     ));
+    Ok(())
+}
+
+#[test]
+fn signing_entries_are_sealed_and_never_exported() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let identity = keygen(&path, &Software, "launcher", "Agenxy")?;
+    assert_eq!(identity, public_key(&path, &Software, "launcher")?);
+    let summary = list(&path)?.pop().ok_or("missing signing entry")?;
+    assert_eq!(summary.kind, "signing-ed25519");
+    assert_eq!(summary.fingerprint.as_deref(), Some(identity.fingerprint.as_str()));
+    assert!(matches!(
+        reveal(&path, &Software, "launcher", Some("get")),
+        Err(VaultError::SigningKeyNotExportable)
+    ));
+    assert!(matches!(
+        reveal(&path, &Software, "launcher", Some("run")),
+        Err(VaultError::SigningKeyNotExportable)
+    ));
+    assert!(matches!(
+        keygen(&path, &Software, "launcher", ""),
+        Err(VaultError::AlreadyExists(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn get_and_run_commands_refuse_signing_entries() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    keygen(&path, &Software, "launcher", "")?;
+    let mut output = Vec::new();
+    let mut error = Vec::new();
+    let status = crate::cli_vault::run(
+        &path,
+        crate::cli_args::VaultCommand::Get {
+            name: "launcher".to_owned(),
+        },
+        false,
+        &mut output,
+        &mut error,
+    );
+    assert_ne!(status, std::process::ExitCode::SUCCESS);
+    assert_eq!(output, Vec::<u8>::new());
+    assert!(String::from_utf8(error)?.contains("cannot be exported"));
+    let mut output = Vec::new();
+    let mut error = Vec::new();
+    let status = crate::cli_vault::run(
+        &path,
+        crate::cli_args::VaultCommand::Run {
+            env: vec!["KEY=launcher".to_owned()],
+            command: vec![std::ffi::OsString::from("/bin/true")],
+        },
+        false,
+        &mut output,
+        &mut error,
+    );
+    assert_ne!(status, std::process::ExitCode::SUCCESS);
+    assert_eq!(output, Vec::<u8>::new());
+    assert!(String::from_utf8(error)?.contains("cannot be exported"));
+    Ok(())
+}
+
+#[test]
+fn edited_signing_public_key_fails_authentication() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let identity = keygen(&path, &Software, "launcher", "")?;
+    let file = path.join(VAULT_FILE_NAME);
+    let mut stored = fs::read(&file)?;
+    let index = stored
+        .windows(identity.public_key.len())
+        .position(|window| window == identity.public_key)
+        .ok_or("public key not found")?;
+    *stored.get_mut(index).ok_or("missing public key byte")? ^= 1;
+    fs::write(&file, stored)?;
+    assert!(matches!(
+        public_key(&path, &Software, "launcher"),
+        Err(VaultError::Corrupt)
+    ));
+    assert!(matches!(
+        sign(&path, &Software, "launcher", "agenxy-launcher.install", &[0; 32]),
+        Err(VaultError::Corrupt)
+    ));
+    Ok(())
+}
+
+#[test]
+fn signing_context_and_digest_are_bound() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let identity = keygen(&path, &Software, "launcher", "")?;
+    let digest = Sha256::digest(b"{}");
+    let digest: [u8; 32] = digest.into();
+    let signed = sign(&path, &Software, "launcher", "agenxy-launcher.install", &digest)?;
+    assert_eq!(signed.identity, identity);
+    let verifying = VerifyingKey::from_bytes(&identity.public_key)?;
+    let signature = Signature::from_bytes(&signed.signature);
+    verifying.verify(&super::framed_message("agenxy-launcher.install", &digest), &signature)?;
+    assert!(
+        verifying
+            .verify(&super::framed_message("other.install", &digest), &signature)
+            .is_err()
+    );
+    let other = Sha256::digest(b"{\"changed\":true}");
+    assert!(
+        verifying
+            .verify(
+                &super::framed_message("agenxy-launcher.install", &other.into()),
+                &signature
+            )
+            .is_err()
+    );
+    for bad in ["", "Upper", "has space", "a/b", &"x".repeat(65)] {
+        assert!(validate_context(bad).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn failed_signing_audit_releases_no_signature() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    keygen(&path, &Software, "launcher", "")?;
+    fs::remove_file(path.join(AUDIT_FILE_NAME))?;
+    fs::create_dir(path.join(AUDIT_FILE_NAME))?;
+    assert!(matches!(
+        sign(&path, &Software, "launcher", "agenxy-launcher.install", &[0; 32]),
+        Err(VaultError::Audit)
+    ));
+    Ok(())
+}
+
+#[test]
+fn version_one_secret_survives_signing_upgrade() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    add(&path, &Software, "token", "old entry", b"old value", false)?;
+    let directory = crate::storage::validate_directory(&path)?;
+    let mut document = super::load(&directory)?.ok_or("missing vault")?;
+    document.version = 1;
+    save(&directory, &document)?;
+    assert_eq!(reveal(&path, &Software, "token", None)?.as_slice(), b"old value");
+    keygen(&path, &Software, "launcher", "")?;
+    assert_eq!(reveal(&path, &Software, "token", None)?.as_slice(), b"old value");
+    Ok(())
+}
+
+#[test]
+fn published_signing_vector_matches_implementation() -> Result<(), Box<dyn std::error::Error>> {
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../docs/vectors/sign-v1/agenxy-launcher-install.json"
+    ))?;
+    let artifact = hex::decode(
+        vector
+            .get("artifact_hex")
+            .ok_or("artifact_hex")?
+            .as_str()
+            .ok_or("artifact")?,
+    )?;
+    assert_eq!(artifact, b"{\"test\":\"supgang-sign/v1\"}");
+    let seed = [0x42_u8; 32]; // Public, fixed test seed; production always uses OS randomness.
+    let key = SigningKey::from_bytes(&seed);
+    let public = key.verifying_key().to_bytes();
+    let digest: [u8; 32] = hex::decode(
+        vector
+            .get("message_sha256")
+            .ok_or("message_sha256")?
+            .as_str()
+            .ok_or("digest")?,
+    )?
+    .try_into()
+    .map_err(|_| "digest length")?;
+    assert_eq!(digest.as_slice(), Sha256::digest(&artifact).as_slice());
+    let context = vector.get("context").ok_or("context")?.as_str().ok_or("context")?;
+    let framed = super::framed_message(context, &digest);
+    assert_eq!(
+        vector.get("prefix").ok_or("prefix")?.as_str(),
+        Some(hex::encode(super::SIGN_DOMAIN).as_str())
+    );
+    assert_eq!(
+        vector.get("framed_message").ok_or("framed_message")?.as_str(),
+        Some(hex::encode(&framed).as_str())
+    );
+    assert_eq!(
+        vector.get("public_key").ok_or("public_key")?.as_str(),
+        Some(hex::encode(public).as_str())
+    );
+    assert_eq!(
+        vector.get("signature").ok_or("signature")?.as_str(),
+        Some(hex::encode(key.sign(&framed).to_bytes()).as_str())
+    );
+    assert_eq!(
+        vector.get("fingerprint").ok_or("fingerprint")?.as_str(),
+        Some(super::fingerprint(&public).as_str())
+    );
     Ok(())
 }
 

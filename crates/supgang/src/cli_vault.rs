@@ -29,6 +29,8 @@ struct SecretOutput {
     note: String,
     stored_at: u64,
     bytes: usize,
+    kind: &'static str,
+    fingerprint: Option<String>,
 }
 
 impl From<Summary> for SecretOutput {
@@ -38,6 +40,8 @@ impl From<Summary> for SecretOutput {
             note: summary.note,
             stored_at: summary.stored_at,
             bytes: summary.bytes,
+            kind: summary.kind,
+            fingerprint: summary.fingerprint,
         }
     }
 }
@@ -59,6 +63,25 @@ struct ChangeOutput {
     name: String,
 }
 
+#[derive(Debug, Serialize)]
+struct PublicKeyOutput {
+    schema: &'static str,
+    status: &'static str,
+    name: String,
+    public_key: String,
+    fingerprint: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SignatureOutput {
+    schema: &'static str,
+    status: &'static str,
+    signature: String,
+    fingerprint: String,
+    context: String,
+    message_sha256: String,
+}
+
 pub fn run(
     state_directory: &Path,
     command: VaultCommand,
@@ -68,6 +91,8 @@ pub fn run(
 ) -> ExitCode {
     let result = match command {
         VaultCommand::List => list(state_directory, json, output),
+        VaultCommand::Keygen { signing: _, name, note } => keygen(state_directory, &name, &note, json, output),
+        VaultCommand::PublicKey { name } => public_key(state_directory, &name, json, output),
         VaultCommand::Add {
             name,
             note,
@@ -112,15 +137,125 @@ fn list(state_directory: &Path, json: bool, output: &mut dyn Write) -> Result<Ex
         writeln!(output, "The vault is empty. Add a secret: supgang vault add NAME")
     } else {
         secrets.iter().try_for_each(|secret| {
-            if secret.note.is_empty() {
-                writeln!(output, "{}", secret.name)
+            let fingerprint = secret
+                .fingerprint
+                .as_ref()
+                .map_or(String::new(), |value| format!("  {value}"));
+            let note = if secret.note.is_empty() {
+                String::new()
             } else {
-                writeln!(output, "{}  {}", secret.name, secret.note)
-            }
+                format!("  {}", secret.note)
+            };
+            writeln!(output, "{}  {}{}{}", secret.name, secret.kind, fingerprint, note)
         })
     };
     written.map_err(|_| "could not write the vault listing".to_owned())?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn keygen(
+    state_directory: &Path,
+    name: &str,
+    note: &str,
+    json: bool,
+    output: &mut dyn Write,
+) -> Result<ExitCode, String> {
+    keygen_with_terminal(state_directory, name, note, json, io::stdin().is_terminal(), output)
+}
+
+fn keygen_with_terminal(
+    state_directory: &Path,
+    name: &str,
+    note: &str,
+    json: bool,
+    owner_terminal: bool,
+    output: &mut dyn Write,
+) -> Result<ExitCode, String> {
+    if !owner_terminal {
+        return Err("vault keygen requires an interactive terminal with the owner present".to_owned());
+    }
+    let identity = vault::keygen(state_directory, &SecureEnclave, name, note).map_err(|error| error.to_string())?;
+    show_public(name, &identity, json, output)
+}
+
+fn public_key(state_directory: &Path, name: &str, json: bool, output: &mut dyn Write) -> Result<ExitCode, String> {
+    let identity = vault::public_key(state_directory, &SecureEnclave, name).map_err(|error| error.to_string())?;
+    show_public(name, &identity, json, output)
+}
+
+fn show_public(
+    name: &str,
+    identity: &vault::SigningPublic,
+    json: bool,
+    output: &mut dyn Write,
+) -> Result<ExitCode, String> {
+    let public = hex::encode(identity.public_key);
+    if json {
+        let mut sink = Vec::new();
+        return Ok(render_json(
+            &PublicKeyOutput {
+                schema: "supgang.vault-public-key/v1",
+                status: "ok",
+                name: name.to_owned(),
+                public_key: public,
+                fingerprint: identity.fingerprint.clone(),
+            },
+            output,
+            &mut sink,
+        ));
+    }
+    writeln!(output, "Public key: {public}\nFingerprint: {}", identity.fingerprint)
+        .map_err(|_| "could not write the public key".to_owned())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Signs a bounded digest with a sealed signing key.
+pub fn sign(
+    state_directory: &Path,
+    name: &str,
+    context: &str,
+    sha256: &str,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> ExitCode {
+    let result = (|| {
+        vault::validate_context(context).map_err(|problem| problem.to_string())?;
+        if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(vault::VaultError::InvalidSigningRequest.to_string());
+        }
+        let digest: [u8; 32] = hex::decode(sha256)
+            .map_err(|_| vault::VaultError::InvalidSigningRequest.to_string())?
+            .try_into()
+            .map_err(|_| vault::VaultError::InvalidSigningRequest.to_string())?;
+        let signed = vault::sign(state_directory, &SecureEnclave, name, context, &digest)
+            .map_err(|problem| problem.to_string())?;
+        let signature = hex::encode(signed.signature);
+        let digest_hex = hex::encode(digest);
+        if json {
+            let mut sink = Vec::new();
+            return Ok(render_json(
+                &SignatureOutput {
+                    schema: "supgang.signature/v1",
+                    status: "ok",
+                    signature,
+                    fingerprint: signed.identity.fingerprint,
+                    context: context.to_owned(),
+                    message_sha256: digest_hex,
+                },
+                output,
+                &mut sink,
+            ));
+        }
+        writeln!(
+            output,
+            "Signature: {signature}\nFingerprint: {}\nContext: {context}\nSHA-256: {digest_hex}",
+            signed.identity.fingerprint
+        )
+        .map_err(|_| "could not write the signature".to_owned())?;
+        Ok(ExitCode::SUCCESS)
+    })();
+    result.unwrap_or_else(|message| render_error(json, &message, output, error))
 }
 
 #[expect(clippy::too_many_arguments, reason = "one flat command with its streams")]
@@ -186,6 +321,13 @@ fn remove(state_directory: &Path, name: &str, json: bool, output: &mut dyn Write
 }
 
 fn get(state_directory: &Path, name: &str, output: &mut dyn Write) -> Result<ExitCode, String> {
+    if vault::list(state_directory)
+        .map_err(|problem| problem.to_string())?
+        .iter()
+        .any(|entry| entry.name == name && entry.kind == "signing-ed25519")
+    {
+        return Err(vault::VaultError::SigningKeyNotExportable.to_string());
+    }
     if io::stdout().is_terminal() {
         return Err(format!(
             "refusing to print {name} to a terminal; pipe it into the program that needs it, or use supgang vault run"
@@ -392,7 +534,7 @@ fn trim_newline(secret: &mut Zeroizing<Vec<u8>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{trim_newline, valid_variable};
+    use super::{keygen_with_terminal, sign, trim_newline, valid_variable};
     use zeroize::Zeroizing;
 
     #[test]
@@ -413,5 +555,38 @@ mod tests {
         let mut secret = Zeroizing::new(b"value\n\n".to_vec());
         trim_newline(&mut secret);
         assert_eq!(secret.as_slice(), b"value\n");
+    }
+
+    #[test]
+    fn keygen_without_terminal_refuses_before_accessing_state() {
+        let mut output = Vec::new();
+        let result = keygen_with_terminal(
+            std::path::Path::new("/missing-state"),
+            "launcher",
+            "",
+            true,
+            false,
+            &mut output,
+        );
+        assert!(matches!(result, Err(message) if message.contains("interactive terminal")));
+        assert_eq!(output, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn malformed_digest_refuses_before_accessing_state() {
+        let mut output = Vec::new();
+        let mut error = Vec::new();
+        let status = sign(
+            std::path::Path::new("/missing-state"),
+            "launcher",
+            "agenxy-launcher.install",
+            &"g".repeat(64),
+            false,
+            &mut output,
+            &mut error,
+        );
+        assert_ne!(status, std::process::ExitCode::SUCCESS);
+        assert_eq!(output, Vec::<u8>::new());
+        assert!(String::from_utf8(error).is_ok_and(|message| message.contains("64 hex characters")));
     }
 }

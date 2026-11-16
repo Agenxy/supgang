@@ -623,6 +623,27 @@ it. [ADR 0009](docs/architecture/0009-secret-vault.md) records the design, its b
 slices still to come: host-bound git credentials, sharing with your other computers through the
 hive, and Touch ID-held secrets.
 
+### Sign with a vault key
+
+An owner at an interactive terminal can generate an Ed25519 signing key in the same Mac-bound
+vault. Supgang seals the private seed at rest. `vault get` and `vault run` refuse signing entries;
+the private key is never printed or placed in a child environment.
+
+```text
+supgang vault keygen --signing ed25519 launcher --note "Agenxy launcher"
+supgang vault public-key launcher --json
+supgang sign launcher --context agenxy-launcher.install --sha256 HEX_DIGEST --json
+```
+
+The caller hashes the exact unsigned artifact bytes and passes the 64-character SHA-256 hex digest.
+Supgang signs the byte sequence `supgang-sign/v1\0`, the ASCII context, one NUL byte and the raw
+32-byte digest. Context is 1–64 bytes from `[a-z0-9._-]`. The signature and public key are raw
+Ed25519 bytes encoded as lowercase hex; the fingerprint is lowercase SHA-256 hex of the raw
+32-byte public key, without a prefix. A verifier needs only the public key and this framing rule;
+the [Agenxy launcher test vector](docs/vectors/sign-v1/agenxy-launcher-install.json) gives exact
+bytes. Every signing read is audited before a signature is returned. Any process running as the
+owner's macOS user can currently request a signature; see ADR 0009 for the program-identity limit.
+
 ## Revoke a computer
 
 Run this on the root-authority computer:

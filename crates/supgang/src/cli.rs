@@ -166,6 +166,9 @@ where
             cli_settings::config(&state_directory, command.as_ref(), cli.json, output, error)
         }
         Some(Command::Vault { command }) => crate::cli_vault::run(&state_directory, command, cli.json, output, error),
+        Some(Command::Sign { name, context, sha256 }) => {
+            crate::cli_vault::sign(&state_directory, &name, &context, &sha256, cli.json, output, error)
+        }
         Some(Command::Status) => cli_control::status(&state_directory, cli.json, output, error),
         Some(Command::Name { command }) => cli_profile::name(&state_directory, command, cli.json, output, error),
         Some(Command::Advertise { name, port, key_pin }) => cli_profile::advertise(
