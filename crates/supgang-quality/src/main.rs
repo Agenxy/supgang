@@ -17,6 +17,7 @@ mod acceptance;
 mod drift;
 mod gate_cache;
 mod installation;
+mod vendored_netwatch;
 
 fn main() -> ExitCode {
     let mut output = io::stdout().lock();
@@ -188,6 +189,7 @@ fn workspace_root() -> Result<PathBuf, String> {
 }
 
 fn policy(root: &Path) -> Result<(), String> {
+    vendored_netwatch::check(root)?;
     for required in [
         "AGENTS.md",
         "CHANGELOG.md",
@@ -249,6 +251,11 @@ fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
             ));
         }
         if file_type.is_dir() {
+            if path == root.join("third_party/netwatch") {
+                // This upstream source has its own lint policy. The exact-source
+                // check above covers the whole tree instead.
+                continue;
+            }
             if entry
                 .file_name()
                 .to_str()

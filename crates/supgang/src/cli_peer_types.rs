@@ -3,8 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A non-secret row returned by `peers`.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PeerRow {
     pub name: String,
     pub name_source: String,
@@ -32,8 +31,7 @@ pub struct PeerRow {
 
 /// The actual socket used by an authenticated connection at the time of the read.
 /// Counters describe transport activity, not application-level delivery receipts.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PeerConnection {
     /// Canonical remote socket, distinct from the peer's advertised candidates.
     pub remote_address: String,
@@ -48,8 +46,7 @@ pub struct PeerConnection {
 }
 
 /// One QUIC path's congestion and loss state at the time of the read.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PathStatistics {
     /// Smoothed round-trip time in milliseconds.
     pub rtt_ms: u64,
@@ -86,8 +83,7 @@ impl From<&quinn::PathStats> for PathStatistics {
 /// A claim, not an observation: Supgang has not dialled the port. A consumer
 /// that connects to one of the computer's addresses on `port` and finds a
 /// TLS key whose SHA-256 is `key_pin` is talking to what the computer signed.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ServiceRow {
     /// The service's own name: `dibs`, `remap`, and so on.
     pub name: String,
@@ -98,8 +94,7 @@ pub struct ServiceRow {
 }
 
 /// Machine-readable peer-directory summary.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PeersOutput {
     pub schema: String,
     pub status: String,
@@ -109,8 +104,7 @@ pub struct PeersOutput {
 }
 
 /// One explicitly requested address candidate.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResolvedCandidate {
     pub scope: String,
     pub kind: String,
@@ -131,8 +125,7 @@ pub struct ResolvedCandidate {
 }
 
 /// Machine-readable address resolution with signed-record provenance.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResolveOutput {
     pub schema: String,
     pub status: String,
