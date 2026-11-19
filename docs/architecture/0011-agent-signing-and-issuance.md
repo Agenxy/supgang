@@ -73,13 +73,16 @@ consumer pin update; it cannot be edited in place.
 Consumers pin the purpose, key fingerprint and exact context together. They
 refuse a signature under another key or context even if both are valid in the
 same hive. A newly created key is not trusted merely because it is listed in
-the vault, signed by a member, or advertised by Supgang. Installing or
-changing a consumer pin follows that consumer's own authority boundary;
-trust-anchor changes require the owner's word. Suspected compromise rotates
-only the affected purpose key and its pins. Old fingerprints are explicitly
-revoked; consumers fail closed on ambiguous old/new overlap and preserve their
-own rollback protection. Rotation and revocation must not invalidate unrelated
-purpose keys.
+the vault, signed by a member, or advertised by Supgang. An agent-tier
+consumer may install or rotate an agent-purpose pin on an authenticated member
+request or under its own agent policy, with a durable audit record. This is
+not a release trust-anchor change and does not wait for the owner. Public
+release, chip and boot roots, the launcher anchor, and the phone approval key
+remain owner-word changes. Suspected compromise rotates only the affected
+purpose key and its pins. Old fingerprints are explicitly revoked, and any
+planned old/new overlap is bounded to at most 24 hours. Consumers fail closed
+on ambiguous or expired overlap and preserve their own rollback protection.
+Rotation and revocation must not invalidate unrelated purpose keys.
 
 The existing `solis.placement.stage` key is a candidate for one agent-purpose
 policy. It needs an exact fingerprint and public-key check against the current
@@ -111,15 +114,20 @@ must require bounded-fresh root status or fail closed after its freshness
 window. Receipt of a record over a live session does not renew that window.
 
 Each bounded request carries a unique nonce, exact purpose, context, digest or
-canonical issuer input, and a request authentication tag derived from the
+canonical issuer input, an expiry no more than five minutes ahead, and a
+request authentication tag derived from the
 authenticated session's exporter. The tag binds protocol version, hive,
 certified requester identity, signer identity, session, stream and exact
 request bytes. Replays, cross-session copies and malformed canonical encodings
 fail before any durable effect. This reuses the existing transport certificate
 authority and channel exporter; it creates no second membership scheme.
 Responses bind the request nonce and identity, so a peer cannot substitute a
-different result. Request bytes and tags stay on the encrypted stream, never
-in argv, URLs or ordinary logs.
+different result. The signer durably spends each nonce before the effect in a
+bounded replay set. Version 1 admits at most 4,096 live nonces globally and
+256 per member; entries remain through request expiry plus a two-minute clock
+skew bound. A full, unreadable, rolled-back or equivocal set refuses new
+requests rather than evicting unexpired entries. Request bytes and tags stay
+on the encrypted stream, never in argv, URLs or ordinary logs.
 
 Per-member and global request rates, queues, in-flight work, payload sizes,
 response sizes, retries and wall-clock timeouts have explicit ceilings. A
@@ -152,6 +160,12 @@ not proof that a same-user attacker could not delete every local copy. Rate
 and count caps throttle normal automation and accidental loops. Consumers do
 not infer owner approval from those caps or the audit record.
 
+The local `supgang sign` path uses the signer's own current certified device
+identity as requester. It follows the same sealed purpose/context policy,
+nonce ledger, caps and audit path as a remote member. An unscoped legacy key
+cannot be reached through a second, less restricted local signing route after
+its explicit migration. Local callers do not gain an all-purpose exception.
+
 ## Issuance and provision
 
 The same authenticated member request boundary applies to issuance. A purpose
@@ -165,7 +179,8 @@ member after the same audit and revocation checks.
 
 Supgang may issue its own service or SSH certificates only where consumers
 explicitly trust that issuer and enforce its scope. Supgang cannot mint an
-Apple Developer ID certificate. Apple issues that certificate; Supgang may
+[Apple Developer ID certificate][apple-id].
+Apple issues that certificate; Supgang may
 use a separately provisioned Developer ID signing identity on macOS to sign
 a fixed artifact purpose. The adapter must pin the identity, accepted artifact
 type, signing flags and verification policy, stage an exact immutable input,
@@ -176,8 +191,9 @@ private key crosses the hive. The existing `make install` signing option is
 local installation machinery, not remote code-signing authorization.
 
 Bearer secrets require a separate named grant for the exact member, purpose,
-secret and expiry. The server encrypts the result to that device's certified
-identity on top of the authenticated transport and never returns it to an
+secret and expiry. The server encrypts the result to a device encryption key
+certified and possession-proven under that exact member identity, on top of
+the authenticated transport, and never returns it to an
 all-member default. A guest never receives it through this service. Grant
 issuance, revocation, replay protection, recipient binding and secure local
 delivery must be implemented and tested before this route is enabled.
@@ -206,8 +222,22 @@ an approval request but is never authority. Clock doubt or replay refuses.
 
 ## Remote key creation and migration
 
-Agent-purpose key creation may be requested by a current policy-admitted
-member without a target TTY. It generates a fresh key in the target vault,
+Agent-purpose key creation is governed by a separate hive-level creation
+policy, because the proposed key does not yet have a per-key allowlist. The
+default admits any current, unrevoked member. A configured list may narrow
+the creators. Its operational ceilings are eight new agent keys per member
+and 32 across the hive in any rolling 24 hours, plus the vault's existing
+128-entry bound. A purpose uses the existing vault name grammar:
+`[a-z0-9][a-z0-9._-]{0,63}`. An exact active purpose collision refuses;
+rotation is the only exception and may hold at most one old and one new
+fingerprint for the bounded overlap. Version 1 requires the creating member
+to appear in the new key's allowlist; it cannot create a key that excludes
+itself. The count ledger has the same same-user rollback limitation as signing
+caps, so consumers must rely on explicit pins rather than those counts for
+authorization.
+
+A permitted member may request creation without a target TTY. It generates a
+fresh key in the target vault,
 seals the exact immutable policy, audits the requesting certified identity,
 and reports the public key and fingerprint. Creation does not update any
 consumer pin or grant more authority than existing member policy. Exact name
@@ -234,9 +264,12 @@ trust-anchor procedure instead.
 4. Ship only the issuer profiles actually implemented. Verify certificate
    possession, scope, lifetime and recipient binding; test Apple code signing
    with a provisioned test identity separately from certificate issuance.
-5. Install the same artifact on configured physical peers for the new runtime
-   path and demonstrate remote signing, denial after revocation and audit
-   evidence. Source tests, simulation and a local listener are not that proof.
+5. Install the same artifact on the owner's laptop and Solis, the configured
+   physical acceptance peers, for the new runtime path. Demonstrate remote
+   signing, denial after revocation and audit evidence across both hosts.
+   Source tests, simulation and a local listener are not that proof.
 6. Later, after ADR 0005's phone enrollment and recovery gates, ship the
    consumer-verified two-proof release format and rotate the launcher key with
    Agenxy Labs. Public release still needs the owner's direct word.
+
+[apple-id]: https://developer.apple.com/help/account/certificates/create-developer-id-certificates
