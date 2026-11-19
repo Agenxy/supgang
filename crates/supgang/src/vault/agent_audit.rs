@@ -1,6 +1,7 @@
 //! Fail-closed, append-only audit segments for agent-purpose keys.
 
 use std::{
+    collections::BTreeSet,
     fs::{self, OpenOptions},
     io::Write as _,
     os::unix::fs::OpenOptionsExt as _,
@@ -28,6 +29,12 @@ const MAX_RECORD_BYTES: usize = 768;
 const CREATION_WINDOW_SECONDS: u64 = 24 * 60 * 60;
 const MAX_CREATIONS_PER_MEMBER: usize = 8;
 const MAX_CREATIONS_PER_HIVE: usize = 32;
+const SIGN_WINDOW_SECONDS: u64 = 60 * 60;
+const MAX_SIGNS_PER_MEMBER_PURPOSE: usize = 64;
+const MAX_SIGNS_PER_PURPOSE: usize = 256;
+const MAX_LIVE_NONCES: usize = 4096;
+const MAX_LIVE_NONCES_PER_MEMBER: usize = 256;
+const NONCE_GRACE_SECONDS: u64 = 120;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -35,6 +42,7 @@ enum Action {
     CreateReserved,
     RevokeReserved,
     Sign,
+    NonceReserved,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -66,6 +74,10 @@ struct Record {
     context: Option<String>,
     digest: String,
     fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nonce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
     at: u64,
     hash: String,
 }
@@ -81,6 +93,7 @@ struct Head {
 struct VerifiedRecord {
     hash: [u8; 32],
     creation: Option<(NodeId, u64)>,
+    nonce: Option<(NodeId, [u8; 32], u64, String)>,
     at: u64,
 }
 
@@ -89,7 +102,7 @@ impl Record {
         validate_name(event.purpose)?;
         if !matches!(
             (event.action, event.context),
-            (Action::CreateReserved | Action::RevokeReserved, None) | (Action::Sign, Some(_))
+            (Action::CreateReserved | Action::RevokeReserved, None) | (Action::Sign | Action::NonceReserved, Some(_))
         ) || event
             .context
             .is_some_and(|value| super::signing::validate_context(value).is_err())
@@ -103,16 +116,38 @@ impl Record {
             requester: event.requester,
             action: event.action,
             decision: match event.action {
-                Action::CreateReserved | Action::RevokeReserved => Decision::Reserved,
+                Action::CreateReserved | Action::RevokeReserved | Action::NonceReserved => Decision::Reserved,
                 Action::Sign => Decision::Authorized,
             },
             purpose: event.purpose.to_owned(),
             context: event.context.map(str::to_owned),
             digest: hex::encode(event.digest),
             fingerprint: hex::encode(Sha256::digest(event.public_key)),
+            nonce: None,
+            expires_at: None,
             at: unix_now(),
             hash: String::new(),
         };
+        record.hash = hex::encode(record.compute_hash()?);
+        Ok(record)
+    }
+
+    fn new_nonce(
+        sequence: u64,
+        previous: [u8; 32],
+        event: Event<'_>,
+        nonce: [u8; 32],
+        expires_at: u64,
+    ) -> Result<Self, VaultError> {
+        if !matches!(event.action, Action::NonceReserved) || expires_at < unix_now() {
+            return Err(VaultError::AgentAudit);
+        }
+        let mut record = Self::new(sequence, previous, event)?;
+        if expires_at < record.at {
+            return Err(VaultError::AgentAudit);
+        }
+        record.nonce = Some(hex::encode(nonce));
+        record.expires_at = Some(expires_at);
         record.hash = hex::encode(record.compute_hash()?);
         Ok(record)
     }
@@ -153,13 +188,17 @@ impl Record {
                 .is_some_and(|value| super::signing::validate_context(value).is_err())
             || !matches!(
                 (record.action, record.context.as_ref()),
-                (Action::CreateReserved | Action::RevokeReserved, None) | (Action::Sign, Some(_))
+                (Action::CreateReserved | Action::RevokeReserved, None)
+                    | (Action::Sign | Action::NonceReserved, Some(_))
             )
             || !matches!(
                 (record.action, record.decision),
-                (Action::CreateReserved | Action::RevokeReserved, Decision::Reserved)
-                    | (Action::Sign, Decision::Authorized)
+                (
+                    Action::CreateReserved | Action::RevokeReserved | Action::NonceReserved,
+                    Decision::Reserved
+                ) | (Action::Sign, Decision::Authorized)
             )
+            || matches!(record.action, Action::NonceReserved) != (record.nonce.is_some() && record.expires_at.is_some())
             || record.digest.len() != 64
             || record.fingerprint.len() != 64
             || record
@@ -173,6 +212,31 @@ impl Record {
         {
             return Err(VaultError::AgentAudit);
         }
+        let nonce = match (&record.nonce, record.expires_at) {
+            (Some(value), Some(expires_at)) => {
+                if value.len() != 64
+                    || expires_at < record.at
+                    || expires_at
+                        > record
+                            .at
+                            .saturating_add(crate::agent_sign_protocol::MAX_REQUEST_LIFETIME_SECONDS)
+                {
+                    return Err(VaultError::AgentAudit);
+                }
+                let bytes = hex::decode(value).map_err(|_| VaultError::AgentAudit)?;
+                if hex::encode(&bytes) != *value {
+                    return Err(VaultError::AgentAudit);
+                }
+                Some((
+                    record.requester,
+                    bytes.try_into().map_err(|_| VaultError::AgentAudit)?,
+                    expires_at,
+                    record.purpose.clone(),
+                ))
+            }
+            (None, None) => None,
+            _ => return Err(VaultError::AgentAudit),
+        };
         let hash = record.compute_hash()?;
         if record.hash != hex::encode(hash) {
             return Err(VaultError::AgentAudit);
@@ -181,6 +245,7 @@ impl Record {
         Ok(VerifiedRecord {
             hash,
             creation,
+            nonce,
             at: record.at,
         })
     }
@@ -253,6 +318,9 @@ struct Scan {
     last_bytes: usize,
     last_at: u64,
     recent_creators: Vec<NodeId>,
+    used_nonces: BTreeSet<[u8; 32]>,
+    live_nonce_members: Vec<NodeId>,
+    recent_signs: Vec<(NodeId, String)>,
 }
 
 fn scan(directory: &Path) -> Result<Scan, VaultError> {
@@ -263,6 +331,9 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
     let mut last_at = 0;
     let mut gap = false;
     let mut recent_creators = Vec::new();
+    let mut used_nonces = BTreeSet::new();
+    let mut live_nonce_members = Vec::new();
+    let mut recent_signs = Vec::new();
     let now = unix_now();
     let cutoff = now.saturating_sub(CREATION_WINDOW_SECONDS);
     for index in 0..MAX_SEGMENTS {
@@ -291,6 +362,25 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
             {
                 recent_creators.push(requester);
             }
+            if let Some((requester, nonce, expires_at, purpose)) = verified.nonce {
+                if !used_nonces.insert(nonce) {
+                    return Err(VaultError::AgentAudit);
+                }
+                if expires_at.saturating_add(NONCE_GRACE_SECONDS) >= now {
+                    live_nonce_members.push(requester);
+                    if live_nonce_members.len() > MAX_LIVE_NONCES {
+                        return Err(VaultError::AgentAudit);
+                    }
+                    if live_nonce_members.iter().filter(|member| **member == requester).count()
+                        > MAX_LIVE_NONCES_PER_MEMBER
+                    {
+                        return Err(VaultError::AgentAudit);
+                    }
+                }
+                if verified.at >= now.saturating_sub(SIGN_WINDOW_SECONDS) {
+                    recent_signs.push((requester, purpose));
+                }
+            }
         }
         last = Some(index);
         last_bytes = bytes.len();
@@ -306,10 +396,18 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
         last_bytes,
         last_at,
         recent_creators,
+        used_nonces,
+        live_nonce_members,
+        recent_signs,
     })
 }
 
-fn append(directory: &Path, event: Event<'_>, require_existing: bool) -> Result<(), VaultError> {
+fn append(
+    directory: &Path,
+    event: Event<'_>,
+    require_existing: bool,
+    nonce: Option<([u8; 32], u64)>,
+) -> Result<(), VaultError> {
     let _lock = Lock::open(directory, LOCK_NAME, false).map_err(|_| VaultError::AgentAudit)?;
     let state = scan(directory)?;
     if require_existing && state.sequence == 0 {
@@ -326,8 +424,49 @@ fn append(directory: &Path, event: Event<'_>, require_existing: bool) -> Result<
     {
         return Err(VaultError::AgentKeyCreationLimit);
     }
+    if let Some((value, expires_at)) = nonce {
+        let now = unix_now();
+        if !matches!(event.action, Action::NonceReserved)
+            || expires_at < now
+            || expires_at > now.saturating_add(crate::agent_sign_protocol::MAX_REQUEST_LIFETIME_SECONDS)
+        {
+            return Err(VaultError::AgentAudit);
+        }
+        if state.used_nonces.contains(&value) {
+            return Err(VaultError::AgentNonceReplay);
+        }
+        if state.live_nonce_members.len() >= MAX_LIVE_NONCES
+            || state
+                .live_nonce_members
+                .iter()
+                .filter(|requester| **requester == event.requester)
+                .count()
+                >= MAX_LIVE_NONCES_PER_MEMBER
+        {
+            return Err(VaultError::AgentNonceLimit);
+        }
+        let per_purpose = state
+            .recent_signs
+            .iter()
+            .filter(|(_, purpose)| purpose == event.purpose)
+            .count();
+        let per_member = state
+            .recent_signs
+            .iter()
+            .filter(|(requester, purpose)| *requester == event.requester && purpose == event.purpose)
+            .count();
+        if per_purpose >= MAX_SIGNS_PER_PURPOSE || per_member >= MAX_SIGNS_PER_MEMBER_PURPOSE {
+            return Err(VaultError::AgentSignLimit);
+        }
+    } else if matches!(event.action, Action::NonceReserved) {
+        return Err(VaultError::AgentAudit);
+    }
     let sequence = state.sequence.checked_add(1).ok_or(VaultError::AgentAudit)?;
-    let record = Record::new(sequence, state.hash, event)?;
+    let record = if let Some((value, expires_at)) = nonce {
+        Record::new_nonce(sequence, state.hash, event, value, expires_at)?
+    } else {
+        Record::new(sequence, state.hash, event)?
+    };
     if record.at < state.last_at {
         return Err(VaultError::AgentAudit);
     }
@@ -363,6 +502,20 @@ fn append(directory: &Path, event: Event<'_>, require_existing: bool) -> Result<
     Ok(())
 }
 
+/// Refuses replay before the key-opening read audit. The caller holds the
+/// vault lock through the later durable nonce reservation.
+pub(super) fn preflight_nonce(directory: &Path, nonce: &[u8; 32]) -> Result<(), VaultError> {
+    let _lock = Lock::open(directory, LOCK_NAME, false).map_err(|_| VaultError::AgentAudit)?;
+    let state = scan(directory)?;
+    if state.sequence == 0 {
+        return Err(VaultError::AgentAudit);
+    }
+    if state.used_nonces.contains(nonce) {
+        return Err(VaultError::AgentNonceReplay);
+    }
+    Ok(())
+}
+
 pub(super) fn create_reserved(
     directory: &Path,
     requester: NodeId,
@@ -383,6 +536,7 @@ pub(super) fn create_reserved(
             public_key,
         },
         require_existing,
+        None,
     )
 }
 
@@ -405,6 +559,7 @@ pub(super) fn signed(
             public_key,
         },
         true,
+        None,
     )
 }
 
@@ -427,118 +582,30 @@ pub(super) fn revoke_reserved(
             public_key,
         },
         true,
+        None,
+    )
+}
+
+pub(super) fn reserve_nonce(
+    directory: &Path,
+    requester: NodeId,
+    request: &crate::agent_sign_protocol::SignRequest,
+    public_key: &[u8; 32],
+) -> Result<(), VaultError> {
+    append(
+        directory,
+        Event {
+            requester,
+            action: Action::NonceReserved,
+            purpose: &request.purpose,
+            context: Some(&request.context),
+            digest: &request.digest,
+            public_key,
+        },
+        true,
+        Some((request.nonce, request.expires_at)),
     )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Action, Event, Record, create_reserved, scan, segment_name, write_head};
-    use crate::{artifact, ids::NodeId, vault::VaultError};
-
-    #[test]
-    fn linked_segments_verify_and_tampering_refuses() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let requester = NodeId::from_bytes([1; 32]);
-        let first = Record::new(
-            1,
-            [0; 32],
-            Event {
-                requester,
-                action: Action::CreateReserved,
-                purpose: "build",
-                context: None,
-                digest: &[2; 32],
-                public_key: &[3; 32],
-            },
-        )?;
-        let first_bytes = first.encode()?;
-        artifact::write_new(directory.path().join(segment_name(0)), &first_bytes, 256 * 1024)?;
-        let second = Record::new(
-            2,
-            first.compute_hash()?,
-            Event {
-                requester,
-                action: Action::Sign,
-                purpose: "build",
-                context: Some("build.stage"),
-                digest: &[4; 32],
-                public_key: &[3; 32],
-            },
-        )?;
-        let second_bytes = second.encode()?;
-        artifact::write_new(directory.path().join(segment_name(1)), &second_bytes, 256 * 1024)?;
-        write_head(directory.path(), 2, second.compute_hash()?, second.at)?;
-        let verified = scan(directory.path())?;
-        assert_eq!(verified.sequence, 2);
-        assert_eq!(verified.hash, second.compute_hash()?);
-
-        std::fs::remove_file(directory.path().join(segment_name(1)))?;
-        assert!(matches!(scan(directory.path()), Err(VaultError::AgentAudit)));
-        artifact::write_new(directory.path().join(segment_name(1)), &second_bytes, 256 * 1024)?;
-
-        let mut changed = first_bytes;
-        let offset = changed.iter().position(|byte| *byte == b'b').ok_or("missing purpose")?;
-        *changed.get_mut(offset).ok_or("missing purpose")? = b'c';
-        std::fs::write(directory.path().join(segment_name(0)), &changed)?;
-        assert!(matches!(scan(directory.path()), Err(VaultError::AgentAudit)));
-        Ok(())
-    }
-
-    #[test]
-    fn creation_limits_count_each_member_and_the_hive() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        for member in 1..=4 {
-            let requester = NodeId::from_bytes([member; 32]);
-            for index in 0..8 {
-                create_reserved(
-                    directory.path(),
-                    requester,
-                    &format!("key{member}_{index}"),
-                    b"policy",
-                    &[3; 32],
-                    false,
-                )?;
-            }
-            assert!(matches!(
-                create_reserved(directory.path(), requester, "extra", b"policy", &[3; 32], true),
-                Err(VaultError::AgentKeyCreationLimit)
-            ));
-        }
-        assert!(matches!(
-            create_reserved(
-                directory.path(),
-                NodeId::from_bytes([5; 32]),
-                "extra",
-                b"policy",
-                &[3; 32],
-                true
-            ),
-            Err(VaultError::AgentKeyCreationLimit)
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn future_audit_time_refuses_further_effects() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let requester = NodeId::from_bytes([1; 32]);
-        let mut record = Record::new(
-            1,
-            [0; 32],
-            Event {
-                requester,
-                action: Action::CreateReserved,
-                purpose: "build",
-                context: None,
-                digest: &[2; 32],
-                public_key: &[3; 32],
-            },
-        )?;
-        record.at = record.at.saturating_add(60);
-        record.hash = hex::encode(record.compute_hash()?);
-        artifact::write_new(directory.path().join(segment_name(0)), &record.encode()?, 256 * 1024)?;
-        write_head(directory.path(), 1, record.compute_hash()?, record.at)?;
-        assert!(matches!(scan(directory.path()), Err(VaultError::AgentAudit)));
-        Ok(())
-    }
-}
+mod tests;

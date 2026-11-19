@@ -26,7 +26,7 @@ fn request_encoding_is_canonical_and_bounded() -> Result<(), Box<dyn std::error:
             idle_seconds: 86_400,
         },
     ] {
-        let encoded = encode_request(request);
+        let encoded = encode_request(request.clone());
         assert_eq!(decode_request(&encoded)?, request);
     }
     assert!(matches!(decode_request(b""), Err(ControlError::InvalidRequest)));
@@ -40,6 +40,40 @@ fn request_encoding_is_canonical_and_bounded() -> Result<(), Box<dyn std::error:
     let mut trailing = encode_request(ControlRequest::Status);
     trailing.push(0);
     assert!(matches!(decode_request(&trailing), Err(ControlError::InvalidRequest)));
+    Ok(())
+}
+
+#[test]
+fn member_sign_control_request_rejects_trailing_or_changed_length() -> Result<(), Box<dyn std::error::Error>> {
+    let request = crate::agent_sign_protocol::SignRequest {
+        nonce: [1; 32],
+        purpose: "build".to_owned(),
+        context: "build.stage".to_owned(),
+        digest: [2; 32],
+        expires_at: 100,
+    };
+    let encoded = request.encode()?;
+    let mut padded = [0_u8; crate::agent_sign_protocol::MAX_REQUEST_BYTES];
+    padded
+        .get_mut(..encoded.len())
+        .ok_or("invalid length")?
+        .copy_from_slice(&encoded);
+    let bytes = encode_request(ControlRequest::AgentSign {
+        target: NodeId::from_bytes([3; 32]),
+        request: Box::new(padded),
+        length: u16::try_from(encoded.len())?,
+    });
+    assert!(matches!(decode_request(&bytes)?, ControlRequest::AgentSign { .. }));
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(matches!(decode_request(&trailing), Err(ControlError::InvalidRequest)));
+    let mut changed_length = bytes;
+    let length = changed_length.get_mut(41..43).ok_or("missing length")?;
+    length.copy_from_slice(&1_u16.to_be_bytes());
+    assert!(matches!(
+        decode_request(&changed_length),
+        Err(ControlError::InvalidRequest)
+    ));
     Ok(())
 }
 

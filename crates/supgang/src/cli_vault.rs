@@ -22,6 +22,8 @@ use crate::{
 };
 
 mod lms;
+mod remote_sign;
+pub use remote_sign::sign_remote;
 
 const MAX_ENV_SECRETS: usize = 16;
 

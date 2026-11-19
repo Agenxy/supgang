@@ -23,7 +23,6 @@ use chacha20poly1305::{
 };
 use p256::{PublicKey, SecretKey, elliptic_curve::sec1::ToSec1Point};
 use sha2::Digest;
-use thiserror::Error;
 use zeroize::Zeroizing;
 
 mod agent_audit;
@@ -31,6 +30,7 @@ mod agent_audit;
 mod agent_tests;
 mod audit;
 mod backup;
+mod error;
 mod format;
 mod keys;
 mod lms;
@@ -42,6 +42,7 @@ mod signing;
 mod ssh;
 
 use audit::{append_audit, audit};
+pub use error::VaultError;
 use format::{decode, encode};
 pub use lms::{
     LmsPublic, LmsSigned, Nc0Package, ReleaseLog, SignPreview, advance as lms_advance, keygen as lms_keygen,
@@ -51,6 +52,8 @@ use lock::Lock;
 pub use policy::AgentPolicy;
 pub use removal::remove;
 use signing::fingerprint;
+pub(crate) use signing::sign_member;
+pub(crate) use signing::verify_signed;
 #[cfg(test)]
 use signing::{SIGN_DOMAIN, framed_message};
 pub use signing::{SignedDigest, SigningPublic, keygen, keygen_agent, public_key, sign, validate_context};
@@ -58,8 +61,8 @@ pub use ssh::{SshPublic, SshSigned, ssh_key_blob, ssh_keygen, ssh_public_key, ss
 
 use crate::{
     artifact,
-    device_key::custody::{CustodyError, SealedKey},
-    storage::{self, sync_directory, validate_directory},
+    device_key::custody::SealedKey,
+    storage::{sync_directory, validate_directory},
 };
 
 /// The vault document inside protected state.
@@ -88,113 +91,6 @@ const MAX_ENTRY_BYTES: usize =
 const MAX_VAULT_BYTES: usize = MAX_KEY_RECORD_BYTES + PUBLIC_BYTES + MAX_SECRETS * MAX_ENTRY_BYTES + 64;
 const MAX_AUDIT_BYTES: u64 = 256 * 1024;
 const TEMPORARY_ATTEMPTS: usize = 8;
-
-/// A vault refusal. Messages never include secret bytes.
-#[derive(Debug, Error)]
-pub enum VaultError {
-    /// The name is empty, too long or uses other characters.
-    #[error("secret names are 1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit")]
-    InvalidName,
-    /// The note is too long or contains control characters.
-    #[error("notes are at most 200 bytes of printable text")]
-    InvalidNote,
-    /// The secret is empty or larger than the vault accepts.
-    #[error("a secret must be 1 to 8192 bytes")]
-    InvalidSecret,
-    /// The signing request is malformed.
-    #[error("signing context must be 1 to 64 ASCII bytes from [a-z0-9._-], and --sha256 must be 64 hex characters")]
-    InvalidSigningRequest,
-    /// An agent signing policy is malformed or noncanonical.
-    #[error("agent signing policy must have sorted, unique, bounded contexts and member identities")]
-    InvalidAgentPolicy,
-    /// The key's immutable agent policy does not admit this request.
-    #[error("the signing key's agent policy refuses this member or context")]
-    AgentPolicyDenied,
-    /// Current certified membership could not be established.
-    #[error("current local hive membership could not be verified for agent signing")]
-    MemberAuthority,
-    /// Agent audit is missing, changed, contended or could not be synced.
-    #[error("agent audit cannot be verified or made durable; no signature was released")]
-    AgentAudit,
-    /// All bounded agent audit segments are full.
-    #[error("agent audit is full; signing is paused until a reviewed audit checkpoint can be installed")]
-    AgentAuditFull,
-    /// Agent key creation reached an operational rolling-day limit.
-    #[error("agent key creation reached its per-member or hive 24-hour limit")]
-    AgentKeyCreationLimit,
-    /// Signing keys are never exportable.
-    #[error("signing keys cannot be exported with vault get or vault run; use supgang sign")]
-    SigningKeyNotExportable,
-    /// SSH keys are never exportable.
-    #[error("SSH keys cannot be exported with vault get or vault run; use supgang ssh-agent")]
-    SshKeyNotExportable,
-    /// LMS key material is never exported.
-    #[error("LMS keys cannot be exported with vault get or vault run")]
-    LmsKeyNotExportable,
-    /// A key reserved for LMS cannot be overwritten or removed.
-    #[error("LMS roots cannot be replaced or removed; retire the root and retain its reservation record")]
-    LmsRootRetained,
-    /// The entry is not an LMS root.
-    #[error("the named vault entry is not an LMS root")]
-    NotLmsKey,
-    /// The NC0 package header, size, or contents are invalid.
-    #[error("the NC0 format-2 package is invalid or changed while being read")]
-    InvalidNc0Package,
-    /// Local q records do not agree.
-    #[error("LMS reservation records disagree; signing is refused")]
-    LmsStateMismatch,
-    /// The caller's independent release log does not support this q.
-    #[error("LMS release-log evidence does not permit this q")]
-    LmsReleaseLog,
-    /// No LMS leaf remains.
-    #[error("the LMS root has exhausted all 1048576 leaf numbers")]
-    LmsExhausted,
-    /// Forward-only recovery target is unsafe.
-    #[error("LMS advance target must exceed both local records and the external release log")]
-    LmsAdvanceRefused,
-    /// Key generation could not prove that its orphan journal was removed.
-    #[error("LMS key generation could not verify or clean its orphan journal; inspect vault state before retrying")]
-    LmsOrphanCleanup,
-    /// The entry is not a signing key.
-    #[error("the named vault entry is not an Ed25519 signing key")]
-    NotSigningKey,
-    /// The entry is not an SSH key.
-    #[error("the named vault entry is not an ssh-ed25519 key")]
-    NotSshKey,
-    /// The SSH data is too large to sign.
-    #[error("SSH agent signing data exceeds 256 KiB")]
-    SshDataTooLarge,
-    /// No secret has this name.
-    #[error("no secret named {0} in this computer's vault")]
-    NotFound(String),
-    /// A secret already has this name and replacement was not requested.
-    #[error("a vault entry named {0} already exists")]
-    AlreadyExists(String),
-    /// The vault holds its maximum number of secrets.
-    #[error("the vault already holds 128 secrets; remove one first")]
-    Full,
-    /// Another vault change holds the lock.
-    #[error("another vault change is in progress; retry the command")]
-    Busy,
-    /// The enclave key is unusable here, for the stated reason.
-    #[error("the vault needs this Mac's Secure Enclave: {0}")]
-    Enclave(#[from] CustodyError),
-    /// The vault file is malformed, from another computer or tampered with.
-    #[error("the vault file is invalid, belongs to another computer, or was altered")]
-    Corrupt,
-    /// The protected state directory failed validation.
-    #[error(transparent)]
-    Storage(#[from] storage::StorageError),
-    /// A protected file failed validation.
-    #[error(transparent)]
-    Artifact(#[from] artifact::ArtifactError),
-    /// The audit record could not be written, so the secret was not released.
-    #[error("the vault could not record this read in vault-audit.log, so it released nothing")]
-    Audit,
-    /// The operating system rejected a vault-file operation.
-    #[error("vault filesystem operation failed")]
-    Io(#[from] io::Error),
-}
 
 /// The key-agreement key a vault is sealed to.
 pub trait Enclave {
@@ -228,10 +124,16 @@ impl Enclave for SecureEnclave {
 #[cfg(not(target_os = "macos"))]
 impl Enclave for SecureEnclave {
     fn generate(&self) -> Result<(SealedKey, [u8; PUBLIC_BYTES]), VaultError> {
-        Err(CustodyError::Unavailable(crate::device_key::custody::UnavailableReason::WrongPlatform).into())
+        Err(crate::device_key::custody::CustodyError::Unavailable(
+            crate::device_key::custody::UnavailableReason::WrongPlatform,
+        )
+        .into())
     }
     fn agree(&self, _sealed: &SealedKey, _peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
-        Err(CustodyError::Unavailable(crate::device_key::custody::UnavailableReason::WrongPlatform).into())
+        Err(crate::device_key::custody::CustodyError::Unavailable(
+            crate::device_key::custody::UnavailableReason::WrongPlatform,
+        )
+        .into())
     }
 }
 

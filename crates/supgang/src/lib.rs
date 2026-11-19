@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent_sign_protocol;
 pub mod artifact;
 pub mod authority;
 pub mod candidate;
