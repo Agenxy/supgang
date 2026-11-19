@@ -32,6 +32,8 @@ fn keygen_without_terminal_refuses_before_accessing_state() {
             kind: Some(KeygenKind::Signing),
             json: false,
             owner_terminal: false,
+            contexts: Vec::new(),
+            members: Vec::new(),
         },
         &mut output,
         &mut Vec::new(),

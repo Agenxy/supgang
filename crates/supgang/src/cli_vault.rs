@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 use crate::{
     cli::{render_error, render_json},
     cli_args::VaultCommand,
-    vault::{self, MAX_SECRET_BYTES, SecureEnclave, Summary},
+    vault::{self, AgentPolicy, MAX_SECRET_BYTES, SecureEnclave, Summary},
 };
 
 mod lms;
@@ -89,11 +89,13 @@ enum KeygenKind {
     Ssh,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct KeygenOptions {
     kind: Option<KeygenKind>,
     json: bool,
     owner_terminal: bool,
+    contexts: Vec<String>,
+    members: Vec<crate::ids::NodeId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,6 +120,8 @@ pub fn run(
         VaultCommand::Keygen {
             signing,
             ssh,
+            contexts,
+            members,
             name,
             note,
         } => keygen_with_terminal(
@@ -132,6 +136,8 @@ pub fn run(
                 },
                 json,
                 owner_terminal: io::stdin().is_terminal(),
+                contexts,
+                members,
             },
             output,
             error,
@@ -228,16 +234,36 @@ fn keygen_with_terminal(
     output: &mut dyn Write,
     error: &mut dyn Write,
 ) -> Result<ExitCode, String> {
-    if !options.owner_terminal {
+    if options.contexts.is_empty() && !options.owner_terminal {
         return Err("vault keygen requires an interactive terminal with the owner present".to_owned());
     }
     match options.kind {
         Some(KeygenKind::Signing) => {
-            let identity =
-                vault::keygen(state_directory, &SecureEnclave, name, note).map_err(|error| error.to_string())?;
+            let identity = if options.contexts.is_empty() {
+                if !options.members.is_empty() {
+                    return Err("--member requires at least one --context".to_owned());
+                }
+                vault::keygen(state_directory, &SecureEnclave, name, note)
+            } else {
+                let mut contexts = options.contexts;
+                contexts.sort();
+                let members = if options.members.is_empty() {
+                    None
+                } else {
+                    let mut members = options.members;
+                    members.sort_unstable();
+                    Some(members)
+                };
+                let policy = AgentPolicy::new(contexts, members).map_err(|error| error.to_string())?;
+                vault::keygen_agent(state_directory, &SecureEnclave, name, note, &policy)
+            }
+            .map_err(|error| error.to_string())?;
             show_public(name, &identity, options.json, output)
         }
         Some(KeygenKind::Ssh) => {
+            if !options.contexts.is_empty() || !options.members.is_empty() {
+                return Err("SSH keys do not accept agent signing contexts or members".to_owned());
+            }
             let identity =
                 vault::ssh_keygen(state_directory, &SecureEnclave, name, note).map_err(|error| error.to_string())?;
             show_ssh_public(name, &identity, options.json, output, error)

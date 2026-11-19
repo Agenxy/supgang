@@ -26,6 +26,7 @@ fn fixture() -> Result<(tempfile::TempDir, PathBuf, LmsPublic), Box<dyn std::err
                 lms_public: Some(lms_public),
                 lms_next_q: Some(0),
             },
+            None,
         )?],
     };
     create_journal(&directory, "nc0", &lms_public, &document.key)?;
@@ -35,12 +36,19 @@ fn fixture() -> Result<(tempfile::TempDir, PathBuf, LmsPublic), Box<dyn std::err
 }
 
 #[test]
-fn v3_round_trip_and_aad_reject_q_edit() -> Result<(), Box<dyn std::error::Error>> {
+fn v3_remains_readable_and_aad_rejects_q_edit() -> Result<(), Box<dyn std::error::Error>> {
     let (_temporary, directory, expected) = fixture()?;
     assert_eq!(public_key(&directory, &Software, "nc0")?, expected);
     let mut document = load(&directory)?.ok_or("missing vault")?;
-    assert_eq!(document.version, 3);
+    assert_eq!(document.version, 4);
     assert_eq!(document.entries.first().ok_or("no entry")?.lms_next_q, Some(0));
+    document.version = 3;
+    fs::write(
+        directory.join(super::super::VAULT_FILE_NAME),
+        super::super::encode(&document)?.as_slice(),
+    )?;
+    assert_eq!(public_key(&directory, &Software, "nc0")?, expected);
+    assert_eq!(load(&directory)?.ok_or("missing v3 vault")?.version, 3);
     document.entries.first_mut().ok_or("no entry")?.lms_next_q = Some(1);
     fs::write(
         directory.join(super::super::VAULT_FILE_NAME),

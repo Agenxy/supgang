@@ -6,10 +6,12 @@ use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
 use super::{
-    Document, Enclave, Kind, Lock, MAX_SECRETS, VERSION, VaultError, append_audit, audit, load, open, save, seal,
-    unix_now, validate_name, validate_note,
+    AgentPolicy, Document, Enclave, Kind, Lock, MAX_SECRETS, SealMetadata, VERSION, VaultError, agent_audit,
+    append_audit, audit, load, open, save, seal_entry, signing, unix_now, validate_name, validate_note,
 };
-use crate::storage::validate_directory;
+use crate::{ids::NodeId, storage::validate_directory};
+
+type OpenedSeed = (Zeroizing<Vec<u8>>, [u8; 32], Option<AgentPolicy>);
 
 pub(super) fn generate(
     state_directory: &Path,
@@ -17,6 +19,36 @@ pub(super) fn generate(
     name: &str,
     note: &str,
     kind: Kind,
+) -> Result<[u8; 32], VaultError> {
+    generate_with_policy(state_directory, enclave, name, note, kind, None)
+}
+
+pub(super) fn generate_agent(
+    state_directory: &Path,
+    enclave: &dyn Enclave,
+    name: &str,
+    note: &str,
+    policy: &AgentPolicy,
+    requester: NodeId,
+) -> Result<[u8; 32], VaultError> {
+    let encoded = policy.encode()?;
+    generate_with_policy(
+        state_directory,
+        enclave,
+        name,
+        note,
+        Kind::SigningEd25519,
+        Some((&encoded, requester)),
+    )
+}
+
+fn generate_with_policy(
+    state_directory: &Path,
+    enclave: &dyn Enclave,
+    name: &str,
+    note: &str,
+    kind: Kind,
+    agent: Option<(&[u8], NodeId)>,
 ) -> Result<[u8; 32], VaultError> {
     let operation = match kind {
         Kind::SigningEd25519 => "add-signing",
@@ -48,21 +80,37 @@ pub(super) fn generate(
     let signing_key = SigningKey::from_bytes(&seed);
     let public_key = signing_key.verifying_key().to_bytes();
     drop(signing_key);
-    let entry = seal(
+    let entry = seal_entry(
         &document.public,
         name,
         note,
         unix_now(),
         seed.as_ref(),
-        kind,
-        Some(public_key),
+        SealMetadata {
+            kind,
+            signing_public: Some(public_key),
+            lms_public: None,
+            lms_next_q: None,
+        },
+        agent.map(|(policy, _)| policy),
     )?;
     drop(seed);
     document.version = VERSION;
     document.entries.push(entry);
     document.entries.sort_by(|left, right| left.name.cmp(&right.name));
+    if let Some((policy, requester)) = agent {
+        if signing::current_member(state_directory)? != requester {
+            return Err(VaultError::MemberAuthority);
+        }
+        agent_audit::create_reserved(&directory, requester, name, policy, &public_key)?;
+        if signing::current_member(state_directory)? != requester {
+            return Err(VaultError::MemberAuthority);
+        }
+    }
     save(&directory, &document)?;
-    audit(&directory, operation, name, None);
+    if agent.is_none() {
+        audit(&directory, operation, name, None);
+    }
     Ok(public_key)
 }
 
@@ -72,7 +120,7 @@ pub(super) fn open_seed(
     name: &str,
     purpose: &str,
     required: Kind,
-) -> Result<(Zeroizing<Vec<u8>>, [u8; 32]), VaultError> {
+) -> Result<OpenedSeed, VaultError> {
     validate_name(name)?;
     let directory = validate_directory(state_directory)?;
     append_audit(&directory, "read", name, Some(purpose)).map_err(|_| VaultError::Audit)?;
@@ -90,6 +138,7 @@ pub(super) fn open_seed(
         });
     }
     let public_key = entry.signing_public.ok_or(VaultError::Corrupt)?;
+    let policy = entry.policy.as_deref().map(AgentPolicy::decode).transpose()?;
     let shared = enclave.agree(&document.key, &entry.ephemeral)?;
     let seed = open(&shared, &document.public, entry)?;
     let bytes: Zeroizing<[u8; 32]> = Zeroizing::new(seed.as_slice().try_into().map_err(|_| VaultError::Corrupt)?);
@@ -98,5 +147,5 @@ pub(super) fn open_seed(
     if derived != public_key {
         return Err(VaultError::Corrupt);
     }
-    Ok((seed, public_key))
+    Ok((seed, public_key, policy))
 }

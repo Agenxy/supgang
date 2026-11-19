@@ -644,6 +644,27 @@ the [Agenxy launcher test vector](docs/vectors/sign-v1/agenxy-launcher-install.j
 bytes. Every signing read is audited before a signature is returned. Any process running as the
 owner's macOS user can currently request a signature; see ADR 0009 for the program-identity limit.
 
+For routine agent signing, create a separate key whose vault name is its purpose. `--context`
+fixes the contexts when the key is created. This path uses the current certified hive member
+identity and does not need an owner terminal. The local agent-key path currently
+runs only on the root-authority computer; other members need the remote
+freshness path described in ADR 0011:
+
+```text
+supgang vault keygen --signing ed25519 --context build.stage build.stage
+supgang vault public-key build.stage --json
+supgang sign build.stage --context build.stage --sha256 HEX_DIGEST --json
+```
+
+Repeat `--context` for a bounded context set. `--member NODE_ID` narrows the default of all
+current members; the creating member must be in that list. Consumers must pin the exact purpose,
+context and fingerprint themselves. Creation does not install a pin. Agent keys use a separate
+append-only, hash-linked audit in the protected state directory. A corrupt or full audit stops
+signing; creation is limited to eight keys per member and 32 per hive in a rolling day. These
+limits constrain ordinary automation, not a process that controls this macOS user. Remote member
+requests, audit checkpoint rotation and the release phone proof remain future work in
+[ADR 0011](docs/architecture/0011-agent-signing-and-issuance.md).
+
 ### Use a vault SSH key
 
 Generate a separate SSH-only Ed25519 key while present at a terminal. Supgang keeps its seed sealed

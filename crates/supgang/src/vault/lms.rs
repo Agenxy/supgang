@@ -326,6 +326,7 @@ fn reseal_next_q(document: &mut Document, index: usize, private: &LmsPrivate, ne
             lms_public: Some(private.identity.public_key),
             lms_next_q: Some(next_q),
         },
+        None,
     )?;
     *document.entries.get_mut(index).ok_or(VaultError::Corrupt)? = replacement;
     document.version = VERSION;
@@ -386,6 +387,7 @@ pub fn keygen(
             lms_public: Some(identity.public_key),
             lms_next_q: Some(0),
         },
+        None,
     )?;
     document.version = VERSION;
     document.entries.push(entry);

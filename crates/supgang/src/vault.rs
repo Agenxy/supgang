@@ -26,6 +26,9 @@ use sha2::Digest;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+mod agent_audit;
+#[cfg(test)]
+mod agent_tests;
 mod audit;
 mod backup;
 mod format;
@@ -33,6 +36,8 @@ mod keys;
 mod lms;
 mod lms_rfc;
 mod lock;
+mod policy;
+mod removal;
 mod signing;
 mod ssh;
 
@@ -43,10 +48,12 @@ pub use lms::{
     package as lms_package, preview as lms_preview, public_key as lms_public_key, sign as lms_sign,
 };
 use lock::Lock;
+pub use policy::AgentPolicy;
+pub use removal::remove;
 use signing::fingerprint;
 #[cfg(test)]
 use signing::{SIGN_DOMAIN, framed_message};
-pub use signing::{SignedDigest, SigningPublic, keygen, public_key, sign, validate_context};
+pub use signing::{SignedDigest, SigningPublic, keygen, keygen_agent, public_key, sign, validate_context};
 pub use ssh::{SshPublic, SshSigned, ssh_key_blob, ssh_keygen, ssh_public_key, ssh_sign};
 
 use crate::{
@@ -69,14 +76,15 @@ pub const MAX_NAME_BYTES: usize = 64;
 pub const MAX_NOTE_BYTES: usize = 200;
 
 const ENTRY_DOMAIN: &[u8] = b"supgang/vault-entry/v1\0";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 const LOCK_FILE_NAME: &str = "vault.lock";
 const AUDIT_LOCK_FILE_NAME: &str = "vault-audit.lock";
 const PUBLIC_BYTES: usize = 33;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 const MAX_KEY_RECORD_BYTES: usize = 4 * 1024 + 16;
-const MAX_ENTRY_BYTES: usize = MAX_NAME_BYTES + MAX_NOTE_BYTES + PUBLIC_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + 128;
+const MAX_ENTRY_BYTES: usize =
+    MAX_NAME_BYTES + MAX_NOTE_BYTES + PUBLIC_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + policy::MAX_POLICY_BYTES + 144;
 const MAX_VAULT_BYTES: usize = MAX_KEY_RECORD_BYTES + PUBLIC_BYTES + MAX_SECRETS * MAX_ENTRY_BYTES + 64;
 const MAX_AUDIT_BYTES: u64 = 256 * 1024;
 const TEMPORARY_ATTEMPTS: usize = 8;
@@ -96,6 +104,24 @@ pub enum VaultError {
     /// The signing request is malformed.
     #[error("signing context must be 1 to 64 ASCII bytes from [a-z0-9._-], and --sha256 must be 64 hex characters")]
     InvalidSigningRequest,
+    /// An agent signing policy is malformed or noncanonical.
+    #[error("agent signing policy must have sorted, unique, bounded contexts and member identities")]
+    InvalidAgentPolicy,
+    /// The key's immutable agent policy does not admit this request.
+    #[error("the signing key's agent policy refuses this member or context")]
+    AgentPolicyDenied,
+    /// Current certified membership could not be established.
+    #[error("current local hive membership could not be verified for agent signing")]
+    MemberAuthority,
+    /// Agent audit is missing, changed, contended or could not be synced.
+    #[error("agent audit cannot be verified or made durable; no signature was released")]
+    AgentAudit,
+    /// All bounded agent audit segments are full.
+    #[error("agent audit is full; signing is paused until a reviewed audit checkpoint can be installed")]
+    AgentAuditFull,
+    /// Agent key creation reached an operational rolling-day limit.
+    #[error("agent key creation reached its per-member or hive 24-hour limit")]
+    AgentKeyCreationLimit,
     /// Signing keys are never exportable.
     #[error("signing keys cannot be exported with vault get or vault run; use supgang sign")]
     SigningKeyNotExportable,
@@ -257,6 +283,7 @@ struct Entry {
     ephemeral: [u8; PUBLIC_BYTES],
     nonce: [u8; NONCE_BYTES],
     ciphertext: Vec<u8>,
+    policy: Option<Vec<u8>>,
 }
 
 impl Entry {
@@ -406,29 +433,6 @@ pub fn reveal(
     result
 }
 
-/// Removes one secret. The vault key stays, so later additions need no enclave.
-///
-/// # Errors
-/// Refuses unknown names, a busy lock and storage failures.
-pub fn remove(state_directory: &Path, name: &str) -> Result<(), VaultError> {
-    validate_name(name)?;
-    let (directory, _lock) = Lock::acquire(state_directory)?;
-    let mut document = load(&directory)?.ok_or_else(|| VaultError::NotFound(name.to_owned()))?;
-    let index = document
-        .entries
-        .iter()
-        .position(|entry| entry.name == name)
-        .ok_or_else(|| VaultError::NotFound(name.to_owned()))?;
-    if document.entries.get(index).ok_or(VaultError::Corrupt)?.kind == Kind::LmsSha256H20W1 {
-        return Err(VaultError::LmsRootRetained);
-    }
-    document.entries.remove(index);
-    document.version = VERSION;
-    save(&directory, &document)?;
-    audit(&directory, "remove", name, None);
-    Ok(())
-}
-
 /// Checks a secret name: `[a-z0-9][a-z0-9._-]{0,63}`.
 ///
 /// # Errors
@@ -485,6 +489,7 @@ fn seal(
             lms_public: None,
             lms_next_q: None,
         },
+        None,
     )
 }
 
@@ -503,7 +508,13 @@ fn seal_entry(
     stored_at: u64,
     secret: &[u8],
     metadata: SealMetadata,
+    policy: Option<&[u8]>,
 ) -> Result<Entry, VaultError> {
+    if let Some(policy) = policy
+        && (metadata.kind != Kind::SigningEd25519 || AgentPolicy::decode(policy).is_err())
+    {
+        return Err(VaultError::InvalidAgentPolicy);
+    }
     let recipient = PublicKey::from_sec1_bytes(public).map_err(|_| VaultError::Corrupt)?;
     let ephemeral_secret = random_secret_key()?;
     let ephemeral = compressed_point(ephemeral_secret.public_key().to_sec1_point(true).as_bytes())?;
@@ -513,7 +524,7 @@ fn seal_entry(
     let cipher = cipher(&raw, &ephemeral, public, name)?;
     let mut nonce = [0_u8; NONCE_BYTES];
     getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-    let aad = associated_data(name, note, stored_at, &ephemeral, &metadata);
+    let aad = associated_data(name, note, stored_at, &ephemeral, &metadata, policy);
     let ciphertext = cipher
         .encrypt(&nonce.into(), Payload { msg: secret, aad: &aad })
         .map_err(|_| VaultError::InvalidSecret)?;
@@ -528,6 +539,7 @@ fn seal_entry(
         ephemeral,
         nonce,
         ciphertext,
+        policy: policy.map(<[u8]>::to_vec),
     })
 }
 
@@ -557,6 +569,7 @@ fn open(shared: &[u8; 32], public: &[u8; PUBLIC_BYTES], entry: &Entry) -> Result
             lms_public: entry.lms_public,
             lms_next_q: entry.lms_next_q,
         },
+        entry.policy.as_deref(),
     );
     cipher
         .decrypt(
@@ -604,6 +617,7 @@ fn associated_data(
     stored_at: u64,
     ephemeral: &[u8; PUBLIC_BYTES],
     metadata: &SealMetadata,
+    policy: Option<&[u8]>,
 ) -> Vec<u8> {
     let mut aad = Vec::with_capacity(ENTRY_DOMAIN.len() + name.len() + 1 + PUBLIC_BYTES + 8 + note.len() + 48);
     aad.extend_from_slice(ENTRY_DOMAIN);
@@ -625,6 +639,11 @@ fn associated_data(
         if let Some(next_q) = metadata.lms_next_q {
             aad.extend_from_slice(&next_q.to_be_bytes());
         }
+    }
+    if let Some(policy) = policy {
+        aad.push(0);
+        aad.extend_from_slice(b"agent-policy/v1\0");
+        aad.extend_from_slice(policy);
     }
     aad
 }

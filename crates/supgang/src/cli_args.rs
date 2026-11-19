@@ -417,6 +417,13 @@ pub enum VaultCommand {
         /// Generate an SSH agent key.
         #[arg(long, value_parser = ["ed25519"], conflicts_with = "signing", required_unless_present = "signing")]
         ssh: Option<String>,
+        /// Fix an allowed signing context at creation; repeat for more than one.
+        /// A signing key with contexts is an unattended agent-purpose key.
+        #[arg(long = "context", value_name = "CONTEXT", conflicts_with = "ssh")]
+        contexts: Vec<String>,
+        /// Narrow an agent key to exact member identities; default is all members.
+        #[arg(long = "member", value_name = "NODE_ID", requires = "contexts")]
+        members: Vec<crate::ids::NodeId>,
         /// Lowercase vault entry name.
         name: String,
         /// Short note on what the key is for.

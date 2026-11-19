@@ -1,6 +1,10 @@
 # ADR 0011: Member-authorized signing and issuance
 
-Status: Proposed. No remote signing or issuing service, agent-key policy, phone
+Status: Accepted, partly implemented. Local agent-purpose key policy, vault
+format v4, and bounded append-only audit are implemented on the root-authority
+computer. Other members require a bounded-fresh root status path before local
+agent signing is enabled. No remote signing or issuing service, consumer pin
+installer, audit checkpoint rotation, phone
 approval path, or certificate issuer in this ADR is available today.
 
 Date: 2026-11-19

@@ -3,14 +3,22 @@
 use minicbor::{Decoder, Encoder};
 use zeroize::Zeroizing;
 
+use super::policy::AgentPolicy;
 use super::{
     Document, Entry, Kind, MAX_SECRET_BYTES, MAX_SECRETS, TAG_BYTES, VERSION, VaultError, compressed_point,
     validate_name, validate_note,
 };
 use crate::device_key::custody::SealedKey;
 
-/// Canonical CBOR v1/v2 stay readable; v3 adds LMS public key and next q.
+/// Canonical CBOR v1-v3 stay readable; v4 adds optional agent signing policy.
 pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+    if document.entries.iter().any(|entry| {
+        entry.policy.as_deref().is_some_and(|bytes| {
+            document.version < 4 || entry.kind != Kind::SigningEd25519 || AgentPolicy::decode(bytes).is_err()
+        })
+    }) {
+        return Err(VaultError::Corrupt);
+    }
     let key = Zeroizing::new(document.key.encode()?);
     let mut e = Encoder::new(Vec::new());
     let entries = u64::try_from(document.entries.len()).map_err(|_| VaultError::Corrupt)?;
@@ -26,7 +34,8 @@ pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultErr
             e.array(match document.version {
                 1 => 6,
                 2 => 8,
-                _ => 10,
+                3 => 10,
+                _ => 11,
             })
             .and_then(|e| e.str(&entry.name))
             .and_then(|e| e.str(&entry.note))
@@ -68,6 +77,15 @@ pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultErr
                     e.null()
                 }
             })
+            .and_then(|e| {
+                if document.version < 4 {
+                    Ok(e)
+                } else if let Some(policy) = &entry.policy {
+                    e.bytes(policy)
+                } else {
+                    e.null()
+                }
+            })
             .map(|_| ())
         });
     }
@@ -83,7 +101,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
             return Err(invalid("vault version"));
         }
         let version = d.u8()?;
-        if version != 1 && version != 2 && version != VERSION {
+        if version != 1 && version != 2 && version != 3 && version != VERSION {
             return Err(invalid("vault version"));
         }
         let key = SealedKey::decode(d.bytes()?).map_err(|_| invalid("vault key"))?;
@@ -98,7 +116,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 != Some(match version {
                     1 => 6,
                     2 => 8,
-                    _ => 10,
+                    3 => 10,
+                    _ => 11,
                 })
             {
                 return Err(invalid("vault entry"));
@@ -148,6 +167,18 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 d.null()?;
                 (None, None)
             };
+            let policy = if version < 4 {
+                None
+            } else if d.datatype()? == minicbor::data::Type::Null {
+                d.null()?;
+                None
+            } else {
+                let bytes = d.bytes()?;
+                if kind != Kind::SigningEd25519 || AgentPolicy::decode(bytes).is_err() {
+                    return Err(invalid("vault agent policy"));
+                }
+                Some(bytes.to_vec())
+            };
             let entry = Entry {
                 kind,
                 signing_public,
@@ -159,6 +190,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 ephemeral,
                 nonce,
                 ciphertext,
+                policy,
             };
             let length = entry.ciphertext.len();
             if validate_name(&entry.name).is_err()
