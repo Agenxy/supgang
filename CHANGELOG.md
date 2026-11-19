@@ -8,6 +8,10 @@ The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
 that a remote refresh to this source runs under probation.
 
+- Add a separate vault `ssh-ed25519` key kind and an owner-only local OpenSSH agent. The CLI
+  exports only the public line and SHA256 fingerprint; selected keys sign through an audited,
+  bounded socket protocol. Signing keys and SSH keys cannot cross their respective uses.
+
 - Add Mac-bound, non-exportable Ed25519 signing entries to the vault: interactive `vault keygen`,
   `vault public-key`, and audited context-bound `sign --sha256`. Existing secret entries remain
   readable; the sign-v1 vector includes exact Agenxy launcher artifact and framing bytes.

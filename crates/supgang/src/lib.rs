@@ -14,6 +14,7 @@ pub(crate) mod cli_peer_types;
 pub(crate) mod cli_profile;
 pub(crate) mod cli_service;
 pub(crate) mod cli_settings;
+pub(crate) mod cli_ssh_agent;
 pub(crate) mod cli_tunnel;
 pub(crate) mod cli_update;
 pub(crate) mod cli_vault;
@@ -44,6 +45,7 @@ pub mod session;
 pub mod settings;
 #[cfg(test)]
 pub(crate) mod simnet;
+pub mod ssh_agent;
 pub mod state;
 pub mod state_lock;
 pub mod storage;

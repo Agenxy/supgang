@@ -1,7 +1,8 @@
 # ADR 0009: A secret vault sealed to each Mac's Secure Enclave
 
 Status: Accepted. The owner asked for it on 6 Nov 2026 and approved building it on 8 Nov. Slice 1
-(below) and the Ed25519 signing addendum are implemented; later slices are not.
+(below), the Ed25519 signing addendum, and the SSH-agent addendum are implemented; later slices are
+not.
 
 Date: 2026-11-08
 
@@ -104,6 +105,41 @@ OS randomness.
 The Secure Enclave supports the vault's P-256 agreement key, not an Ed25519 signing key. Ed25519
 seeds are therefore sealed at rest and briefly used in process memory. Until program identity
 enforcement is implemented, any process running as this macOS user can ask Supgang to sign.
+
+## Addendum: SSH-only Ed25519 keys and local agent (18 Nov 2026)
+
+`vault keygen --ssh ed25519 NAME` requires terminal stdin and generates a separate, random
+32-byte seed. The vault stores it as kind `ssh-ed25519`. Its kind and public key are authenticated
+in the encryption associated data, so changing a stored kind to `secret` or
+`signing-ed25519`, including with canonical version-1 or version-2 CBOR, cannot expose or
+repurpose the seed. Conversely, an existing `signing-ed25519` entry cannot serve an SSH-agent
+request. `vault get`, `vault run`, and `sign` refuse SSH entries.
+
+`vault ssh-public-key NAME` returns the OpenSSH `ssh-ed25519` public line with comment
+`NAME@supgang`, plus its `SHA256:` fingerprint. The fingerprint is unpadded standard Base64
+of SHA-256 over the full SSH public-key blob, matching `ssh-keygen -lf`. The JSON schema is
+`supgang.ssh-public-key/v1`.
+
+`ssh-agent --socket PATH --key NAME` serves only the named SSH-kind entries. The socket must be
+in an existing owner-only directory; Supgang creates it mode `0600` and verifies the connecting
+process has the same user ID. It answers OpenSSH identity-list (11) and plain Ed25519 sign (13)
+requests. For sign, it requires the exact selected public-key blob, a well-formed message, and
+flags zero. All other request types, malformed payloads, and unsupported flags receive failure
+(5); the agent has no key-add, remove, or forwarding operation. OpenSSH clients must also use
+`ForwardAgent=no` to avoid forwarding their local agent socket.
+
+The request body is capped at 256 KiB before allocation. At most 16 keys and 8 simultaneous
+connections are admitted, with 256 requests per connection, at most 32 per second per connection,
+a 5-second frame deadline, and a 120-second connection lifetime. Each sign uses the vault read
+audit with purpose `ssh-sign` before opening the seed; an audit failure releases no signature.
+The seed is zeroized after the sign. Agent requests and errors do not log key material, message
+bytes, or the socket path.
+
+The boundary is still the local user account: any process running as the owner can ask for a
+signature while the agent is running. `authorized_keys restrict` limits the remote account's
+SSH features; `restrict,pty` restores a PTY when an interactive shell is needed. A private
+socket and `ForwardAgent=no` limit accidental exposure. These controls do not authenticate
+individual local programs.
 
 ## Later slices (not built)
 

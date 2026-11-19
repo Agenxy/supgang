@@ -127,6 +127,15 @@ pub enum Command {
         #[arg(long)]
         sha256: String,
     },
+    /// Serve selected vault SSH keys to local OpenSSH clients on an owner-only socket.
+    SshAgent {
+        /// Unix socket path inside an owner-only directory.
+        #[arg(long, value_name = "PATH")]
+        socket: PathBuf,
+        /// SSH key to expose; repeat for up to 16 keys.
+        #[arg(long = "key", value_name = "NAME")]
+        keys: Vec<String>,
+    },
     /// Show this computer's non-secret hive and node identifiers.
     Status,
     /// Show or change this computer's signed human-readable name.
@@ -402,9 +411,12 @@ pub enum VaultCommand {
     List,
     /// Generate a non-exportable Ed25519 signing key in this Mac's vault.
     Keygen {
-        /// Signing algorithm; currently only ed25519.
-        #[arg(long, value_parser = ["ed25519"])]
-        signing: String,
+        /// Generate a context-bound signing key.
+        #[arg(long, value_parser = ["ed25519"], conflicts_with = "ssh", required_unless_present = "ssh")]
+        signing: Option<String>,
+        /// Generate an SSH agent key.
+        #[arg(long, value_parser = ["ed25519"], conflicts_with = "signing", required_unless_present = "signing")]
+        ssh: Option<String>,
         /// Lowercase vault entry name.
         name: String,
         /// Short note on what the key is for.
@@ -413,6 +425,8 @@ pub enum VaultCommand {
     },
     /// Show a signing key's public key and fingerprint.
     PublicKey { name: String },
+    /// Show an SSH key's OpenSSH public line and fingerprint.
+    SshPublicKey { name: String },
     /// Store a secret read from stdin, or from a login-keychain item.
     Add {
         /// Lowercase name, e.g. github or anthropic-api.
