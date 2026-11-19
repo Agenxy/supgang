@@ -20,6 +20,7 @@ async-trait = { version = "=0.1.92", default-features = false }
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 clap = { version = "=4.6.6", default-features = false, features = ["cargo", "derive", "help", "std", "usage"] }
 ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 frost-core = { version = "=3.0.0", default-features = false, features = ["serialization"] }
 frost-ed25519 = { version = "=3.0.0", default-features = false, features = ["serialization"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["async-await", "std"] }

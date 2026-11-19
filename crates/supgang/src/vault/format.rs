@@ -87,6 +87,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 match d.str()? {
                     "secret" => Kind::Secret,
                     "signing-ed25519" => Kind::SigningEd25519,
+                    "ssh-ed25519" => Kind::SshEd25519,
                     _ => return Err(invalid("vault entry kind")),
                 }
             };
@@ -112,7 +113,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
             if validate_name(&entry.name).is_err()
                 || validate_note(&entry.note).is_err()
                 || !(TAG_BYTES + 1..=TAG_BYTES + MAX_SECRET_BYTES).contains(&length)
-                || (kind == Kind::SigningEd25519 && length != TAG_BYTES + 32)
+                || (kind != Kind::Secret && length != TAG_BYTES + 32)
                 || entries.last().is_some_and(|last: &Entry| last.name >= entry.name)
             {
                 return Err(invalid("vault entry"));

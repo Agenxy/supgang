@@ -73,6 +73,28 @@ struct PublicKeyOutput {
 }
 
 #[derive(Debug, Serialize)]
+struct SshPublicOutput {
+    schema: &'static str,
+    status: &'static str,
+    name: String,
+    public_key: String,
+    fingerprint: String,
+}
+
+#[derive(Clone, Copy)]
+enum KeygenKind {
+    Signing,
+    Ssh,
+}
+
+#[derive(Clone, Copy)]
+struct KeygenOptions {
+    kind: Option<KeygenKind>,
+    json: bool,
+    owner_terminal: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct SignatureOutput {
     schema: &'static str,
     status: &'static str,
@@ -91,8 +113,29 @@ pub fn run(
 ) -> ExitCode {
     let result = match command {
         VaultCommand::List => list(state_directory, json, output),
-        VaultCommand::Keygen { signing: _, name, note } => keygen(state_directory, &name, &note, json, output),
+        VaultCommand::Keygen {
+            signing,
+            ssh,
+            name,
+            note,
+        } => keygen_with_terminal(
+            state_directory,
+            &name,
+            &note,
+            KeygenOptions {
+                kind: match (signing.is_some(), ssh.is_some()) {
+                    (true, false) => Some(KeygenKind::Signing),
+                    (false, true) => Some(KeygenKind::Ssh),
+                    _ => None,
+                },
+                json,
+                owner_terminal: io::stdin().is_terminal(),
+            },
+            output,
+            error,
+        ),
         VaultCommand::PublicKey { name } => public_key(state_directory, &name, json, output),
+        VaultCommand::SshPublicKey { name } => ssh_public_key(state_directory, &name, json, output, error),
         VaultCommand::Add {
             name,
             note,
@@ -153,34 +196,72 @@ fn list(state_directory: &Path, json: bool, output: &mut dyn Write) -> Result<Ex
     Ok(ExitCode::SUCCESS)
 }
 
-fn keygen(
-    state_directory: &Path,
-    name: &str,
-    note: &str,
-    json: bool,
-    output: &mut dyn Write,
-) -> Result<ExitCode, String> {
-    keygen_with_terminal(state_directory, name, note, json, io::stdin().is_terminal(), output)
-}
-
 fn keygen_with_terminal(
     state_directory: &Path,
     name: &str,
     note: &str,
-    json: bool,
-    owner_terminal: bool,
+    options: KeygenOptions,
     output: &mut dyn Write,
+    error: &mut dyn Write,
 ) -> Result<ExitCode, String> {
-    if !owner_terminal {
+    if !options.owner_terminal {
         return Err("vault keygen requires an interactive terminal with the owner present".to_owned());
     }
-    let identity = vault::keygen(state_directory, &SecureEnclave, name, note).map_err(|error| error.to_string())?;
-    show_public(name, &identity, json, output)
+    match options.kind {
+        Some(KeygenKind::Signing) => {
+            let identity =
+                vault::keygen(state_directory, &SecureEnclave, name, note).map_err(|error| error.to_string())?;
+            show_public(name, &identity, options.json, output)
+        }
+        Some(KeygenKind::Ssh) => {
+            let identity =
+                vault::ssh_keygen(state_directory, &SecureEnclave, name, note).map_err(|error| error.to_string())?;
+            show_ssh_public(name, &identity, options.json, output, error)
+        }
+        None => Err("choose exactly one key kind: --signing ed25519 or --ssh ed25519".to_owned()),
+    }
 }
 
 fn public_key(state_directory: &Path, name: &str, json: bool, output: &mut dyn Write) -> Result<ExitCode, String> {
     let identity = vault::public_key(state_directory, &SecureEnclave, name).map_err(|error| error.to_string())?;
     show_public(name, &identity, json, output)
+}
+
+fn ssh_public_key(
+    state_directory: &Path,
+    name: &str,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> Result<ExitCode, String> {
+    let identity = vault::ssh_public_key(state_directory, &SecureEnclave, name).map_err(|error| error.to_string())?;
+    show_ssh_public(name, &identity, json, output, error)
+}
+
+pub fn show_ssh_public(
+    name: &str,
+    identity: &vault::SshPublic,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> Result<ExitCode, String> {
+    if json {
+        let mut sink = Vec::new();
+        return Ok(render_json(
+            &SshPublicOutput {
+                schema: "supgang.ssh-public-key/v1",
+                status: "ok",
+                name: name.to_owned(),
+                public_key: identity.line.clone(),
+                fingerprint: identity.fingerprint.clone(),
+            },
+            output,
+            &mut sink,
+        ));
+    }
+    writeln!(output, "{}", identity.line).map_err(|_| "could not write the SSH public key".to_owned())?;
+    writeln!(error, "{}", identity.fingerprint).map_err(|_| "could not write the SSH fingerprint".to_owned())?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn show_public(
@@ -321,12 +402,15 @@ fn remove(state_directory: &Path, name: &str, json: bool, output: &mut dyn Write
 }
 
 fn get(state_directory: &Path, name: &str, output: &mut dyn Write) -> Result<ExitCode, String> {
-    if vault::list(state_directory)
+    match vault::list(state_directory)
         .map_err(|problem| problem.to_string())?
         .iter()
-        .any(|entry| entry.name == name && entry.kind == "signing-ed25519")
+        .find(|entry| entry.name == name)
+        .map(|entry| entry.kind)
     {
-        return Err(vault::VaultError::SigningKeyNotExportable.to_string());
+        Some("signing-ed25519") => return Err(vault::VaultError::SigningKeyNotExportable.to_string()),
+        Some("ssh-ed25519") => return Err(vault::VaultError::SshKeyNotExportable.to_string()),
+        _ => {}
     }
     if io::stdout().is_terminal() {
         return Err(format!(
@@ -534,7 +618,7 @@ fn trim_newline(secret: &mut Zeroizing<Vec<u8>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{keygen_with_terminal, sign, trim_newline, valid_variable};
+    use super::{KeygenKind, KeygenOptions, keygen_with_terminal, sign, trim_newline, valid_variable};
     use zeroize::Zeroizing;
 
     #[test]
@@ -564,9 +648,13 @@ mod tests {
             std::path::Path::new("/missing-state"),
             "launcher",
             "",
-            true,
-            false,
+            KeygenOptions {
+                kind: Some(KeygenKind::Signing),
+                json: false,
+                owner_terminal: false,
+            },
             &mut output,
+            &mut Vec::new(),
         );
         assert!(matches!(result, Err(message) if message.contains("interactive terminal")));
         assert_eq!(output, Vec::<u8>::new());

@@ -644,6 +644,44 @@ the [Agenxy launcher test vector](docs/vectors/sign-v1/agenxy-launcher-install.j
 bytes. Every signing read is audited before a signature is returned. Any process running as the
 owner's macOS user can currently request a signature; see ADR 0009 for the program-identity limit.
 
+### Use a vault SSH key
+
+Generate a separate SSH-only Ed25519 key while present at a terminal. Supgang keeps its seed sealed
+in the local vault and never exports it through `vault get`, `vault run`, or `sign`.
+
+```text
+supgang vault keygen --ssh ed25519 ssh-login --note "personal login"
+supgang vault ssh-public-key ssh-login > ssh-login.pub
+supgang ssh-agent --socket "$HOME/Library/Application Support/org.agenxy.supgang/agent.sock" --key ssh-login
+```
+
+Add the displayed `ssh-ed25519` public line to the remote user's `authorized_keys`, prefixed
+with `restrict` for a tightly limited key:
+
+```text
+restrict ssh-ed25519 BASE64_PUBLIC_KEY ssh-login@supgang
+```
+
+`restrict` also disables a remote PTY. If this key needs an interactive shell, use
+`restrict,pty`; keep agent forwarding disabled.
+
+In another local shell, point OpenSSH at the running agent and disable agent forwarding:
+
+```text
+SSH_AUTH_SOCK="$HOME/Library/Application Support/org.agenxy.supgang/agent.sock" ssh -o IdentitiesOnly=yes -o ForwardAgent=no -i ssh-login.pub user@host
+```
+
+The paths shown use the macOS default state directory. On Linux the default is
+`${XDG_STATE_HOME:-$HOME/.local/state}/supgang`; use the same socket path in both commands.
+The redirected stdout is exactly one valid `.pub` line; the SHA256 fingerprint appears on stderr.
+The socket
+must be inside an existing owner-only directory and is mode `0600`. Only keys named with
+`--key` are listed. The agent answers identity and plain Ed25519 sign requests; it refuses key
+addition, removal, locking, extensions, and nonzero signing flags. Each signing request is audited
+before a signature is released. Any process running as the local owner can use the socket; keep
+the socket private and do not forward it. See [ADR 0009](docs/architecture/0009-secret-vault.md)
+for the exact limits.
+
 ## Revoke a computer
 
 Run this on the root-authority computer:

@@ -1,4 +1,5 @@
 use std::fs;
+use std::process::Command;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use p256::{PublicKey, SecretKey, elliptic_curve::sec1::ToSec1Point};
@@ -15,7 +16,7 @@ use crate::{
 };
 
 /// A file-held stand-in for the enclave; production refuses this kind.
-struct Software;
+pub struct Software;
 
 impl Enclave for Software {
     fn generate(&self) -> Result<(SealedKey, [u8; 33]), VaultError> {
@@ -48,7 +49,11 @@ impl Enclave for Software {
     }
 }
 
-fn state_directory() -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
+/// Creates a protected temporary state directory for vault and agent tests.
+///
+/// # Errors
+/// Returns an error when the temporary directory cannot be created or initialized.
+pub fn state_directory() -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("state");
     drop(state::initialize(&path)?);
@@ -304,6 +309,128 @@ fn canonical_downgrades_cannot_export_a_signing_seed() -> Result<(), Box<dyn std
             Err(VaultError::Corrupt)
         ));
     }
+    Ok(())
+}
+
+#[test]
+fn ssh_kind_is_isolated_from_export_and_context_signing() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let ssh = super::ssh_keygen(&path, &Software, "ssh-login", "login")?;
+    let signing = keygen(&path, &Software, "artifact", "")?;
+    assert_eq!(ssh, super::ssh_public_key(&path, &Software, "ssh-login")?);
+    let entries = list(&path)?;
+    let ssh_entry = entries
+        .iter()
+        .find(|entry| entry.name == "ssh-login")
+        .ok_or("missing SSH key")?;
+    assert_eq!(ssh_entry.kind, "ssh-ed25519");
+    assert_eq!(ssh_entry.fingerprint.as_deref(), Some(ssh.fingerprint.as_str()));
+    assert!(matches!(
+        reveal(&path, &Software, "ssh-login", Some("get")),
+        Err(VaultError::SshKeyNotExportable)
+    ));
+    assert!(matches!(
+        reveal(&path, &Software, "ssh-login", Some("run")),
+        Err(VaultError::SshKeyNotExportable)
+    ));
+    assert!(matches!(
+        public_key(&path, &Software, "ssh-login"),
+        Err(VaultError::NotSigningKey)
+    ));
+    assert!(matches!(
+        sign(&path, &Software, "ssh-login", "artifact", &[0; 32]),
+        Err(VaultError::NotSigningKey)
+    ));
+    assert!(matches!(
+        super::ssh_public_key(&path, &Software, "artifact"),
+        Err(VaultError::NotSshKey)
+    ));
+    assert!(matches!(
+        super::ssh_sign(&path, &Software, "artifact", b"data"),
+        Err(VaultError::NotSshKey)
+    ));
+    assert_eq!(public_key(&path, &Software, "artifact")?, signing);
+    let signed = super::ssh_sign(&path, &Software, "ssh-login", b"SSH challenge")?;
+    let verifying = VerifyingKey::from_bytes(&ssh.public_key)?;
+    verifying.verify(b"SSH challenge", &Signature::from_bytes(&signed.signature))?;
+    assert!(matches!(
+        super::ssh_sign(&path, &Software, "ssh-login", &vec![0; 256 * 1024 + 1]),
+        Err(VaultError::SshDataTooLarge)
+    ));
+    let audit = fs::read_to_string(path.join(AUDIT_FILE_NAME))?;
+    assert!(audit.contains(" read ssh-login ssh-sign\n"));
+    Ok(())
+}
+
+#[test]
+fn get_and_run_commands_refuse_ssh_entries() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    super::ssh_keygen(&path, &Software, "ssh-login", "")?;
+    for command in [
+        crate::cli_args::VaultCommand::Get {
+            name: "ssh-login".to_owned(),
+        },
+        crate::cli_args::VaultCommand::Run {
+            env: vec!["KEY=ssh-login".to_owned()],
+            command: vec![std::ffi::OsString::from("/bin/true")],
+        },
+    ] {
+        let mut output = Vec::new();
+        let mut error = Vec::new();
+        let status = crate::cli_vault::run(&path, command, false, &mut output, &mut error);
+        assert_ne!(status, std::process::ExitCode::SUCCESS);
+        assert_eq!(output, Vec::<u8>::new());
+        assert!(String::from_utf8(error)?.contains("cannot be exported"));
+    }
+    Ok(())
+}
+
+#[test]
+fn ssh_kind_downgrades_and_cross_kind_edits_fail_authentication() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    super::ssh_keygen(&path, &Software, "ssh-login", "")?;
+    let file = path.join(VAULT_FILE_NAME);
+    let original = fs::read(&file)?;
+    for version in [2_u8, 1] {
+        let mut document = decode(&original)?;
+        document.version = version;
+        if version == 2 {
+            let entry = document.entries.get_mut(0).ok_or("missing SSH key")?;
+            entry.kind = super::Kind::Secret;
+            entry.signing_public = None;
+        }
+        let hostile = super::format::encode(&document)?;
+        assert!(decode(&hostile).is_ok());
+        fs::write(&file, hostile.as_slice())?;
+        assert!(matches!(
+            reveal(&path, &Software, "ssh-login", Some("get")),
+            Err(VaultError::Corrupt)
+        ));
+    }
+    let mut document = decode(&original)?;
+    document.entries.get_mut(0).ok_or("missing SSH key")?.kind = super::Kind::SigningEd25519;
+    let hostile = super::format::encode(&document)?;
+    fs::write(&file, hostile.as_slice())?;
+    assert!(matches!(
+        sign(&path, &Software, "ssh-login", "artifact", &[0; 32]),
+        Err(VaultError::Corrupt)
+    ));
+    Ok(())
+}
+
+#[test]
+fn ssh_fingerprint_matches_ssh_keygen_when_available() -> Result<(), Box<dyn std::error::Error>> {
+    if Command::new("ssh-keygen").arg("-V").output().is_err() {
+        return Ok(());
+    }
+    let (_temporary, path) = state_directory()?;
+    let public = super::ssh_keygen(&path, &Software, "ssh-login", "")?;
+    let file = path.join("ssh-login.pub");
+    fs::write(&file, format!("{}\n", public.line))?;
+    let output = Command::new("ssh-keygen").arg("-lf").arg(&file).output()?;
+    assert!(output.status.success(), "ssh-keygen -lf refused Supgang's public line");
+    let result = String::from_utf8(output.stdout)?;
+    assert_eq!(result.split_whitespace().nth(1), Some(public.fingerprint.as_str()));
     Ok(())
 }
 

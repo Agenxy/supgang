@@ -169,6 +169,9 @@ where
         Some(Command::Sign { name, context, sha256 }) => {
             crate::cli_vault::sign(&state_directory, &name, &context, &sha256, cli.json, output, error)
         }
+        Some(Command::SshAgent { socket, keys }) => {
+            crate::cli_ssh_agent::run(&state_directory, &socket, &keys, cli.json, output, error)
+        }
         Some(Command::Status) => cli_control::status(&state_directory, cli.json, output, error),
         Some(Command::Name { command }) => cli_profile::name(&state_directory, command, cli.json, output, error),
         Some(Command::Advertise { name, port, key_pin }) => cli_profile::advertise(

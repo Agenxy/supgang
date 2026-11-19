@@ -54,6 +54,7 @@ const RESERVED_TAGS: &[&str] = &[
     "run",
     "service",
     "sign",
+    "ssh-agent",
     "status",
     "supervise",
     "tag",

@@ -27,13 +27,16 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 mod format;
+mod keys;
 mod signing;
+mod ssh;
 
 use format::{decode, encode};
 use signing::fingerprint;
 #[cfg(test)]
 use signing::{SIGN_DOMAIN, framed_message};
 pub use signing::{SignedDigest, SigningPublic, keygen, public_key, sign, validate_context};
+pub use ssh::{SshPublic, SshSigned, ssh_key_blob, ssh_keygen, ssh_public_key, ssh_sign};
 
 use crate::{
     artifact,
@@ -85,9 +88,18 @@ pub enum VaultError {
     /// Signing keys are never exportable.
     #[error("signing keys cannot be exported with vault get or vault run; use supgang sign")]
     SigningKeyNotExportable,
+    /// SSH keys are never exportable.
+    #[error("SSH keys cannot be exported with vault get or vault run; use supgang ssh-agent")]
+    SshKeyNotExportable,
     /// The entry is not a signing key.
     #[error("the named vault entry is not an Ed25519 signing key")]
     NotSigningKey,
+    /// The entry is not an SSH key.
+    #[error("the named vault entry is not an ssh-ed25519 key")]
+    NotSshKey,
+    /// The SSH data is too large to sign.
+    #[error("SSH agent signing data exceeds 256 KiB")]
+    SshDataTooLarge,
     /// No secret has this name.
     #[error("no secret named {0} in this computer's vault")]
     NotFound(String),
@@ -180,6 +192,7 @@ pub struct Summary {
 enum Kind {
     Secret,
     SigningEd25519,
+    SshEd25519,
 }
 
 impl Kind {
@@ -187,6 +200,7 @@ impl Kind {
         match self {
             Self::Secret => "secret",
             Self::SigningEd25519 => "signing-ed25519",
+            Self::SshEd25519 => "ssh-ed25519",
         }
     }
 }
@@ -211,7 +225,10 @@ impl Entry {
             stored_at: self.stored_at,
             bytes: self.ciphertext.len().saturating_sub(TAG_BYTES),
             kind: self.kind.label(),
-            fingerprint: self.signing_public.map(|key| fingerprint(&key)),
+            fingerprint: self.signing_public.map(|key| match self.kind {
+                Kind::SshEd25519 => ssh::fingerprint(&key),
+                Kind::Secret | Kind::SigningEd25519 => fingerprint(&key),
+            }),
         }
     }
 }
@@ -320,8 +337,10 @@ pub fn reveal(
             .iter()
             .find(|entry| entry.name == name)
             .ok_or_else(|| VaultError::NotFound(name.to_owned()))?;
-        if entry.kind != Kind::Secret {
-            return Err(VaultError::SigningKeyNotExportable);
+        match entry.kind {
+            Kind::Secret => {}
+            Kind::SigningEd25519 => return Err(VaultError::SigningKeyNotExportable),
+            Kind::SshEd25519 => return Err(VaultError::SshKeyNotExportable),
         }
         let shared = enclave.agree(&document.key, &entry.ephemeral)?;
         open(&shared, &document.public, entry)
@@ -498,8 +517,10 @@ fn associated_data(
     aad.extend_from_slice(ephemeral);
     aad.extend_from_slice(&stored_at.to_be_bytes());
     aad.extend_from_slice(note.as_bytes());
-    if kind == Kind::SigningEd25519 {
-        aad.extend_from_slice(b"\0signing-ed25519\0");
+    if kind != Kind::Secret {
+        aad.push(0);
+        aad.extend_from_slice(kind.label().as_bytes());
+        aad.push(0);
         if let Some(public) = signing_public {
             aad.extend_from_slice(public);
         }
@@ -555,7 +576,8 @@ fn audit(directory: &Path, operation: &str, name: &str, purpose: Option<&str>) {
 /// lock. At the bound it keeps the newest half of the newest 256 KiB.
 fn append_audit(directory: &Path, operation: &str, name: &str, purpose: Option<&str>) -> Result<(), VaultError> {
     use std::io::{Seek, SeekFrom};
-    let _lock = Lock::open(directory, AUDIT_LOCK_FILE_NAME, true)?;
+    // Agent requests must refuse a contended audit lock instead of blocking the socket loop.
+    let _lock = Lock::open(directory, AUDIT_LOCK_FILE_NAME, purpose != Some("ssh-sign"))?;
     let path = directory.join(AUDIT_FILE_NAME);
     let existed = fs::symlink_metadata(&path).is_ok();
     let mut file = fs::OpenOptions::new()
@@ -669,4 +691,5 @@ impl Drop for Lock {
 }
 
 #[cfg(test)]
-mod tests;
+/// Shared test-only enclave and state fixture.
+pub mod tests;
