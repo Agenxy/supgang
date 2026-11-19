@@ -135,7 +135,8 @@ impl Package {
             .bytes(&self.id)?
             .bytes(&self.descriptor)?
             .u64(self.generation)?;
-        e.bytes(&self.signing.serialize()?)?;
+        let signing = postcard::to_allocvec(&self.signing).map_err(|_| frost::Error::SerializationError)?;
+        e.bytes(&signing)?;
         Ok(hash(&e.into_writer()))
     }
 }
@@ -279,7 +280,7 @@ impl<S: SessionStore> Session<S> {
         let mut next = self.next(now)?;
         let selected = next.records.iter_mut().find(|r| r.id == id).ok_or(Error::Invalid)?;
         selected.phase = Phase::NoncesIssued;
-        selected.commitment = Some(commitment.serialize()?);
+        selected.commitment = Some(postcard::to_allocvec(&commitment).map_err(|_| frost::Error::SerializationError)?);
         self.persist(next)?;
         self.nonces.insert(id, nonces);
         Ok(commitment)
@@ -401,7 +402,7 @@ impl<S: SessionStore> Session<S> {
             .signing_commitments()
             .get(self.key.identifier())
             .ok_or(Error::Proof)?;
-        if Some(own.serialize()?) != record.commitment {
+        if Some(postcard::to_allocvec(own).map_err(|_| frost::Error::SerializationError)?) != record.commitment {
             return Err(Error::Proof);
         }
         Ok(())

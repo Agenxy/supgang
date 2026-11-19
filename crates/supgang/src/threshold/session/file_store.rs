@@ -310,7 +310,8 @@ fn validate_record(record: &Record, binding: &Binding) -> Result<(), Error> {
         if bytes.len() > 256 {
             return Err(Error::Bound);
         }
-        frost_ed25519::round1::SigningCommitments::deserialize(bytes)?;
+        let _: frost_ed25519::round1::SigningCommitments =
+            postcard::from_bytes(bytes).map_err(|_| frost_ed25519::Error::DeserializationError)?;
     }
     if let Some(bytes) = &record.cached_share {
         if bytes.len() != 32 {
