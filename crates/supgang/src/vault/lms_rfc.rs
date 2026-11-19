@@ -229,6 +229,78 @@ fn sign_with_path_params(
     Ok(signature)
 }
 
+/// Verify the finished signature against the fixed public root before release.
+pub(super) fn verify_fixed(public: &[u8; PUBLIC_LEN], message: &[u8; 32], signature: &[u8]) -> bool {
+    Parameters::new(HEIGHT, WIDTH).is_ok_and(|params| verify_with_params(public, message, signature, params))
+}
+
+fn verify_with_params(public: &[u8; PUBLIC_LEN], message: &[u8], signature: &[u8], params: Parameters) -> bool {
+    verify_candidate(public, message, signature, params).unwrap_or(false)
+}
+
+fn verify_candidate(public: &[u8; PUBLIC_LEN], message: &[u8], signature: &[u8], params: Parameters) -> Option<bool> {
+    if signature.len() != params.signature_len()
+        || public.get(..4)? != params.lms_type.to_be_bytes()
+        || public.get(4..8)? != params.ots_type.to_be_bytes()
+    {
+        return Some(false);
+    }
+    let id: [u8; 16] = public.get(8..24)?.try_into().ok()?;
+    let q = u32::from_be_bytes(signature.get(..4)?.try_into().ok()?);
+    if q >= params.leaf_count() || signature.get(4..8)? != params.ots_type.to_be_bytes() {
+        return Some(false);
+    }
+    let randomizer = signature.get(8..40)?;
+    let hash = digest(&[&id, &q.to_be_bytes(), &[0x81, 0x81], randomizer, message]);
+    let mut coefficients = [0_u8; 34];
+    let (hash_bytes, checksum_bytes) = coefficients.split_at_mut(32);
+    hash_bytes.copy_from_slice(&hash);
+    checksum_bytes.copy_from_slice(&checksum(&hash, params)?);
+    let y_end = 40 + usize::from(params.p) * 32;
+    let mut hasher = Sha256::new();
+    hasher.update(id);
+    hasher.update(q.to_be_bytes());
+    hasher.update([0x80, 0x80]);
+    let (y_chunks, y_tail) = signature.get(40..y_end)?.as_chunks::<32>();
+    if !y_tail.is_empty() {
+        return Some(false);
+    }
+    for (index, y) in y_chunks.iter().enumerate() {
+        let coefficient = coefficient(&coefficients, index, params)?;
+        let mut value = *y;
+        chain(
+            &id,
+            q,
+            u16::try_from(index).ok()?,
+            coefficient,
+            params.max_chain - coefficient,
+            &mut value,
+        );
+        hasher.update(value);
+    }
+    if signature.get(y_end..y_end + 4)? != params.lms_type.to_be_bytes() {
+        return Some(false);
+    }
+    let key: [u8; 32] = hasher.finalize().into();
+    let mut r = params.leaf_count() + q;
+    let mut node = digest(&[&id, &r.to_be_bytes(), &[0x82, 0x82], &key]);
+    let (path, path_tail) = signature.get(y_end + 4..)?.as_chunks::<32>();
+    if !path_tail.is_empty() || path.len() != usize::from(params.height) {
+        return Some(false);
+    }
+    for sibling in path {
+        let sibling = *sibling;
+        let child_is_left = r & 1 == 0;
+        r >>= 1;
+        node = if child_is_left {
+            parent(&id, r, &node, &sibling)
+        } else {
+            parent(&id, r, &sibling, &node)
+        };
+    }
+    Some(r == 1 && public.get(24..) == Some(node.as_slice()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,9 +329,32 @@ mod tests {
         let signature = sign_with_path_params(&seed, &id, 3, &message, &randomizer, &path, Parameters::new(10, 4)?)?;
         assert_eq!(signature.len(), 2_508);
         assert_eq!(
-            hex::encode(Sha256::digest(signature)),
+            hex::encode(Sha256::digest(&signature)),
             "7e3c3836d68274c43edaaaac98a51d2109ae7fd05704555636006a38f0b602d4"
         );
+        let mut public = public_key(&id, &root);
+        public
+            .get_mut(..4)
+            .ok_or("short public")?
+            .copy_from_slice(&6_u32.to_be_bytes());
+        public
+            .get_mut(4..8)
+            .ok_or("short public")?
+            .copy_from_slice(&3_u32.to_be_bytes());
+        assert!(verify_with_params(
+            &public,
+            &message,
+            &signature,
+            Parameters::new(10, 4)?
+        ));
+        let mut corrupted = signature;
+        *corrupted.last_mut().ok_or("empty signature")? ^= 1;
+        assert!(!verify_with_params(
+            &public,
+            &message,
+            &corrupted,
+            Parameters::new(10, 4)?
+        ));
         Ok(())
     }
 

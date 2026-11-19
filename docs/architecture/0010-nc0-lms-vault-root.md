@@ -49,9 +49,18 @@ signing. Missing, malformed, truncated, reordered, or disagreeing state
 refuses signing. Neither source silently repairs the other. The vault lock
 serializes all key state changes; journal creation and append sync the file
 and parent directory. Atomic vault replacement syncs the replacement and
-parent directory. Mark the LMS vault file, its replacements, and the journal
-excluded from Time Machine backups, and verify that flag after each save. Backup exclusion is a
-precaution, not a rollback proof.
+parent directory. Exclude only the LMS journal from Time Machine backups and
+verify the flag after each append; preserve normal vault backup behavior for
+other secrets. Restoring a vault backup without its journal leaves the journal
+missing, so signing refuses. Backup exclusion is a precaution, not a rollback
+proof: APFS clones and snapshots do not honor it.
+
+If key generation fails before the vault entry is committed, its new q=0
+journal is removed and the directory synced; cleanup failure is reported.
+After a crash, a retry may replace only one valid, single-record q=0 orphan
+when no vault entry of that name exists, and the replacement is audited. If
+the vault entry did commit before the error, retain its journal and refuse a
+new key under that name. Any non-pristine orphan refuses.
 
 Signing requires a TTY and explicit confirmation showing key name, next q,
 remaining signatures, and the package digest. Exactly one external check is
@@ -63,6 +72,8 @@ and sync `next_q=q+1` to the journal first; reseal/save/sync the vault's
 `next_q=q+1` second; only then compute or release the signature. A failed
 computation burns q. Every successful result carries q. Refuse when
 `q >= 2^20`.
+Before releasing the signature, verify it against the fixed public root and
+package digest. Verification failure burns q and returns an error.
 
 The command surface is `vault lms-keygen NAME`, `vault public-key NAME`
 (also `vault lms-public-key NAME`), `vault lms-sign NAME --package

@@ -1,7 +1,7 @@
 //! Single-purpose NC0 LMS root with crash-durable one-time q reservations.
 
 use std::{
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
@@ -162,13 +162,77 @@ fn create_journal(
         .mode(0o600)
         .custom_flags(no_follow_flag()?)
         .open(&path)?;
-    supgang_acl::clear_inherited_acl(&file)?;
-    validate_owner_file_metadata(&file)?;
-    file.write_all(&record(public, 0, &[0_u8; 32]))?;
-    file.sync_all()?;
-    sync_directory(directory)?;
-    backup::exclude(&path, key)?;
+    let result = (|| {
+        supgang_acl::clear_inherited_acl(&file)?;
+        validate_owner_file_metadata(&file)?;
+        file.write_all(&record(public, 0, &[0_u8; 32]))?;
+        file.sync_all()?;
+        sync_directory(directory)?;
+        backup::exclude(&path, key)?;
+        Ok(())
+    })();
+    drop(file);
+    if let Err(error) = result {
+        if fs::remove_file(&path).is_err() || sync_directory(directory).is_err() {
+            return Err(VaultError::LmsOrphanCleanup);
+        }
+        return Err(error);
+    }
     Ok(())
+}
+
+fn recover_pristine_orphan(directory: &Path, name: &str) -> Result<(), VaultError> {
+    let path = journal_path(directory, name);
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(no_follow_flag()?)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    validate_owner_file_metadata(&file)?;
+    if file.metadata()?.len() != RECORD_BYTES as u64 {
+        return Err(VaultError::Corrupt);
+    }
+    let mut bytes = [0_u8; RECORD_BYTES];
+    file.read_exact(&mut bytes)?;
+    if bytes[..8] != *JOURNAL_MAGIC
+        || bytes[40..44] != 0_u32.to_be_bytes()
+        || bytes[44..76].iter().any(|byte| *byte != 0)
+        || bytes[76..] != Sha256::digest(&bytes[..76])[..]
+    {
+        return Err(VaultError::Corrupt);
+    }
+    drop(file);
+    append_audit(directory, "replace-pristine-lms-orphan", name, None).map_err(|_| VaultError::Audit)?;
+    fs::remove_file(&path).map_err(|_| VaultError::LmsOrphanCleanup)?;
+    sync_directory(directory).map_err(|_| VaultError::LmsOrphanCleanup)?;
+    Ok(())
+}
+
+fn save_or_cleanup(
+    directory: &Path,
+    name: &str,
+    public: &[u8; lms_rfc::PUBLIC_LEN],
+    result: Result<(), VaultError>,
+) -> Result<(), VaultError> {
+    let Err(error) = result else { return Ok(()) };
+    let committed = match load(directory) {
+        Ok(Some(document)) => match document.entries.iter().find(|entry| entry.name == name) {
+            Some(entry) if entry.lms_public.as_ref() == Some(public) => true,
+            Some(_) => return Err(VaultError::LmsOrphanCleanup),
+            None => false,
+        },
+        Ok(None) => false,
+        Err(_) => return Err(VaultError::LmsOrphanCleanup),
+    };
+    if !committed {
+        fs::remove_file(journal_path(directory, name)).map_err(|_| VaultError::LmsOrphanCleanup)?;
+        sync_directory(directory).map_err(|_| VaultError::LmsOrphanCleanup)?;
+    }
+    Err(error)
 }
 
 fn append_journal(
@@ -293,9 +357,10 @@ pub fn keygen(
         },
         Ok,
     )?;
-    if document.entries.iter().any(|entry| entry.name == name) || journal_path(&directory, name).exists() {
+    if document.entries.iter().any(|entry| entry.name == name) {
         return Err(VaultError::AlreadyExists(name.to_owned()));
     }
+    recover_pristine_orphan(&directory, name)?;
     if document.entries.len() >= MAX_SECRETS {
         return Err(VaultError::Full);
     }
@@ -326,7 +391,7 @@ pub fn keygen(
     document.entries.push(entry);
     document.entries.sort_by(|left, right| left.name.cmp(&right.name));
     create_journal(&directory, name, &identity.public_key, &document.key)?;
-    save(&directory, &document)?;
+    save_or_cleanup(&directory, name, &identity.public_key, save(&directory, &document))?;
     audit(&directory, "add-lms", name, None);
     Ok(identity)
 }
@@ -477,7 +542,9 @@ pub fn sign(
     let mut randomizer = [0_u8; 32];
     getrandom::fill(&mut randomizer).map_err(io::Error::other)?;
     let signature = lms_rfc::sign_with_path(&private.seed, &private.id, q, &package.digest, &randomizer, &path)?;
-    if signature.len() != lms_rfc::SIGNATURE_LEN {
+    if signature.len() != lms_rfc::SIGNATURE_LEN
+        || !lms_rfc::verify_fixed(&private.identity.public_key, &package.digest, &signature)
+    {
         return Err(VaultError::Corrupt);
     }
     Ok(LmsSigned {

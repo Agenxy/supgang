@@ -105,6 +105,57 @@ fn reservation_is_durable_before_signature_computation() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn failed_keygen_save_cleans_pristine_journal_and_retry_replaces_it() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, directory) = state_directory()?;
+    let (key, _) = Software.generate()?;
+    let first_public = lms_rfc::public_key(&[1_u8; 16], &[2_u8; 32]);
+    let later_public = lms_rfc::public_key(&[3_u8; 16], &[4_u8; 32]);
+    create_journal(&directory, "nc0", &first_public, &key)?;
+    assert!(matches!(
+        save_or_cleanup(
+            &directory,
+            "nc0",
+            &first_public,
+            Err(io::Error::other("injected save failure").into())
+        ),
+        Err(VaultError::Io(_))
+    ));
+    assert!(!journal_path(&directory, "nc0").exists());
+    create_journal(&directory, "nc0", &first_public, &key)?;
+    recover_pristine_orphan(&directory, "nc0")?;
+    create_journal(&directory, "nc0", &later_public, &key)?;
+    assert_eq!(read_journal(&directory, "nc0", &later_public)?.next_q, 0);
+    let audit = fs::read_to_string(directory.join(super::super::AUDIT_FILE_NAME))?;
+    assert!(audit.contains("replace-pristine-lms-orphan nc0"));
+    Ok(())
+}
+
+#[test]
+fn committed_save_error_retains_journal_and_nonpristine_orphan_refuses() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, directory, identity) = fixture()?;
+    assert!(matches!(
+        save_or_cleanup(
+            &directory,
+            "nc0",
+            &identity.public_key,
+            Err(io::Error::other("post-commit failure").into())
+        ),
+        Err(VaultError::Io(_))
+    ));
+    assert_eq!(read_journal(&directory, "nc0", &identity.public_key)?.next_q, 0);
+    let document = load(&directory)?.ok_or("missing vault")?;
+    let head = read_journal(&directory, "nc0", &identity.public_key)?;
+    append_journal(&directory, "nc0", &identity.public_key, &head, 1, &document.key)?;
+    fs::remove_file(directory.join(super::super::VAULT_FILE_NAME))?;
+    assert!(matches!(
+        recover_pristine_orphan(&directory, "nc0"),
+        Err(VaultError::Corrupt)
+    ));
+    assert_eq!(read_journal(&directory, "nc0", &identity.public_key)?.next_q, 1);
+    Ok(())
+}
+
+#[test]
 fn unreadable_journal_exhaustion_and_export_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let (_temporary, directory, expected) = fixture()?;
     assert!(matches!(

@@ -126,6 +126,9 @@ pub enum VaultError {
     /// Forward-only recovery target is unsafe.
     #[error("LMS advance target must exceed both local records and the external release log")]
     LmsAdvanceRefused,
+    /// Key generation could not prove that its orphan journal was removed.
+    #[error("LMS key generation could not verify or clean its orphan journal; inspect vault state before retrying")]
+    LmsOrphanCleanup,
     /// The entry is not a signing key.
     #[error("the named vault entry is not an Ed25519 signing key")]
     NotSigningKey,
@@ -642,15 +645,8 @@ fn save(directory: &Path, document: &Document) -> Result<(), VaultError> {
     let temporary = temporary_path(directory)?;
     let result = (|| {
         artifact::write_new(&temporary, &bytes, MAX_VAULT_BYTES)?;
-        let lms_present = document.entries.iter().any(|entry| entry.kind == Kind::LmsSha256H20W1);
-        if lms_present {
-            backup::exclude(&temporary, &document.key)?;
-        }
         fs::rename(&temporary, directory.join(VAULT_FILE_NAME))?;
         sync_directory(directory)?;
-        if lms_present {
-            backup::exclude(&directory.join(VAULT_FILE_NAME), &document.key)?;
-        }
         Ok(())
     })();
     if result.is_err() {
