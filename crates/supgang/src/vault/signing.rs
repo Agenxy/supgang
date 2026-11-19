@@ -163,6 +163,8 @@ pub fn sign_member(
         return Err(VaultError::MemberAuthority);
     }
     current_member_for(state_directory, requester)?;
+    let directory = crate::storage::validate_directory(state_directory)?;
+    super::agent_audit::preflight_nonce(&directory, &request.nonce)?;
     let (seed, public_key, policy) =
         keys::open_seed(state_directory, enclave, &request.purpose, "sign", Kind::SigningEd25519)?;
     let policy = policy.ok_or(VaultError::AgentPolicyDenied)?;
@@ -172,7 +174,6 @@ pub fn sign_member(
     if !session_current() {
         return Err(VaultError::MemberAuthority);
     }
-    let directory = crate::storage::validate_directory(state_directory)?;
     super::agent_audit::reserve_nonce(&directory, requester, request, &public_key)?;
     current_member_for(state_directory, requester)?;
     if !session_current() {

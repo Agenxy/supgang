@@ -502,6 +502,20 @@ fn append(
     Ok(())
 }
 
+/// Refuses replay before the key-opening read audit. The caller holds the
+/// vault lock through the later durable nonce reservation.
+pub(super) fn preflight_nonce(directory: &Path, nonce: &[u8; 32]) -> Result<(), VaultError> {
+    let _lock = Lock::open(directory, LOCK_NAME, false).map_err(|_| VaultError::AgentAudit)?;
+    let state = scan(directory)?;
+    if state.sequence == 0 {
+        return Err(VaultError::AgentAudit);
+    }
+    if state.used_nonces.contains(nonce) {
+        return Err(VaultError::AgentNonceReplay);
+    }
+    Ok(())
+}
+
 pub(super) fn create_reserved(
     directory: &Path,
     requester: NodeId,

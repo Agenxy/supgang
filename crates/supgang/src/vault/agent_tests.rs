@@ -24,6 +24,7 @@ fn remote_member_nonce_is_spent_before_signing_and_replay_refuses() -> Result<()
     };
     let first = super::sign_member(&path, &Software, requester, &request, || true)?;
     assert_eq!(first.identity.public_key.len(), 32);
+    let read_audit = fs::read(path.join(super::AUDIT_FILE_NAME))?;
     assert!(matches!(
         super::sign_member(&path, &Software, requester, &request, || true),
         Err(VaultError::AgentNonceReplay)
@@ -36,6 +37,7 @@ fn remote_member_nonce_is_spent_before_signing_and_replay_refuses() -> Result<()
         super::sign_member(&path, &Software, requester, &changed, || true),
         Err(VaultError::AgentNonceReplay)
     ));
+    assert_eq!(fs::read(path.join(super::AUDIT_FILE_NAME))?, read_audit);
     let audit = String::from_utf8(fs::read(path.join("vault-agent-audit-0000.log"))?)?;
     assert!(audit.contains("nonce-reserved"));
     assert!(audit.contains(&hex::encode(request.nonce)));
