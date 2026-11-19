@@ -1,5 +1,5 @@
 //! Agent audit durability and resource-bound tests.
-use super::{Action, Event, Record, create_reserved, reserve_nonce, scan, segment_name, write_head};
+use super::{Action, Event, Record, create_reserved, denied, reserve_nonce, scan, segment_name, write_head};
 use crate::{agent_sign_protocol::SignRequest, artifact, ids::NodeId, vault::VaultError};
 
 #[test]
@@ -33,6 +33,39 @@ fn nonce_replay_and_purpose_budget_refuse_before_signing() -> Result<(), Box<dyn
 }
 
 #[test]
+fn authenticated_denials_have_a_separate_bounded_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let requester = NodeId::from_bytes([1; 32]);
+    create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false)?;
+    let request = SignRequest {
+        nonce: [8; 32],
+        purpose: "build".to_owned(),
+        context: "build.release".to_owned(),
+        digest: [4; 32],
+        expires_at: super::unix_now() + 60,
+    };
+    for _ in 0..64 {
+        denied(directory.path(), requester, &request, Some(&[3; 32]))?;
+    }
+    let before = scan(directory.path())?.sequence;
+    assert!(matches!(
+        denied(directory.path(), requester, &request, Some(&[3; 32])),
+        Err(VaultError::AgentDenialLimit)
+    ));
+    assert_eq!(scan(directory.path())?.sequence, before);
+    reserve_nonce(
+        directory.path(),
+        requester,
+        &SignRequest {
+            context: "build.stage".to_owned(),
+            ..request
+        },
+        &[3; 32],
+    )?;
+    Ok(())
+}
+
+#[test]
 fn linked_segments_verify_and_tampering_refuses() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
@@ -45,7 +78,7 @@ fn linked_segments_verify_and_tampering_refuses() -> Result<(), Box<dyn std::err
             purpose: "build",
             context: None,
             digest: &[2; 32],
-            public_key: &[3; 32],
+            public_key: Some(&[3; 32]),
         },
     )?;
     let first_bytes = first.encode()?;
@@ -59,7 +92,7 @@ fn linked_segments_verify_and_tampering_refuses() -> Result<(), Box<dyn std::err
             purpose: "build",
             context: Some("build.stage"),
             digest: &[4; 32],
-            public_key: &[3; 32],
+            public_key: Some(&[3; 32]),
         },
     )?;
     let second_bytes = second.encode()?;
@@ -128,7 +161,7 @@ fn future_audit_time_refuses_further_effects() -> Result<(), Box<dyn std::error:
             purpose: "build",
             context: None,
             digest: &[2; 32],
-            public_key: &[3; 32],
+            public_key: Some(&[3; 32]),
         },
     )?;
     record.at = record.at.saturating_add(60);

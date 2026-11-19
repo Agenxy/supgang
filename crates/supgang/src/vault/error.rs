@@ -28,6 +28,11 @@ pub enum VaultError {
     /// Current certified membership could not be established.
     #[error("current local hive membership could not be verified for agent signing")]
     MemberAuthority,
+    /// A non-authority computer cannot use its local vault for agent signing.
+    #[error(
+        "local agent signing requires the root-authority computer; use --remote to request a signature from that computer"
+    )]
+    RootAuthorityRequired,
     /// Agent audit is missing, changed, contended or could not be synced.
     #[error("agent audit cannot be verified or made durable; no signature was released")]
     AgentAudit,
@@ -46,6 +51,9 @@ pub enum VaultError {
     /// The purpose reached its operational hourly signing budget.
     #[error("agent signing purpose reached its per-member or hive hourly limit")]
     AgentSignLimit,
+    /// Authenticated denials reached their hourly audit budget.
+    #[error("agent signing denial audit reached its per-member or hive hourly limit")]
+    AgentDenialLimit,
     /// Signing keys are never exportable.
     #[error("signing keys cannot be exported with vault get or vault run; use supgang sign")]
     SigningKeyNotExportable,

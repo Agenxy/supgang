@@ -100,6 +100,15 @@ pub fn sign(
     let requester = if let Some(policy) = policy {
         let requester = current_member(state_directory)?;
         if !policy.admits_member(requester) || !policy.admits_context(context) {
+            let request = crate::agent_sign_protocol::SignRequest {
+                nonce: [0; 32],
+                purpose: name.to_owned(),
+                context: context.to_owned(),
+                digest: *digest,
+                expires_at: super::unix_now(),
+            };
+            let directory = crate::storage::validate_directory(state_directory)?;
+            super::agent_audit::denied(&directory, requester, &request, Some(&public_key))?;
             return Err(VaultError::AgentPolicyDenied);
         }
         let mut nonce = [0_u8; 32];
@@ -165,12 +174,14 @@ pub fn sign_member(
     current_member_for(state_directory, requester)?;
     let directory = crate::storage::validate_directory(state_directory)?;
     super::agent_audit::preflight_nonce(&directory, &request.nonce)?;
-    let (seed, public_key, policy) =
-        keys::open_seed(state_directory, enclave, &request.purpose, "sign", Kind::SigningEd25519)?;
-    let policy = policy.ok_or(VaultError::AgentPolicyDenied)?;
-    if !policy.admits_member(requester) || !policy.admits_context(&request.context) {
-        return Err(VaultError::AgentPolicyDenied);
-    }
+    let (seed, public_key) = open_member_key(
+        state_directory,
+        enclave,
+        requester,
+        request,
+        &session_current,
+        &directory,
+    )?;
     if !session_current() {
         return Err(VaultError::MemberAuthority);
     }
@@ -210,6 +221,63 @@ pub fn sign_member(
     })
 }
 
+fn open_member_key(
+    state_directory: &Path,
+    enclave: &dyn Enclave,
+    requester: crate::ids::NodeId,
+    request: &crate::agent_sign_protocol::SignRequest,
+    session_current: &impl Fn() -> bool,
+    directory: &Path,
+) -> Result<(Zeroizing<Vec<u8>>, [u8; 32]), VaultError> {
+    let (seed, public_key, policy) =
+        match keys::open_seed(state_directory, enclave, &request.purpose, "sign", Kind::SigningEd25519) {
+            Ok(opened) => opened,
+            Err(error @ (VaultError::NotFound(_) | VaultError::NotSigningKey)) => {
+                record_denial(state_directory, requester, request, session_current, directory, None)?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+    let Some(policy) = policy else {
+        record_denial(
+            state_directory,
+            requester,
+            request,
+            session_current,
+            directory,
+            Some(&public_key),
+        )?;
+        return Err(VaultError::AgentPolicyDenied);
+    };
+    if !policy.admits_member(requester) || !policy.admits_context(&request.context) {
+        record_denial(
+            state_directory,
+            requester,
+            request,
+            session_current,
+            directory,
+            Some(&public_key),
+        )?;
+        return Err(VaultError::AgentPolicyDenied);
+    }
+    Ok((seed, public_key))
+}
+
+fn record_denial(
+    state_directory: &Path,
+    requester: crate::ids::NodeId,
+    request: &crate::agent_sign_protocol::SignRequest,
+    session_current: &impl Fn() -> bool,
+    directory: &Path,
+    public_key: Option<&[u8; 32]>,
+) -> Result<(), VaultError> {
+    current_member_for(state_directory, requester)?;
+    if !session_current() {
+        return Err(VaultError::MemberAuthority);
+    }
+    super::agent_audit::denied(directory, requester, request, public_key)
+}
+
 fn current_member_for(state_directory: &Path, requester: crate::ids::NodeId) -> Result<(), VaultError> {
     let state = state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
     if state.identity().root.is_none() || state.revocations().contains(&requester) {
@@ -232,7 +300,7 @@ pub(super) fn current_member(state_directory: &Path) -> Result<crate::ids::NodeI
     // Only the authority has current local revocation state. Other members need
     // a bounded-fresh root status check before this local path can be enabled.
     if state.identity().root.is_none() {
-        return Err(VaultError::MemberAuthority);
+        return Err(VaultError::RootAuthorityRequired);
     }
     let node = state.identity().device.node_id();
     let certificate = state.local_membership().ok_or(VaultError::MemberAuthority)?;
