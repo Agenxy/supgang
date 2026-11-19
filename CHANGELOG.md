@@ -11,6 +11,9 @@ that a remote refresh to this source runs under probation.
 - Replace the MCP SDK and schema generator with a bounded local JSON-RPC
   server. The existing legacy and modern wire replies are preserved against
   captured client transcripts; the read-only tools keep their prior outputs.
+- Pin the published netwatch 0.19.1 source with one Windows WMI dependency
+  feature change. The offline repository gate checks the archive checksum and
+  every vendored file, including both upstream licence texts.
 
 - Add Mac-bound, non-exportable Ed25519 signing entries to the vault: interactive `vault keygen`,
   `vault public-key`, and audited context-bound `sign --sha256`. Existing secret entries remain

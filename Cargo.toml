@@ -1,6 +1,10 @@
 [workspace]
 members = ["crates/supgang", "crates/supgang-acl", "crates/supgang-cli", "crates/supgang-quality"]
+exclude = ["third_party/netwatch"]
 resolver = "3"
+
+[patch.crates-io]
+netwatch = { path = "third_party/netwatch" }
 
 [workspace.package]
 version = "0.2.0-alpha.17"
