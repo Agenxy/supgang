@@ -173,8 +173,9 @@ nonce under the same cap.
 
 Authenticated policy refusals are recorded with a `denied` decision before
 returning the refusal. An unknown purpose is marked with an `unknown` key
-fingerprint, never a claimed key identity. Denials do not reserve the request
-nonce. At most 64 denials per member and 256 per hive are recorded per rolling
+fingerprint, never a claimed key identity. A denial spends its request nonce;
+any replay refuses before opening the key or changing the audit. At most 64
+denials per member and 256 per hive are recorded per rolling
 hour; further requests still refuse, including when the denial audit is full.
 Malformed or unauthenticated traffic does not write this durable audit.
 

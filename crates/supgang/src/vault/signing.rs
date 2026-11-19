@@ -96,16 +96,28 @@ pub fn sign(
 ) -> Result<SignedDigest, VaultError> {
     validate_context(context)?;
     let (_directory, _vault_lock) = Lock::acquire(state_directory)?;
-    let (seed, public_key, policy) = keys::open_seed(state_directory, enclave, name, "sign", Kind::SigningEd25519)?;
+    let (seed, public_key, policy) = match keys::open_seed(state_directory, enclave, name, "sign", Kind::SigningEd25519)
+    {
+        Err(error @ VaultError::NotFound(_)) => {
+            let state = state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
+            if state.identity().root.is_none() {
+                return Err(VaultError::RootAuthorityRequired);
+            }
+            return Err(error);
+        }
+        other => other?,
+    };
     let requester = if let Some(policy) = policy {
         let requester = current_member(state_directory)?;
         if !policy.admits_member(requester) || !policy.admits_context(context) {
+            let mut nonce = [0_u8; 32];
+            getrandom::fill(&mut nonce).map_err(std::io::Error::other)?;
             let request = crate::agent_sign_protocol::SignRequest {
-                nonce: [0; 32],
+                nonce,
                 purpose: name.to_owned(),
                 context: context.to_owned(),
                 digest: *digest,
-                expires_at: super::unix_now(),
+                expires_at: super::unix_now().checked_add(300).ok_or(VaultError::MemberAuthority)?,
             };
             let directory = crate::storage::validate_directory(state_directory)?;
             super::agent_audit::denied(&directory, requester, &request, Some(&public_key))?;
@@ -271,6 +283,9 @@ fn record_denial(
     directory: &Path,
     public_key: Option<&[u8; 32]>,
 ) -> Result<(), VaultError> {
+    request
+        .validate(super::unix_now())
+        .map_err(|_| VaultError::InvalidSigningRequest)?;
     current_member_for(state_directory, requester)?;
     if !session_current() {
         return Err(VaultError::MemberAuthority);

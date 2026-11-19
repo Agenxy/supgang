@@ -37,22 +37,25 @@ fn authenticated_denials_have_a_separate_bounded_budget() -> Result<(), Box<dyn 
     let directory = tempfile::tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
     create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false)?;
-    let request = SignRequest {
+    let mut request = SignRequest {
         nonce: [8; 32],
         purpose: "build".to_owned(),
         context: "build.release".to_owned(),
         digest: [4; 32],
         expires_at: super::unix_now() + 60,
     };
-    for _ in 0..64 {
+    for index in 0_u8..64 {
+        request.nonce = [index; 32];
         denied(directory.path(), requester, &request, Some(&[3; 32]))?;
     }
+    request.nonce = [64; 32];
     let before = scan(directory.path())?.sequence;
     assert!(matches!(
         denied(directory.path(), requester, &request, Some(&[3; 32])),
         Err(VaultError::AgentDenialLimit)
     ));
     assert_eq!(scan(directory.path())?.sequence, before);
+    request.nonce = [65; 32];
     reserve_nonce(
         directory.path(),
         requester,
