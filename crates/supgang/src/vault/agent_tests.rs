@@ -21,12 +21,13 @@ fn agent_policy_is_immutable_and_restricts_creation_and_signing() -> Result<(), 
     assert_eq!(list(&path)?, Vec::<super::Summary>::new());
 
     let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], Some(vec![local]))?;
-    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let identity = super::keygen_agent(&path, &Software, "build", "", &policy)?;
     sign(&path, &Software, "build", "build.stage", &[1; 32])?;
     let audit_path = path.join("vault-agent-audit-0000.log");
     let audit = String::from_utf8(fs::read(&audit_path)?)?;
     assert!(audit.contains(&local.to_string()));
     assert!(audit.contains("build.stage"));
+    assert!(audit.contains(&identity.fingerprint));
     assert!(matches!(
         sign(&path, &Software, "build", "build.release", &[1; 32]),
         Err(VaultError::AgentPolicyDenied)
@@ -103,6 +104,75 @@ fn agent_audit_failure_refuses_key_creation_and_signature_release() -> Result<()
         sign(&path, &Software, "build", "build.stage", &[1; 32]),
         Err(VaultError::AgentAudit)
     ));
+    Ok(())
+}
+
+#[test]
+fn missing_agent_audit_refuses_existing_key_use_and_new_key_creation() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    fs::remove_file(path.join("vault-agent-audit-0000.log"))?;
+    assert!(matches!(
+        sign(&path, &Software, "build", "build.stage", &[1; 32]),
+        Err(VaultError::AgentAudit)
+    ));
+    assert!(matches!(
+        super::keygen_agent(&path, &Software, "second", "", &policy),
+        Err(VaultError::AgentAudit)
+    ));
+    fs::remove_file(path.join("vault-agent-audit.head"))?;
+    assert!(matches!(
+        sign(&path, &Software, "build", "build.stage", &[1; 32]),
+        Err(VaultError::AgentAudit)
+    ));
+    assert!(matches!(
+        super::keygen_agent(&path, &Software, "second", "", &policy),
+        Err(VaultError::AgentAudit)
+    ));
+    Ok(())
+}
+
+#[test]
+fn signing_and_removal_share_the_vault_lock() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let (_directory, lock) = super::Lock::acquire(&path)?;
+    assert!(matches!(
+        sign(&path, &Software, "build", "build.stage", &[1; 32]),
+        Err(VaultError::Busy)
+    ));
+    drop(lock);
+    remove(&path, "build")?;
+    assert!(matches!(
+        sign(&path, &Software, "build", "build.stage", &[1; 32]),
+        Err(VaultError::NotFound(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn contended_read_audit_does_not_hold_key_removal_lock() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let audit_lock = super::Lock::open(&path, super::AUDIT_LOCK_FILE_NAME, false)?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker_path = path.clone();
+    let worker = std::thread::spawn(move || {
+        let refused = matches!(
+            sign(&worker_path, &Software, "build", "build.stage", &[1; 32]),
+            Err(VaultError::Audit)
+        );
+        let _sent = sender.send(refused);
+    });
+    let refused = receiver.recv_timeout(std::time::Duration::from_secs(2))?;
+    assert!(refused, "signing did not refuse a contended read audit");
+    worker.join().map_err(|_| "signing worker panicked")?;
+    let (_directory, vault_lock) = super::Lock::acquire(&path)?;
+    drop(vault_lock);
+    drop(audit_lock);
     Ok(())
 }
 

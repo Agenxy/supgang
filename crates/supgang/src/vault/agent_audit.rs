@@ -19,6 +19,9 @@ use crate::{
 
 const DOMAIN: &[u8] = b"supgang/agent-audit/v1\0";
 const LOCK_NAME: &str = "vault-agent-audit.lock";
+const HEAD_NAME: &str = "vault-agent-audit.head";
+const HEAD_TEMP_NAME: &str = ".vault-agent-audit.head.tmp";
+const MAX_HEAD_BYTES: usize = 256;
 const MAX_SEGMENTS: usize = 16;
 const MAX_SEGMENT_BYTES: usize = 256 * 1024;
 const MAX_RECORD_BYTES: usize = 768;
@@ -48,7 +51,7 @@ struct Event<'a> {
     purpose: &'a str,
     context: Option<&'a str>,
     digest: &'a [u8; 32],
-    fingerprint: &'a [u8; 32],
+    public_key: &'a [u8; 32],
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -65,6 +68,14 @@ struct Record {
     fingerprint: String,
     at: u64,
     hash: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Head {
+    version: u8,
+    sequence: u64,
+    hash: String,
+    at: u64,
 }
 
 struct VerifiedRecord {
@@ -98,7 +109,7 @@ impl Record {
             purpose: event.purpose.to_owned(),
             context: event.context.map(str::to_owned),
             digest: hex::encode(event.digest),
-            fingerprint: hex::encode(event.fingerprint),
+            fingerprint: hex::encode(Sha256::digest(event.public_key)),
             at: unix_now(),
             hash: String::new(),
         };
@@ -179,6 +190,62 @@ fn segment_name(index: usize) -> String {
     format!("vault-agent-audit-{index:04}.log")
 }
 
+fn path_exists(path: &Path) -> Result<bool, VaultError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(VaultError::AgentAudit),
+    }
+}
+
+fn verify_head(directory: &Path, sequence: u64, hash: [u8; 32], at: u64) -> Result<(), VaultError> {
+    if path_exists(&directory.join(HEAD_TEMP_NAME))? {
+        return Err(VaultError::AgentAudit);
+    }
+    let path = directory.join(HEAD_NAME);
+    if !path_exists(&path)? {
+        return if sequence == 0 {
+            Ok(())
+        } else {
+            Err(VaultError::AgentAudit)
+        };
+    }
+    if sequence == 0 {
+        return Err(VaultError::AgentAudit);
+    }
+    let bytes = artifact::read(&path, MAX_HEAD_BYTES).map_err(|_| VaultError::AgentAudit)?;
+    let content = bytes.strip_suffix(b"\n").ok_or(VaultError::AgentAudit)?;
+    let head: Head = serde_json::from_slice(content).map_err(|_| VaultError::AgentAudit)?;
+    if serde_json::to_vec(&head).map_err(|_| VaultError::AgentAudit)? != content
+        || head.version != 1
+        || head.sequence != sequence
+        || head.hash != hex::encode(hash)
+        || head.at != at
+    {
+        return Err(VaultError::AgentAudit);
+    }
+    Ok(())
+}
+
+fn write_head(directory: &Path, sequence: u64, hash: [u8; 32], at: u64) -> Result<(), VaultError> {
+    let head = Head {
+        version: 1,
+        sequence,
+        hash: hex::encode(hash),
+        at,
+    };
+    let mut bytes = serde_json::to_vec(&head).map_err(|_| VaultError::AgentAudit)?;
+    bytes.push(b'\n');
+    if bytes.len() > MAX_HEAD_BYTES {
+        return Err(VaultError::AgentAudit);
+    }
+    let temporary = directory.join(HEAD_TEMP_NAME);
+    artifact::write_new(&temporary, &bytes, MAX_HEAD_BYTES).map_err(|_| VaultError::AgentAudit)?;
+    fs::rename(temporary, directory.join(HEAD_NAME)).map_err(|_| VaultError::AgentAudit)?;
+    sync_directory(directory).map_err(|_| VaultError::AgentAudit)?;
+    Ok(())
+}
+
 struct Scan {
     sequence: u64,
     hash: [u8; 32],
@@ -228,9 +295,10 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
         last = Some(index);
         last_bytes = bytes.len();
     }
-    if fs::symlink_metadata(directory.join(segment_name(MAX_SEGMENTS))).is_ok() {
+    if path_exists(&directory.join(segment_name(MAX_SEGMENTS)))? {
         return Err(VaultError::AgentAudit);
     }
+    verify_head(directory, sequence, hash, last_at)?;
     Ok(Scan {
         sequence,
         hash,
@@ -241,9 +309,12 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
     })
 }
 
-fn append(directory: &Path, event: Event<'_>) -> Result<(), VaultError> {
+fn append(directory: &Path, event: Event<'_>, require_existing: bool) -> Result<(), VaultError> {
     let _lock = Lock::open(directory, LOCK_NAME, false).map_err(|_| VaultError::AgentAudit)?;
     let state = scan(directory)?;
+    if require_existing && state.sequence == 0 {
+        return Err(VaultError::AgentAudit);
+    }
     if matches!(event.action, Action::CreateReserved)
         && (state.recent_creators.len() >= MAX_CREATIONS_PER_HIVE
             || state
@@ -260,6 +331,7 @@ fn append(directory: &Path, event: Event<'_>) -> Result<(), VaultError> {
     if record.at < state.last_at {
         return Err(VaultError::AgentAudit);
     }
+    let hash = record.compute_hash()?;
     let line = record.encode()?;
     let (index, fresh) = match state.last {
         None => (0, true),
@@ -287,6 +359,7 @@ fn append(directory: &Path, event: Event<'_>) -> Result<(), VaultError> {
         file.sync_all().map_err(|_| VaultError::AgentAudit)?;
         sync_directory(directory).map_err(|_| VaultError::AgentAudit)?;
     }
+    write_head(directory, sequence, hash, record.at)?;
     Ok(())
 }
 
@@ -296,6 +369,7 @@ pub(super) fn create_reserved(
     purpose: &str,
     policy: &[u8],
     public_key: &[u8; 32],
+    require_existing: bool,
 ) -> Result<(), VaultError> {
     let digest: [u8; 32] = Sha256::digest(policy).into();
     append(
@@ -306,8 +380,9 @@ pub(super) fn create_reserved(
             purpose,
             context: None,
             digest: &digest,
-            fingerprint: public_key,
+            public_key,
         },
+        require_existing,
     )
 }
 
@@ -327,8 +402,9 @@ pub(super) fn signed(
             purpose,
             context: Some(context),
             digest,
-            fingerprint: public_key,
+            public_key,
         },
+        true,
     )
 }
 
@@ -348,14 +424,15 @@ pub(super) fn revoke_reserved(
             purpose,
             context: None,
             digest: &digest,
-            fingerprint: public_key,
+            public_key,
         },
+        true,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, Event, Record, create_reserved, scan, segment_name};
+    use super::{Action, Event, Record, create_reserved, scan, segment_name, write_head};
     use crate::{artifact, ids::NodeId, vault::VaultError};
 
     #[test]
@@ -371,7 +448,7 @@ mod tests {
                 purpose: "build",
                 context: None,
                 digest: &[2; 32],
-                fingerprint: &[3; 32],
+                public_key: &[3; 32],
             },
         )?;
         let first_bytes = first.encode()?;
@@ -385,14 +462,19 @@ mod tests {
                 purpose: "build",
                 context: Some("build.stage"),
                 digest: &[4; 32],
-                fingerprint: &[3; 32],
+                public_key: &[3; 32],
             },
         )?;
         let second_bytes = second.encode()?;
         artifact::write_new(directory.path().join(segment_name(1)), &second_bytes, 256 * 1024)?;
+        write_head(directory.path(), 2, second.compute_hash()?, second.at)?;
         let verified = scan(directory.path())?;
         assert_eq!(verified.sequence, 2);
         assert_eq!(verified.hash, second.compute_hash()?);
+
+        std::fs::remove_file(directory.path().join(segment_name(1)))?;
+        assert!(matches!(scan(directory.path()), Err(VaultError::AgentAudit)));
+        artifact::write_new(directory.path().join(segment_name(1)), &second_bytes, 256 * 1024)?;
 
         let mut changed = first_bytes;
         let offset = changed.iter().position(|byte| *byte == b'b').ok_or("missing purpose")?;
@@ -414,10 +496,11 @@ mod tests {
                     &format!("key{member}_{index}"),
                     b"policy",
                     &[3; 32],
+                    false,
                 )?;
             }
             assert!(matches!(
-                create_reserved(directory.path(), requester, "extra", b"policy", &[3; 32]),
+                create_reserved(directory.path(), requester, "extra", b"policy", &[3; 32], true),
                 Err(VaultError::AgentKeyCreationLimit)
             ));
         }
@@ -427,7 +510,8 @@ mod tests {
                 NodeId::from_bytes([5; 32]),
                 "extra",
                 b"policy",
-                &[3; 32]
+                &[3; 32],
+                true
             ),
             Err(VaultError::AgentKeyCreationLimit)
         ));
@@ -447,12 +531,13 @@ mod tests {
                 purpose: "build",
                 context: None,
                 digest: &[2; 32],
-                fingerprint: &[3; 32],
+                public_key: &[3; 32],
             },
         )?;
         record.at = record.at.saturating_add(60);
         record.hash = hex::encode(record.compute_hash()?);
         artifact::write_new(directory.path().join(segment_name(0)), &record.encode()?, 256 * 1024)?;
+        write_head(directory.path(), 1, record.compute_hash()?, record.at)?;
         assert!(matches!(scan(directory.path()), Err(VaultError::AgentAudit)));
         Ok(())
     }

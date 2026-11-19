@@ -6,7 +6,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::{AgentPolicy, Enclave, Kind, VaultError, keys};
+use super::{AgentPolicy, Enclave, Kind, Lock, VaultError, keys};
 use crate::state;
 
 pub(super) const SIGN_DOMAIN: &[u8] = b"supgang-sign/v1\0";
@@ -95,6 +95,7 @@ pub fn sign(
     digest: &[u8; 32],
 ) -> Result<SignedDigest, VaultError> {
     validate_context(context)?;
+    let (_directory, _vault_lock) = Lock::acquire(state_directory)?;
     let (seed, public_key, policy) = keys::open_seed(state_directory, enclave, name, "sign", Kind::SigningEd25519)?;
     let requester = if let Some(policy) = policy {
         let requester = current_member(state_directory)?;
@@ -117,6 +118,9 @@ pub fn sign(
         }
         let directory = crate::storage::validate_directory(state_directory)?;
         super::agent_audit::signed(&directory, requester, name, context, digest, &public_key)?;
+        if current_member(state_directory)? != requester {
+            return Err(VaultError::MemberAuthority);
+        }
     }
     Ok(SignedDigest {
         identity: SigningPublic {

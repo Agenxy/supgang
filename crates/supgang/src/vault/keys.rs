@@ -95,6 +95,7 @@ fn generate_with_policy(
         agent.map(|(policy, _)| policy),
     )?;
     drop(seed);
+    let has_agent_key = document.entries.iter().any(|entry| entry.policy.is_some());
     document.version = VERSION;
     document.entries.push(entry);
     document.entries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -102,7 +103,7 @@ fn generate_with_policy(
         if signing::current_member(state_directory)? != requester {
             return Err(VaultError::MemberAuthority);
         }
-        agent_audit::create_reserved(&directory, requester, name, policy, &public_key)?;
+        agent_audit::create_reserved(&directory, requester, name, policy, &public_key, has_agent_key)?;
         if signing::current_member(state_directory)? != requester {
             return Err(VaultError::MemberAuthority);
         }

@@ -27,8 +27,13 @@ pub(super) fn append_audit(
     name: &str,
     purpose: Option<&str>,
 ) -> Result<(), VaultError> {
-    // Agent requests must refuse a contended audit lock instead of blocking the socket loop.
-    let _lock = Lock::open(directory, AUDIT_LOCK_FILE_NAME, purpose != Some("ssh-sign"))?;
+    // Signers may hold the vault lock while auditing; refuse contention so
+    // key removal cannot wait behind another audit writer.
+    let _lock = Lock::open(
+        directory,
+        AUDIT_LOCK_FILE_NAME,
+        !matches!(purpose, Some("ssh-sign" | "sign")),
+    )?;
     let path = directory.join(AUDIT_FILE_NAME);
     let existed = fs::symlink_metadata(&path).is_ok();
     let mut file = fs::OpenOptions::new()
