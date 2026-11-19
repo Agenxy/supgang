@@ -50,7 +50,8 @@ pub fn ssh_keygen(
 /// # Errors
 /// Refuses a different key kind and any failed audit, decryption or verification.
 pub fn ssh_public_key(state_directory: &Path, enclave: &dyn Enclave, name: &str) -> Result<SshPublic, VaultError> {
-    let (seed, public_key) = keys::open_seed(state_directory, enclave, name, "ssh-public-key", Kind::SshEd25519)?;
+    let (seed, public_key, _policy) =
+        keys::open_seed(state_directory, enclave, name, "ssh-public-key", Kind::SshEd25519)?;
     drop(seed);
     Ok(public(name, public_key))
 }
@@ -68,7 +69,7 @@ pub fn ssh_sign(
     if data.len() > 256 * 1024 {
         return Err(VaultError::SshDataTooLarge);
     }
-    let (seed, public_key) = keys::open_seed(state_directory, enclave, name, "ssh-sign", Kind::SshEd25519)?;
+    let (seed, public_key, _policy) = keys::open_seed(state_directory, enclave, name, "ssh-sign", Kind::SshEd25519)?;
     let bytes: Zeroizing<[u8; 32]> = Zeroizing::new(seed.as_slice().try_into().map_err(|_| VaultError::Corrupt)?);
     let key = SigningKey::from_bytes(&bytes);
     let signature = key.sign(data).to_bytes();
