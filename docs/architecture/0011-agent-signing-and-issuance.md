@@ -1,11 +1,14 @@
 # ADR 0011: Member-authorized signing and issuance
 
 Status: Accepted, partly implemented. Local agent-purpose key policy, vault
-format v4, and bounded append-only audit with a durable head are implemented on the root-authority
-computer. Other members require a bounded-fresh root status path before local
-agent signing is enabled. The nonce ledger, per-purpose sign caps, remote
-signing and issuing service, consumer pin installer, audit checkpoint
-rotation, phone approval path, and certificate issuer are not available today.
+format v4, bounded append-only audit with a durable head, durable nonce
+reservation, hourly purpose caps, and the member-only remote signing stream
+are implemented in source on the root-authority computer. The remote CLI
+requires an explicit public-key fingerprint pin and verifies the returned
+signature. Other members require a bounded-fresh root status path before
+local agent signing is enabled. Remote key creation, certificate issuance,
+the consumer pin installer, audit checkpoint rotation, phone approval, and
+physical fleet acceptance remain open.
 
 Date: 2026-11-19
 
@@ -163,6 +166,10 @@ purpose, requester, context and digest after the fact. This is an audit trail,
 not proof that a same-user attacker could not delete every local copy. Rate
 and count caps throttle normal automation and accidental loops. Consumers do
 not infer owner approval from those caps or the audit record.
+Version 1 permits at most 64 reservations per member and purpose per rolling
+hour and 256 per purpose across the hive per rolling hour. A crash after
+reservation consumes the count. Agent-policy local signing reserves a fresh
+nonce under the same cap.
 
 The local `supgang sign` path uses the signer's own current certified device
 identity as requester. It follows the same sealed purpose/context policy,

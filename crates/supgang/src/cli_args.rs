@@ -126,6 +126,12 @@ pub enum Command {
         /// Exactly 64 hexadecimal characters for the message SHA-256.
         #[arg(long)]
         sha256: String,
+        /// Sign through an authenticated hive member rather than this computer.
+        #[arg(long, requires = "key_pin")]
+        remote: Option<String>,
+        /// Expected lowercase SHA-256 fingerprint of the purpose public key.
+        #[arg(long, requires = "remote")]
+        key_pin: Option<String>,
     },
     /// Serve selected vault SSH keys to local OpenSSH clients on an owner-only socket.
     SshAgent {

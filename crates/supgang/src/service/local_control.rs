@@ -25,7 +25,10 @@ use crate::{
     sync::{MAX_SYNC_CONTACTS, SyncPage},
 };
 
+mod agent_sign_control;
 mod reachability;
+mod update_control;
+use update_control::queue_update;
 mod tunnel_control;
 use reachability::internet_reachability;
 
@@ -344,6 +347,7 @@ pub(super) struct ControlView<'a> {
     pub anchor_mode: bool,
     pub tunnels: &'a super::tunnel::TunnelRuntime,
     pub tunnel_tasks: &'a mut tokio::task::JoinSet<()>,
+    pub sign_tasks: &'a mut tokio::task::JoinSet<()>,
     pub recent_connections: Vec<crate::control::ConnectionEvent>,
 }
 
@@ -400,11 +404,30 @@ async fn handle_control(
         anchor_mode,
         tunnels,
         tunnel_tasks,
+        sign_tasks,
         recent_connections,
     } = view;
     let request = tokio::time::timeout(Duration::from_secs(2), control::read_request(&mut stream)).await;
-    if let Ok(Ok(ControlRequest::Connect { target, name })) = request {
-        tunnel_control::connect(stream, target, name, local_state, active, tunnels, tunnel_tasks).await;
+    if let Ok(Ok(ControlRequest::Connect { target, name })) = &request {
+        tunnel_control::connect(stream, *target, *name, local_state, active, tunnels, tunnel_tasks).await;
+        return Ok(false);
+    }
+    if let Ok(Ok(ControlRequest::AgentSign {
+        target,
+        request: payload,
+        length,
+    })) = &request
+    {
+        agent_sign_control::handle(
+            stream,
+            *target,
+            payload.clone(),
+            *length,
+            local_state,
+            active,
+            sign_tasks,
+        )
+        .await;
         return Ok(false);
     }
     let (reply, changed) = match request {
@@ -446,7 +469,9 @@ async fn handle_control(
             reply.into_unchanged()
         }
         Ok(Ok(ControlRequest::Exposures)) => tunnels.exposure_reply().into_unchanged(),
-        Ok(Ok(ControlRequest::Connect { .. })) => unreachable_connect_reply().into_unchanged(),
+        Ok(Ok(ControlRequest::Connect { .. } | ControlRequest::AgentSign { .. })) => {
+            unreachable_connect_reply().into_unchanged()
+        }
         Ok(Ok(ControlRequest::Restart)) => {
             restart_reply(instance_id, restart_requested, is_supervised()).into_unchanged()
         }
@@ -589,49 +614,6 @@ fn restart_reply(instance_id: &str, requested: &mut bool, supervised: bool) -> C
     *requested = true;
     ControlReply::Restarting {
         instance_id: instance_id.to_owned(),
-    }
-}
-
-fn queue_update(
-    state_directory: &std::path::Path,
-    delivery_queue: &mut super::update_delivery::UpdateDeliveryQueue,
-    local_state: &LocalState,
-    target: NodeId,
-    digest: [u8; 32],
-) -> (ControlReply, bool) {
-    let result = (|| {
-        let _root = local_state
-            .identity()
-            .root
-            .as_ref()
-            .ok_or("this computer does not hold the hive root needed to authorize a remote update")?;
-        if target == local_state.identity().device.node_id() || local_state.revocations().contains(&target) {
-            return Err("the selected peer is not eligible for an update");
-        }
-        let queued = crate::update::queue_peer_delivery(
-            state_directory,
-            target,
-            digest,
-            unix_time().map_err(|_| "the system clock is invalid")?,
-        )
-        .map_err(|_| "the prepared update could not be queued safely")?;
-        delivery_queue.enqueue(queued);
-        Ok::<(), &str>(())
-    })();
-    match result {
-        Ok(()) => (
-            ControlReply::UpdateQueued {
-                node_id: target.to_string(),
-                digest: hex::encode(digest),
-            },
-            false,
-        ),
-        Err(message) => (
-            ControlReply::Error {
-                message: message.to_owned(),
-            },
-            false,
-        ),
     }
 }
 

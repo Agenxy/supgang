@@ -30,6 +30,7 @@ getrandom.workspace = true
 gethostname.workspace = true
 hex.workspace = true
 hkdf.workspace = true
+hmac.workspace = true
 jiff.workspace = true
 minicbor.workspace = true
 p256.workspace = true

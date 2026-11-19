@@ -6,7 +6,62 @@ use super::{
     VaultError, list, remove, save, sign,
     tests::{Software, state_directory},
 };
+use crate::agent_sign_protocol::SignRequest;
 use crate::state;
+
+#[test]
+fn remote_member_nonce_is_spent_before_signing_and_replay_refuses() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let request = SignRequest {
+        nonce: [42; 32],
+        purpose: "build".to_owned(),
+        context: "build.stage".to_owned(),
+        digest: [7; 32],
+        expires_at: super::unix_now() + 300,
+    };
+    let first = super::sign_member(&path, &Software, requester, &request, || true)?;
+    assert_eq!(first.identity.public_key.len(), 32);
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &request, || true),
+        Err(VaultError::AgentNonceReplay)
+    ));
+    let changed = SignRequest {
+        digest: [8; 32],
+        ..request.clone()
+    };
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &changed, || true),
+        Err(VaultError::AgentNonceReplay)
+    ));
+    let audit = String::from_utf8(fs::read(path.join("vault-agent-audit-0000.log"))?)?;
+    assert!(audit.contains("nonce-reserved"));
+    assert!(audit.contains(&hex::encode(request.nonce)));
+    Ok(())
+}
+
+#[test]
+fn remote_member_session_refusal_does_not_spend_nonce() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let request = SignRequest {
+        nonce: [43; 32],
+        purpose: "build".to_owned(),
+        context: "build.stage".to_owned(),
+        digest: [7; 32],
+        expires_at: super::unix_now() + 300,
+    };
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &request, || false),
+        Err(VaultError::MemberAuthority)
+    ));
+    super::sign_member(&path, &Software, requester, &request, || true)?;
+    Ok(())
+}
 
 #[test]
 fn agent_policy_is_immutable_and_restricts_creation_and_signing() -> Result<(), Box<dyn std::error::Error>> {

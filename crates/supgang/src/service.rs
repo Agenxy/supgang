@@ -30,6 +30,7 @@ use crate::{
 
 mod active;
 mod admission;
+mod agent_sign;
 mod config;
 mod connection;
 mod contact_state;
@@ -326,6 +327,7 @@ async fn service_loop(
     let tunnels = tunnel::TunnelRuntime::new(state_directory).map_err(|_| ServiceError::InvalidConfiguration)?;
     update_context.tunnels = Some(tunnels.clone());
     let mut tunnel_tasks = tokio::task::JoinSet::new();
+    let mut sign_tasks = tokio::task::JoinSet::new();
     let mut update_delivery = UpdateDeliveryQueue::open(state_directory, unix_time()?)?;
     let mut silence = silence::SilenceWatch::default();
     let mut path_quality = path_quality::PathQualityWatch::default();
@@ -419,6 +421,7 @@ async fn service_loop(
         )?;
         reap_ready_tasks(&mut actor_tasks)?;
         reap_ready_tasks(&mut tunnel_tasks)?;
+        reap_ready_tasks(&mut sign_tasks)?;
         let mut unused_outbound_slot = false;
         finish_ready_sessions(
             &mut priority_inbound_tasks,
@@ -617,6 +620,7 @@ async fn service_loop(
                 anchor_mode,
                 tunnels: &tunnels,
                 tunnel_tasks: &mut tunnel_tasks,
+                sign_tasks: &mut sign_tasks,
                 recent_connections: history.events(),
                 config: &mut config,
                 transport_identity: &transport_identity,
@@ -678,22 +682,18 @@ async fn service_loop(
     shutdown_router_mapping(&mut router_mapping).await;
     Ok(())
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConnectionOrigin {
     Inbound,
     Outbound,
 }
-
 fn unix_time() -> Result<u64, ServiceError> {
     system_time_since_epoch().map(|duration| duration.as_secs())
 }
-
 fn system_time_since_epoch() -> Result<Duration, ServiceError> {
     std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_err(|_| ServiceError::InvalidSystemTime)
 }
-
 #[cfg(test)]
 mod tests;

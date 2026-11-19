@@ -24,6 +24,10 @@ use super::{
     revocation_listener, sync,
 };
 
+mod admission;
+pub(super) use admission::preferred_over_pending;
+use admission::{ConnectionAdmission, CurrentConnection, OfferedConnection, connection_admission, offered_connection};
+
 const CLOSED_EVENT_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(super) struct PeerActorRegistry<'a> {
@@ -62,6 +66,7 @@ pub(super) struct PeerUpdateContext {
     pub(super) hive_id: HiveId,
     pub(super) local_node: NodeId,
     pub(super) admission: Arc<tokio::sync::Semaphore>,
+    pub(super) sign_admission: Arc<tokio::sync::Semaphore>,
     pub(super) tunnels: Option<super::tunnel::TunnelRuntime>,
 }
 
@@ -73,6 +78,7 @@ impl PeerUpdateContext {
             hive_id: identity.hive_id,
             local_node: identity.device.node_id(),
             admission: Arc::new(tokio::sync::Semaphore::new(1)),
+            sign_admission: Arc::new(tokio::sync::Semaphore::new(4)),
             tunnels: None,
         }
     }
@@ -151,64 +157,6 @@ pub(super) fn reap_ready_tasks(tasks: &mut tokio::task::JoinSet<()>) -> Result<(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConnectionAdmission {
-    Accept,
-    ReplaceFallback,
-    Reject,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OfferedConnection {
-    Preferred,
-    Fallback,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CurrentConnection {
-    None,
-    Preferred,
-    Fallback,
-}
-
-const fn connection_admission(
-    offered: OfferedConnection,
-    current: CurrentConnection,
-    at_capacity: bool,
-) -> ConnectionAdmission {
-    match current {
-        CurrentConnection::Fallback if matches!(offered, OfferedConnection::Preferred) => {
-            ConnectionAdmission::ReplaceFallback
-        }
-        CurrentConnection::Preferred | CurrentConnection::Fallback => ConnectionAdmission::Reject,
-        CurrentConnection::None if at_capacity => ConnectionAdmission::Reject,
-        CurrentConnection::None => ConnectionAdmission::Accept,
-    }
-}
-
-fn offered_connection(local: NodeId, peer: NodeId, origin: ConnectionOrigin) -> OfferedConnection {
-    // Both ends must rank the same connection identically. A role-local
-    // preference for inbound connections makes an anchor replace a connection
-    // its peer considers preferred; that peer then rejects the replacement.
-    // Anchor capacity is configured separately and cannot affect this ordering.
-    let preferred = matches!(origin, ConnectionOrigin::Outbound) == (local < peer);
-    if preferred {
-        OfferedConnection::Preferred
-    } else {
-        OfferedConnection::Fallback
-    }
-}
-
-pub(super) fn preferred_over_pending(
-    local: NodeId,
-    peer: NodeId,
-    pending: ConnectionOrigin,
-    offered: ConnectionOrigin,
-) -> bool {
-    offered_connection(local, peer, pending) == OfferedConnection::Fallback
-        && offered_connection(local, peer, offered) == OfferedConnection::Preferred
-}
-
 /// Consecutive failed contact exchanges a live session tolerates. One slow
 /// exchange on a lossy or loaded path is not evidence the peer is gone, and
 /// ending the session would end every tunnel on it. A dead path is retired by
@@ -233,9 +181,11 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
     } = context;
     let connection_id = connection.stable_id();
     let mut tunnels = tokio::task::JoinSet::new();
+    let mut sign_tasks = tokio::task::JoinSet::new();
     let mut sync_failures = 0_u32;
     loop {
         while tunnels.try_join_next().is_some() {}
+        while sign_tasks.try_join_next().is_some() {}
         if *draining.borrow() {
             // The connection remains authorized for already admitted tunnel
             // tasks, but does no further sync or stream admission while it
@@ -277,14 +227,17 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
                     }
                     StreamKind::Sync => return b"peer opened a sync stream out of turn",
                     StreamKind::Service => {
-                        if tunnel_admission.is_closed() { continue; }
                         let Some(runtime) = update.as_ref().and_then(|context| context.tunnels.clone()) else {
                             continue;
                         };
-                        if tunnels.len() >= runtime.policy.borrow().per_peer { continue; }
+                        if tunnel_admission.is_closed() || tunnels.len() >= runtime.policy.borrow().per_peer { continue; }
                         tunnels.spawn(super::tunnel::incoming(
                             send, receive, runtime, authorization.clone(), tunnel_admission.clone(),
                         ));
+                        continue;
+                    }
+                    StreamKind::AgentSign => {
+                        super::agent_sign::spawn(&mut sign_tasks, update.as_ref(), &connection, send, receive, peer, &authorization);
                         continue;
                     }
                     StreamKind::Update => {

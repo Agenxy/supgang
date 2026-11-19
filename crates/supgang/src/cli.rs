@@ -166,9 +166,26 @@ where
             cli_settings::config(&state_directory, command.as_ref(), cli.json, output, error)
         }
         Some(Command::Vault { command }) => crate::cli_vault::run(&state_directory, command, cli.json, output, error),
-        Some(Command::Sign { name, context, sha256 }) => {
-            crate::cli_vault::sign(&state_directory, &name, &context, &sha256, cli.json, output, error)
-        }
+        Some(Command::Sign {
+            name,
+            context,
+            sha256,
+            remote,
+            key_pin,
+        }) => match (remote, key_pin) {
+            (Some(remote), Some(key_pin)) => crate::cli_vault::sign_remote(
+                &state_directory,
+                &remote,
+                &name,
+                &context,
+                &sha256,
+                &key_pin,
+                cli.json,
+                output,
+                error,
+            ),
+            _ => crate::cli_vault::sign(&state_directory, &name, &context, &sha256, cli.json, output, error),
+        },
         Some(Command::SshAgent { socket, keys }) => {
             crate::cli_ssh_agent::run(&state_directory, &socket, &keys, cli.json, output, error)
         }

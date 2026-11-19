@@ -89,6 +89,11 @@ pub fn request(state_directory: &Path, request: ControlRequest) -> Result<Option
     request_within(state_directory, request, OWNER_TIMEOUT).map(|reply| reply.map(|(reply, _pid)| reply))
 }
 
+/// A remote member signing request may spend bounded time on the peer and enclave.
+pub fn request_sign(state_directory: &Path, request: ControlRequest) -> Result<Option<ControlReply>, ControlError> {
+    request_within(state_directory, request, Duration::from_secs(20)).map(|reply| reply.map(|(reply, _pid)| reply))
+}
+
 /// Sends a health or readiness request that fails fast so its caller can retry.
 ///
 /// # Errors

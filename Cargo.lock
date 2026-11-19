@@ -2959,6 +2959,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hkdf",
+ "hmac",
  "jiff",
  "minicbor",
  "nix",

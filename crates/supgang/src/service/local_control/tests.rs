@@ -48,6 +48,7 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
     let mut updates = UpdateDeliveryQueue::open(&path, 50)?;
     let tunnels = super::super::tunnel::TunnelRuntime::new(&path)?;
     let mut tunnel_tasks = tokio::task::JoinSet::new();
+    let mut sign_tasks = tokio::task::JoinSet::new();
     let transport_identity = crate::transport::TransportIdentity::generate()?;
     let mut config = super::super::ServiceConfig::new(
         crate::profile::PeerName::new("Test")?,
@@ -75,6 +76,7 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
                 anchor_mode: false,
                 tunnels: &tunnels,
                 tunnel_tasks: &mut tunnel_tasks,
+                sign_tasks: &mut sign_tasks,
                 recent_connections: Vec::new(),
                 config: &mut config,
                 transport_identity: &transport_identity,

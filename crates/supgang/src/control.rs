@@ -48,16 +48,23 @@ const REQUEST_EXPOSE: u8 = 8;
 const REQUEST_ADD_MAPPED: u8 = 9;
 const REQUEST_TUNNEL_LIMITS: u8 = 10;
 const REQUEST_EXPOSURES: u8 = 11;
-const MAX_REQUEST_BYTES: usize = 128;
+const REQUEST_AGENT_SIGN: u8 = 12;
+const MAX_REQUEST_BYTES: usize = 320;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// One bounded local request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlRequest {
     /// Publish an explicit owner-managed public IPv4 UDP endpoint.
     AddMapped { address: std::net::SocketAddrV4 },
     /// Open byte transport to a named service on an exact authenticated peer.
     Connect { target: NodeId, name: [u8; 16] },
+    /// Ask one authenticated member to sign a canonical bounded request.
+    AgentSign {
+        target: NodeId,
+        request: Box<[u8; crate::agent_sign_protocol::MAX_REQUEST_BYTES]>,
+        length: u16,
+    },
     /// Change an owner-approved loopback service; port zero removes exposure.
     Expose { name: [u8; 16], port: u16 },
     /// Save tunnel admission and idle limits for the next start of the
@@ -164,6 +171,12 @@ fn device_mode() -> String {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "response", rename_all = "kebab-case")]
 pub enum ControlReply {
+    /// Authenticated member signing result, still requiring a consumer key pin.
+    AgentSigned {
+        nonce: String,
+        public_key: String,
+        signature: String,
+    },
     /// The local socket now carries only application bytes.
     Connected,
     /// The runtime committed the owner's exposure policy.
@@ -368,6 +381,16 @@ fn encode_request(request: ControlRequest) -> Vec<u8> {
             bytes.extend_from_slice(target.as_bytes());
             bytes.extend_from_slice(&name);
         }
+        ControlRequest::AgentSign {
+            target,
+            request,
+            length,
+        } => {
+            bytes.push(REQUEST_AGENT_SIGN);
+            bytes.extend_from_slice(target.as_bytes());
+            bytes.extend_from_slice(&length.to_be_bytes());
+            bytes.extend_from_slice(request.get(..usize::from(length)).unwrap_or(&[]));
+        }
         ControlRequest::Expose { name, port } => {
             bytes.push(REQUEST_EXPOSE);
             bytes.extend_from_slice(&name);
@@ -443,6 +466,38 @@ fn decode_request(bytes: &[u8]) -> Result<ControlRequest, ControlError> {
             Ok(ControlRequest::Connect {
                 target: NodeId::from_bytes(target),
                 name,
+            })
+        }
+        REQUEST_AGENT_SIGN if bytes.len() >= REQUEST_MAGIC.len() + 1 + 32 + 2 => {
+            let target: [u8; 32] = bytes
+                .get(9..41)
+                .ok_or(ControlError::InvalidRequest)?
+                .try_into()
+                .map_err(|_| ControlError::InvalidRequest)?;
+            let length = u16::from_be_bytes(
+                bytes
+                    .get(41..43)
+                    .ok_or(ControlError::InvalidRequest)?
+                    .try_into()
+                    .map_err(|_| ControlError::InvalidRequest)?,
+            );
+            let payload = bytes.get(43..).ok_or(ControlError::InvalidRequest)?;
+            if usize::from(length) != payload.len()
+                || payload.is_empty()
+                || payload.len() > crate::agent_sign_protocol::MAX_REQUEST_BYTES
+                || crate::agent_sign_protocol::SignRequest::decode(payload).is_err()
+            {
+                return Err(ControlError::InvalidRequest);
+            }
+            let mut request = [0_u8; crate::agent_sign_protocol::MAX_REQUEST_BYTES];
+            request
+                .get_mut(..payload.len())
+                .ok_or(ControlError::InvalidRequest)?
+                .copy_from_slice(payload);
+            Ok(ControlRequest::AgentSign {
+                target: NodeId::from_bytes(target),
+                request: Box::new(request),
+                length,
             })
         }
         REQUEST_EXPOSE if bytes.len() == REQUEST_MAGIC.len() + 1 + 18 => {
@@ -613,7 +668,7 @@ mod client;
 
 #[cfg(test)]
 use client::request_within;
-pub use client::{connect_service, connect_service_by, probe, request, request_observed};
+pub use client::{connect_service, connect_service_by, probe, request, request_observed, request_sign};
 
 #[cfg(test)]
 mod tests;
