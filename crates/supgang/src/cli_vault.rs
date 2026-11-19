@@ -21,6 +21,8 @@ use crate::{
     vault::{self, MAX_SECRET_BYTES, SecureEnclave, Summary},
 };
 
+mod lms;
+
 const MAX_ENV_SECRETS: usize = 16;
 
 #[derive(Debug, Serialize)]
@@ -136,6 +138,28 @@ pub fn run(
         ),
         VaultCommand::PublicKey { name } => public_key(state_directory, &name, json, output),
         VaultCommand::SshPublicKey { name } => ssh_public_key(state_directory, &name, json, output, error),
+        VaultCommand::LmsKeygen { name, note } => lms::keygen(state_directory, &name, &note, json, output, error),
+        VaultCommand::LmsPublicKey { name } => lms::public_key(state_directory, &name, json, output),
+        VaultCommand::LmsSign {
+            name,
+            package,
+            output: target,
+            first_signature,
+            after_q,
+        } => lms::sign(
+            state_directory,
+            &name,
+            &package,
+            &target,
+            first_signature,
+            after_q,
+            json,
+            output,
+            error,
+        ),
+        VaultCommand::LmsAdvance { name, to_q, after_q } => {
+            lms::advance(state_directory, &name, to_q, after_q, json, output, error)
+        }
         VaultCommand::Add {
             name,
             note,
@@ -223,6 +247,13 @@ fn keygen_with_terminal(
 }
 
 fn public_key(state_directory: &Path, name: &str, json: bool, output: &mut dyn Write) -> Result<ExitCode, String> {
+    if vault::list(state_directory)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|entry| entry.name == name && entry.kind == "lms-sha256-h20-w1")
+    {
+        return lms::public_key(state_directory, name, json, output);
+    }
     let identity = vault::public_key(state_directory, &SecureEnclave, name).map_err(|error| error.to_string())?;
     show_public(name, &identity, json, output)
 }
@@ -617,64 +648,4 @@ fn trim_newline(secret: &mut Zeroizing<Vec<u8>>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{KeygenKind, KeygenOptions, keygen_with_terminal, sign, trim_newline, valid_variable};
-    use zeroize::Zeroizing;
-
-    #[test]
-    fn environment_names_are_conventional() {
-        for good in ["GH_TOKEN", "_X", "A1"] {
-            assert!(valid_variable(good), "{good}");
-        }
-        for bad in ["", "gh_token", "1A", "A-B", "A=B"] {
-            assert!(!valid_variable(bad), "{bad}");
-        }
-    }
-
-    #[test]
-    fn only_one_line_ending_is_removed() {
-        let mut secret = Zeroizing::new(b"value\r\n".to_vec());
-        trim_newline(&mut secret);
-        assert_eq!(secret.as_slice(), b"value");
-        let mut secret = Zeroizing::new(b"value\n\n".to_vec());
-        trim_newline(&mut secret);
-        assert_eq!(secret.as_slice(), b"value\n");
-    }
-
-    #[test]
-    fn keygen_without_terminal_refuses_before_accessing_state() {
-        let mut output = Vec::new();
-        let result = keygen_with_terminal(
-            std::path::Path::new("/missing-state"),
-            "launcher",
-            "",
-            KeygenOptions {
-                kind: Some(KeygenKind::Signing),
-                json: false,
-                owner_terminal: false,
-            },
-            &mut output,
-            &mut Vec::new(),
-        );
-        assert!(matches!(result, Err(message) if message.contains("interactive terminal")));
-        assert_eq!(output, Vec::<u8>::new());
-    }
-
-    #[test]
-    fn malformed_digest_refuses_before_accessing_state() {
-        let mut output = Vec::new();
-        let mut error = Vec::new();
-        let status = sign(
-            std::path::Path::new("/missing-state"),
-            "launcher",
-            "agenxy-launcher.install",
-            &"g".repeat(64),
-            false,
-            &mut output,
-            &mut error,
-        );
-        assert_ne!(status, std::process::ExitCode::SUCCESS);
-        assert_eq!(output, Vec::<u8>::new());
-        assert!(String::from_utf8(error).is_ok_and(|message| message.contains("64 hex characters")));
-    }
-}
+mod tests;
