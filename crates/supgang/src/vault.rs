@@ -13,8 +13,7 @@
 
 use std::{
     fmt, fs,
-    io::{self, Read, Write},
-    os::unix::fs::OpenOptionsExt,
+    io::{self},
     path::{Path, PathBuf},
 };
 
@@ -23,15 +22,27 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use p256::{PublicKey, SecretKey, elliptic_curve::sec1::ToSec1Point};
+use sha2::Digest;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+mod audit;
+mod backup;
 mod format;
 mod keys;
+mod lms;
+mod lms_rfc;
+mod lock;
 mod signing;
 mod ssh;
 
+use audit::{append_audit, audit};
 use format::{decode, encode};
+pub use lms::{
+    LmsPublic, LmsSigned, Nc0Package, ReleaseLog, SignPreview, advance as lms_advance, keygen as lms_keygen,
+    package as lms_package, preview as lms_preview, public_key as lms_public_key, sign as lms_sign,
+};
+use lock::Lock;
 use signing::fingerprint;
 #[cfg(test)]
 use signing::{SIGN_DOMAIN, framed_message};
@@ -41,7 +52,7 @@ pub use ssh::{SshPublic, SshSigned, ssh_key_blob, ssh_keygen, ssh_public_key, ss
 use crate::{
     artifact,
     device_key::custody::{CustodyError, SealedKey},
-    storage::{self, no_follow_flag, sync_directory, validate_directory, validate_owner_file_metadata},
+    storage::{self, sync_directory, validate_directory},
 };
 
 /// The vault document inside protected state.
@@ -58,7 +69,7 @@ pub const MAX_NAME_BYTES: usize = 64;
 pub const MAX_NOTE_BYTES: usize = 200;
 
 const ENTRY_DOMAIN: &[u8] = b"supgang/vault-entry/v1\0";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const LOCK_FILE_NAME: &str = "vault.lock";
 const AUDIT_LOCK_FILE_NAME: &str = "vault-audit.lock";
 const PUBLIC_BYTES: usize = 33;
@@ -91,6 +102,33 @@ pub enum VaultError {
     /// SSH keys are never exportable.
     #[error("SSH keys cannot be exported with vault get or vault run; use supgang ssh-agent")]
     SshKeyNotExportable,
+    /// LMS key material is never exported.
+    #[error("LMS keys cannot be exported with vault get or vault run")]
+    LmsKeyNotExportable,
+    /// A key reserved for LMS cannot be overwritten or removed.
+    #[error("LMS roots cannot be replaced or removed; retire the root and retain its reservation record")]
+    LmsRootRetained,
+    /// The entry is not an LMS root.
+    #[error("the named vault entry is not an LMS root")]
+    NotLmsKey,
+    /// The NC0 package header, size, or contents are invalid.
+    #[error("the NC0 format-2 package is invalid or changed while being read")]
+    InvalidNc0Package,
+    /// Local q records do not agree.
+    #[error("LMS reservation records disagree; signing is refused")]
+    LmsStateMismatch,
+    /// The caller's independent release log does not support this q.
+    #[error("LMS release-log evidence does not permit this q")]
+    LmsReleaseLog,
+    /// No LMS leaf remains.
+    #[error("the LMS root has exhausted all 1048576 leaf numbers")]
+    LmsExhausted,
+    /// Forward-only recovery target is unsafe.
+    #[error("LMS advance target must exceed both local records and the external release log")]
+    LmsAdvanceRefused,
+    /// Key generation could not prove that its orphan journal was removed.
+    #[error("LMS key generation could not verify or clean its orphan journal; inspect vault state before retrying")]
+    LmsOrphanCleanup,
     /// The entry is not a signing key.
     #[error("the named vault entry is not an Ed25519 signing key")]
     NotSigningKey,
@@ -184,7 +222,7 @@ pub struct Summary {
     pub bytes: usize,
     /// Entry kind.
     pub kind: &'static str,
-    /// Lowercase SHA-256 of the raw Ed25519 public key, when applicable.
+    /// Lowercase SHA-256 of the public key, when applicable.
     pub fingerprint: Option<String>,
 }
 
@@ -193,6 +231,7 @@ enum Kind {
     Secret,
     SigningEd25519,
     SshEd25519,
+    LmsSha256H20W1,
 }
 
 impl Kind {
@@ -201,6 +240,7 @@ impl Kind {
             Self::Secret => "secret",
             Self::SigningEd25519 => "signing-ed25519",
             Self::SshEd25519 => "ssh-ed25519",
+            Self::LmsSha256H20W1 => "lms-sha256-h20-w1",
         }
     }
 }
@@ -209,6 +249,8 @@ impl Kind {
 struct Entry {
     kind: Kind,
     signing_public: Option<[u8; 32]>,
+    lms_public: Option<[u8; lms_rfc::PUBLIC_LEN]>,
+    lms_next_q: Option<u32>,
     name: String,
     note: String,
     stored_at: u64,
@@ -225,10 +267,15 @@ impl Entry {
             stored_at: self.stored_at,
             bytes: self.ciphertext.len().saturating_sub(TAG_BYTES),
             kind: self.kind.label(),
-            fingerprint: self.signing_public.map(|key| match self.kind {
-                Kind::SshEd25519 => ssh::fingerprint(&key),
-                Kind::Secret | Kind::SigningEd25519 => fingerprint(&key),
-            }),
+            fingerprint: self
+                .lms_public
+                .map(|key| hex::encode(sha2::Sha256::digest(key)))
+                .or_else(|| {
+                    self.signing_public.map(|key| match self.kind {
+                        Kind::SshEd25519 => ssh::fingerprint(&key),
+                        Kind::Secret | Kind::SigningEd25519 | Kind::LmsSha256H20W1 => fingerprint(&key),
+                    })
+                }),
         }
     }
 }
@@ -294,6 +341,12 @@ pub fn add(
     if existing.is_some() && !replace {
         return Err(VaultError::AlreadyExists(name.to_owned()));
     }
+    if existing
+        .and_then(|index| document.entries.get(index))
+        .is_some_and(|entry| entry.kind == Kind::LmsSha256H20W1)
+    {
+        return Err(VaultError::LmsRootRetained);
+    }
     if existing.is_none() && document.entries.len() >= MAX_SECRETS {
         return Err(VaultError::Full);
     }
@@ -304,6 +357,7 @@ pub fn add(
     }
     document.entries.push(entry);
     document.entries.sort_by(|left, right| left.name.cmp(&right.name));
+    document.version = VERSION;
     save(&directory, &document)?;
     audit(
         &directory,
@@ -341,6 +395,7 @@ pub fn reveal(
             Kind::Secret => {}
             Kind::SigningEd25519 => return Err(VaultError::SigningKeyNotExportable),
             Kind::SshEd25519 => return Err(VaultError::SshKeyNotExportable),
+            Kind::LmsSha256H20W1 => return Err(VaultError::LmsKeyNotExportable),
         }
         let shared = enclave.agree(&document.key, &entry.ephemeral)?;
         open(&shared, &document.public, entry)
@@ -364,7 +419,11 @@ pub fn remove(state_directory: &Path, name: &str) -> Result<(), VaultError> {
         .iter()
         .position(|entry| entry.name == name)
         .ok_or_else(|| VaultError::NotFound(name.to_owned()))?;
+    if document.entries.get(index).ok_or(VaultError::Corrupt)?.kind == Kind::LmsSha256H20W1 {
+        return Err(VaultError::LmsRootRetained);
+    }
     document.entries.remove(index);
+    document.version = VERSION;
     save(&directory, &document)?;
     audit(&directory, "remove", name, None);
     Ok(())
@@ -414,6 +473,37 @@ fn seal(
     kind: Kind,
     signing_public: Option<[u8; 32]>,
 ) -> Result<Entry, VaultError> {
+    seal_entry(
+        public,
+        name,
+        note,
+        stored_at,
+        secret,
+        SealMetadata {
+            kind,
+            signing_public,
+            lms_public: None,
+            lms_next_q: None,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct SealMetadata {
+    kind: Kind,
+    signing_public: Option<[u8; 32]>,
+    lms_public: Option<[u8; lms_rfc::PUBLIC_LEN]>,
+    lms_next_q: Option<u32>,
+}
+
+fn seal_entry(
+    public: &[u8; PUBLIC_BYTES],
+    name: &str,
+    note: &str,
+    stored_at: u64,
+    secret: &[u8],
+    metadata: SealMetadata,
+) -> Result<Entry, VaultError> {
     let recipient = PublicKey::from_sec1_bytes(public).map_err(|_| VaultError::Corrupt)?;
     let ephemeral_secret = random_secret_key()?;
     let ephemeral = compressed_point(ephemeral_secret.public_key().to_sec1_point(true).as_bytes())?;
@@ -423,13 +513,15 @@ fn seal(
     let cipher = cipher(&raw, &ephemeral, public, name)?;
     let mut nonce = [0_u8; NONCE_BYTES];
     getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-    let aad = associated_data(name, note, stored_at, &ephemeral, kind, signing_public.as_ref());
+    let aad = associated_data(name, note, stored_at, &ephemeral, &metadata);
     let ciphertext = cipher
         .encrypt(&nonce.into(), Payload { msg: secret, aad: &aad })
         .map_err(|_| VaultError::InvalidSecret)?;
     Ok(Entry {
-        kind,
-        signing_public,
+        kind: metadata.kind,
+        signing_public: metadata.signing_public,
+        lms_public: metadata.lms_public,
+        lms_next_q: metadata.lms_next_q,
         name: name.to_owned(),
         note: note.to_owned(),
         stored_at,
@@ -459,8 +551,12 @@ fn open(shared: &[u8; 32], public: &[u8; PUBLIC_BYTES], entry: &Entry) -> Result
         &entry.note,
         entry.stored_at,
         &entry.ephemeral,
-        entry.kind,
-        entry.signing_public.as_ref(),
+        &SealMetadata {
+            kind: entry.kind,
+            signing_public: entry.signing_public,
+            lms_public: entry.lms_public,
+            lms_next_q: entry.lms_next_q,
+        },
     );
     cipher
         .decrypt(
@@ -507,8 +603,7 @@ fn associated_data(
     note: &str,
     stored_at: u64,
     ephemeral: &[u8; PUBLIC_BYTES],
-    kind: Kind,
-    signing_public: Option<&[u8; 32]>,
+    metadata: &SealMetadata,
 ) -> Vec<u8> {
     let mut aad = Vec::with_capacity(ENTRY_DOMAIN.len() + name.len() + 1 + PUBLIC_BYTES + 8 + note.len() + 48);
     aad.extend_from_slice(ENTRY_DOMAIN);
@@ -517,12 +612,18 @@ fn associated_data(
     aad.extend_from_slice(ephemeral);
     aad.extend_from_slice(&stored_at.to_be_bytes());
     aad.extend_from_slice(note.as_bytes());
-    if kind != Kind::Secret {
+    if metadata.kind != Kind::Secret {
         aad.push(0);
-        aad.extend_from_slice(kind.label().as_bytes());
+        aad.extend_from_slice(metadata.kind.label().as_bytes());
         aad.push(0);
-        if let Some(public) = signing_public {
-            aad.extend_from_slice(public);
+        if let Some(public) = metadata.signing_public {
+            aad.extend_from_slice(&public);
+        }
+        if let Some(public) = metadata.lms_public {
+            aad.extend_from_slice(&public);
+        }
+        if let Some(next_q) = metadata.lms_next_q {
+            aad.extend_from_slice(&next_q.to_be_bytes());
         }
     }
     aad
@@ -566,128 +667,10 @@ fn temporary_path(directory: &Path) -> Result<PathBuf, VaultError> {
     Err(io::Error::new(io::ErrorKind::AlreadyExists, "could not allocate vault replacement").into())
 }
 
-/// Records a change after it is saved. Reads record first and refuse when the
-/// record fails (see `reveal`); a change already saved is not undone.
-fn audit(directory: &Path, operation: &str, name: &str, purpose: Option<&str>) {
-    let _result = append_audit(directory, operation, name, purpose);
-}
-
-/// Appends one line, `unix-seconds operation name [program]`, under the audit
-/// lock. At the bound it keeps the newest half of the newest 256 KiB.
-fn append_audit(directory: &Path, operation: &str, name: &str, purpose: Option<&str>) -> Result<(), VaultError> {
-    use std::io::{Seek, SeekFrom};
-    // Agent requests must refuse a contended audit lock instead of blocking the socket loop.
-    let _lock = Lock::open(directory, AUDIT_LOCK_FILE_NAME, purpose != Some("ssh-sign"))?;
-    let path = directory.join(AUDIT_FILE_NAME);
-    let existed = fs::symlink_metadata(&path).is_ok();
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(no_follow_flag()?)
-        .open(&path)?;
-    if !existed {
-        supgang_acl::clear_inherited_acl(&file)?;
-    }
-    validate_owner_file_metadata(&file)?;
-    let program = purpose.map(sanitize_program);
-    let line = program.map_or_else(
-        || format!("{} {operation} {name}\n", unix_now()),
-        |program| format!("{} {operation} {name} {program}\n", unix_now()),
-    );
-    let length = file.metadata()?.len();
-    if length.saturating_add(line.len() as u64) <= MAX_AUDIT_BYTES {
-        file.write_all(line.as_bytes())?;
-        return Ok(());
-    }
-    file.seek(SeekFrom::Start(length.saturating_sub(MAX_AUDIT_BYTES)))?;
-    let mut kept = Vec::new();
-    Read::by_ref(&mut file).take(MAX_AUDIT_BYTES).read_to_end(&mut kept)?;
-    let half = kept.len() / 2;
-    let start = kept
-        .iter()
-        .skip(half)
-        .position(|byte| *byte == b'\n')
-        .map_or(kept.len(), |offset| half + offset + 1);
-    let mut replacement = kept.get(start..).unwrap_or_default().to_vec();
-    replacement.extend_from_slice(line.as_bytes());
-    let temporary = temporary_path(directory)?;
-    let result = (|| {
-        artifact::write_new(
-            &temporary,
-            &replacement,
-            usize::try_from(MAX_AUDIT_BYTES).unwrap_or(usize::MAX),
-        )?;
-        fs::rename(&temporary, &path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _cleanup = fs::remove_file(&temporary);
-    }
-    result
-}
-
-fn sanitize_program(program: &str) -> String {
-    let base = program.rsplit('/').next().unwrap_or(program);
-    base.chars()
-        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
-        .take(32)
-        .collect()
-}
-
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-struct Lock {
-    file: fs::File,
-}
-
-impl Lock {
-    /// The vault's single-writer lock; a second writer is refused, not queued.
-    fn acquire(state_directory: &Path) -> Result<(PathBuf, Self), VaultError> {
-        let directory = validate_directory(state_directory)?;
-        let lock = Self::open(&directory, LOCK_FILE_NAME, false)?;
-        Ok((directory, lock))
-    }
-
-    /// `wait` blocks for the audit lock, which is held only for one append.
-    fn open(directory: &Path, file_name: &str, wait: bool) -> Result<Self, VaultError> {
-        let path = directory.join(file_name);
-        let existed = fs::symlink_metadata(&path).is_ok();
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(no_follow_flag()?)
-            .open(path)?;
-        if !existed {
-            supgang_acl::clear_inherited_acl(&file)?;
-        }
-        validate_owner_file_metadata(&file)?;
-        let operation = if wait {
-            rustix::fs::FlockOperation::LockExclusive
-        } else {
-            rustix::fs::FlockOperation::NonBlockingLockExclusive
-        };
-        match rustix::fs::flock(&file, operation) {
-            Ok(()) => {}
-            Err(error) if error == rustix::io::Errno::WOULDBLOCK => return Err(VaultError::Busy),
-            Err(error) => return Err(io::Error::from_raw_os_error(error.raw_os_error()).into()),
-        }
-        Ok(Self { file })
-    }
-}
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _result = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
-    }
 }
 
 #[cfg(test)]

@@ -132,6 +132,19 @@ private func run(_ fields: [Substring]) throws -> String {
     if fields == ["generate", "--presence"] { return try generate(presence: true) }
     if fields == ["generate", "--no-presence"] { return try generate(presence: false) }
     if fields == ["generate-agreement"] { return try generateAgreement() }
+    if fields.count == 2, fields[0] == "exclude-backup" {
+        let raw = try CustodyWire.decode(fields[1], maximum: 4096)
+        guard let path = String(data: raw, encoding: .utf8), path.hasPrefix("/") else {
+            throw Refusal.protocolError
+        }
+        var url = URL(fileURLWithPath: path, isDirectory: false)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try url.setResourceValues(values)
+        let saved = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        guard saved.isExcludedFromBackup == true else { throw Refusal.protocolError }
+        return "backup-excluded"
+    }
     if fields.count == 4, fields[0] == "agree", fields[1] == "--sealed" {
         return try agree(
             blob: CustodyWire.decode(fields[2], maximum: 4096), peer: CustodyWire.decode(fields[3], maximum: 33)

@@ -21,7 +21,7 @@ pub(super) fn generate(
     let operation = match kind {
         Kind::SigningEd25519 => "add-signing",
         Kind::SshEd25519 => "add-ssh",
-        Kind::Secret => return Err(VaultError::Corrupt),
+        Kind::Secret | Kind::LmsSha256H20W1 => return Err(VaultError::Corrupt),
     };
     validate_name(name)?;
     validate_note(note)?;
@@ -86,7 +86,7 @@ pub(super) fn open_seed(
         return Err(match required {
             Kind::SigningEd25519 => VaultError::NotSigningKey,
             Kind::SshEd25519 => VaultError::NotSshKey,
-            Kind::Secret => VaultError::Corrupt,
+            Kind::Secret | Kind::LmsSha256H20W1 => VaultError::Corrupt,
         });
     }
     let public_key = entry.signing_public.ok_or(VaultError::Corrupt)?;

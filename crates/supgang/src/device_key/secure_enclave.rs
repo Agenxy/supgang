@@ -9,7 +9,7 @@ use super::{
     custody::{Availability, CustodyError, CustodyKind, CustodyProvider, PresencePolicy, SealedKey, UnavailableReason},
     domain_digest, helper, signature,
 };
-use std::time::Duration;
+use std::{os::unix::ffi::OsStrExt, path::Path, time::Duration};
 use zeroize::Zeroizing;
 
 /// The owner enrolled this key as hardware-held. That label is not an
@@ -138,6 +138,23 @@ pub fn agree(sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>,
     }
     secret.copy_from_slice(&bytes);
     Ok(secret)
+}
+
+/// Mark one protected vault state file excluded from macOS backups and verify it.
+/// The path travels on the helper's stdin, never in process arguments.
+pub(crate) fn exclude_from_backup(path: &Path) -> Result<(), CustodyError> {
+    let bytes = path.as_os_str().as_bytes();
+    if !path.is_absolute() || bytes.is_empty() || bytes.len() > 4096 {
+        return Err(UnavailableReason::HelperProtocol.into());
+    }
+    let response = helper::invoke(
+        &format!("exclude-backup {}", hex::encode(bytes)),
+        Duration::from_secs(5),
+    )?;
+    if response.as_str() != "backup-excluded" {
+        return Err(UnavailableReason::HelperProtocol.into());
+    }
+    Ok(())
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, UnavailableReason> {

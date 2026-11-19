@@ -9,7 +9,7 @@ use super::{
 };
 use crate::device_key::custody::SealedKey;
 
-/// Canonical CBOR v1 stays readable; v2 adds kind and signing public key.
+/// Canonical CBOR v1/v2 stay readable; v3 adds LMS public key and next q.
 pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultError> {
     let key = Zeroizing::new(document.key.encode()?);
     let mut e = Encoder::new(Vec::new());
@@ -23,30 +23,52 @@ pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultErr
         .map(|_| ());
     for entry in &document.entries {
         result = result.and_then(|()| {
-            e.array(if document.version == 1 { 6 } else { 8 })
-                .and_then(|e| e.str(&entry.name))
-                .and_then(|e| e.str(&entry.note))
-                .and_then(|e| e.u64(entry.stored_at))
-                .and_then(|e| e.bytes(&entry.ephemeral))
-                .and_then(|e| e.bytes(&entry.nonce))
-                .and_then(|e| e.bytes(&entry.ciphertext))
-                .and_then(|e| {
-                    if document.version == 1 {
-                        Ok(e)
-                    } else {
-                        e.str(entry.kind.label())
-                    }
-                })
-                .and_then(|e| {
-                    if document.version == 1 {
-                        Ok(e)
-                    } else if let Some(public) = entry.signing_public {
-                        e.bytes(&public)
-                    } else {
-                        e.null()
-                    }
-                })
-                .map(|_| ())
+            e.array(match document.version {
+                1 => 6,
+                2 => 8,
+                _ => 10,
+            })
+            .and_then(|e| e.str(&entry.name))
+            .and_then(|e| e.str(&entry.note))
+            .and_then(|e| e.u64(entry.stored_at))
+            .and_then(|e| e.bytes(&entry.ephemeral))
+            .and_then(|e| e.bytes(&entry.nonce))
+            .and_then(|e| e.bytes(&entry.ciphertext))
+            .and_then(|e| {
+                if document.version == 1 {
+                    Ok(e)
+                } else {
+                    e.str(entry.kind.label())
+                }
+            })
+            .and_then(|e| {
+                if document.version == 1 {
+                    Ok(e)
+                } else if let Some(public) = entry.signing_public {
+                    e.bytes(&public)
+                } else {
+                    e.null()
+                }
+            })
+            .and_then(|e| {
+                if document.version < 3 {
+                    Ok(e)
+                } else if let Some(public) = entry.lms_public {
+                    e.bytes(&public)
+                } else {
+                    e.null()
+                }
+            })
+            .and_then(|e| {
+                if document.version < 3 {
+                    Ok(e)
+                } else if let Some(next_q) = entry.lms_next_q {
+                    e.u32(next_q)
+                } else {
+                    e.null()
+                }
+            })
+            .map(|_| ())
         });
     }
     result.map_err(|_| VaultError::Corrupt)?;
@@ -61,7 +83,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
             return Err(invalid("vault version"));
         }
         let version = d.u8()?;
-        if version != 1 && version != VERSION {
+        if version != 1 && version != 2 && version != VERSION {
             return Err(invalid("vault version"));
         }
         let key = SealedKey::decode(d.bytes()?).map_err(|_| invalid("vault key"))?;
@@ -72,7 +94,13 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
         }
         let mut entries = Vec::new();
         for _ in 0..count {
-            if d.array()? != Some(if version == 1 { 6 } else { 8 }) {
+            if d.array()?
+                != Some(match version {
+                    1 => 6,
+                    2 => 8,
+                    _ => 10,
+                })
+            {
                 return Err(invalid("vault entry"));
             }
             let name = d.str()?.to_owned();
@@ -88,20 +116,43 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                     "secret" => Kind::Secret,
                     "signing-ed25519" => Kind::SigningEd25519,
                     "ssh-ed25519" => Kind::SshEd25519,
+                    "lms-sha256-h20-w1" if version >= 3 => Kind::LmsSha256H20W1,
                     _ => return Err(invalid("vault entry kind")),
                 }
             };
             let signing_public = if version == 1 {
                 None
-            } else if kind == Kind::Secret {
+            } else if kind == Kind::Secret || kind == Kind::LmsSha256H20W1 {
                 d.null()?;
                 None
             } else {
                 Some(d.bytes()?.try_into().map_err(|_| invalid("vault signing public key"))?)
             };
+            let (lms_public, lms_next_q) = if version < 3 {
+                (None, None)
+            } else if kind == Kind::LmsSha256H20W1 {
+                let public: [u8; super::lms_rfc::PUBLIC_LEN] =
+                    d.bytes()?.try_into().map_err(|_| invalid("vault LMS public key"))?;
+                if public[..4] != super::lms_rfc::LMS_TYPE.to_be_bytes()
+                    || public[4..8] != super::lms_rfc::OTS_TYPE.to_be_bytes()
+                {
+                    return Err(invalid("vault LMS type"));
+                }
+                let next_q = d.u32()?;
+                if next_q > (1_u32 << super::lms_rfc::HEIGHT) {
+                    return Err(invalid("vault LMS next q"));
+                }
+                (Some(public), Some(next_q))
+            } else {
+                d.null()?;
+                d.null()?;
+                (None, None)
+            };
             let entry = Entry {
                 kind,
                 signing_public,
+                lms_public,
+                lms_next_q,
                 name,
                 note,
                 stored_at,
@@ -113,7 +164,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
             if validate_name(&entry.name).is_err()
                 || validate_note(&entry.note).is_err()
                 || !(TAG_BYTES + 1..=TAG_BYTES + MAX_SECRET_BYTES).contains(&length)
-                || (kind != Kind::Secret && length != TAG_BYTES + 32)
+                || (kind != Kind::Secret && length != TAG_BYTES + if kind == Kind::LmsSha256H20W1 { 48 } else { 32 })
                 || entries.last().is_some_and(|last: &Entry| last.name >= entry.name)
             {
                 return Err(invalid("vault entry"));

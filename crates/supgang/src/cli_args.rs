@@ -427,6 +427,42 @@ pub enum VaultCommand {
     PublicKey { name: String },
     /// Show an SSH key's OpenSSH public line and fingerprint.
     SshPublicKey { name: String },
+    /// Create a non-exportable NC0 LMS root; this takes time and needs an owner terminal.
+    LmsKeygen {
+        /// Lowercase vault entry name.
+        name: String,
+        /// Short note on what the root is for.
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// Show a vault LMS root's 56-byte RFC 8554 public key.
+    LmsPublicKey { name: String },
+    /// Sign one unsigned NC0 format-2 package after owner confirmation.
+    LmsSign {
+        name: String,
+        #[arg(long)]
+        package: std::path::PathBuf,
+        #[arg(long)]
+        output: std::path::PathBuf,
+        /// Only valid when no q has ever been reserved locally.
+        #[arg(long, conflicts_with = "after_q", required_unless_present = "after_q")]
+        first_signature: bool,
+        /// Highest q in the independent release log.
+        #[arg(
+            long,
+            conflicts_with = "first_signature",
+            required_unless_present = "first_signature"
+        )]
+        after_q: Option<u32>,
+    },
+    /// Burn q forward after comparing both local records with the release log.
+    LmsAdvance {
+        name: String,
+        #[arg(long)]
+        to_q: u32,
+        #[arg(long)]
+        after_q: u32,
+    },
     /// Store a secret read from stdin, or from a login-keychain item.
     Add {
         /// Lowercase name, e.g. github or anthropic-api.
