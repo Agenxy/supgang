@@ -89,6 +89,24 @@ class RecoveryKeyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 recovery_key.framed_message(bad, bytes(32))
 
+    def test_verifier_refuses_torsion_and_noncanonical_points(self) -> None:
+        identity = b"\x01" + bytes(31)
+        order_two = (recovery_key.P - 1).to_bytes(32, "little")
+        noncanonical = recovery_key.P.to_bytes(32, "little")
+        base = recovery_key._compress(recovery_key.G)
+        forged = base + (1).to_bytes(32, "little")
+        # Before the subgroup checks, the identity key accepted this for
+        # every message and the order-two key accepted it for this message.
+        self.assertFalse(recovery_key.verify(identity, b"any message", forged))
+        self.assertFalse(recovery_key.verify(order_two, b"torsion", forged))
+        challenge = recovery_key._hash_scalar(identity + base + b"torsion R")
+        self.assertFalse(recovery_key.verify(base, b"torsion R", identity + challenge.to_bytes(32, "little")))
+        for weak in (identity, order_two):
+            self.assertFalse(recovery_key.verify(weak, b"any message", forged))
+            self.assertFalse(recovery_key.verify(base, b"any message", weak + bytes(32)))
+        self.assertFalse(recovery_key.verify(noncanonical, b"any message", forged))
+        self.assertFalse(recovery_key.verify(base, b"any message", noncanonical + bytes(32)))
+
 
 if __name__ == "__main__":
     unittest.main()

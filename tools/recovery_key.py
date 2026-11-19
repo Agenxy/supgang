@@ -114,6 +114,11 @@ def _decompress(encoded: bytes) -> tuple[int, int, int, int] | None:
     return (x, y, 1, x * y % P)
 
 
+def _small_order(point: tuple[int, int, int, int]) -> bool:
+    # Reject every point in the curve's eight-element torsion subgroup.
+    return _equal(_mul(8, point), IDENTITY)
+
+
 def _hash_scalar(data: bytes) -> int:
     return int.from_bytes(hashlib.sha512(data).digest(), "little") % Q
 
@@ -136,6 +141,8 @@ def public_key(seed: bytes) -> bytes:
 
 def sign(seed: bytes, message: bytes) -> bytes:
     """Return the RFC 8032 Ed25519 signature of message."""
+    if len(seed) != 32:
+        raise ValueError("Ed25519 seed must be 32 bytes")
     scalar, prefix = _expand(seed)
     public = _compress(_mul(scalar, G))
     nonce = _hash_scalar(prefix + message)
@@ -151,7 +158,7 @@ def verify(public: bytes, message: bytes, signature: bytes) -> bool:
         return False
     point_a = _decompress(public)
     point_r = _decompress(signature[:32])
-    if point_a is None or point_r is None:
+    if point_a is None or point_r is None or _small_order(point_a) or _small_order(point_r):
         return False
     s = int.from_bytes(signature[32:], "little")
     if s >= Q:
@@ -284,6 +291,11 @@ def _generate(arguments: argparse.Namespace) -> int:
         handle.write(encoded)
         handle.flush()
         os.fsync(handle.fileno())
+    parent = os.open(arguments.out.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
     print(f"label        {document['label']}")
     print(f"public key   {document['public_key']}")
     print(f"fingerprint  {document['fingerprint']}")
