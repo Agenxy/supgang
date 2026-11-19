@@ -108,6 +108,7 @@ async fn process(
         return Err(());
     }
     let nonce = request.nonce;
+    let expires_at = request.expires_at;
     let state_directory = Arc::clone(&context.state_directory);
     let authorization_for_sign = authorization.clone();
     let connection_for_sign = connection.clone();
@@ -120,7 +121,7 @@ async fn process(
     })
     .await
     .map_err(|_| ())?;
-    if !authorization.is_current(now()?) || connection.close_reason().is_some() {
+    if !authorization.is_current(now()?) || now()? > expires_at || connection.close_reason().is_some() {
         return Err(());
     }
     let reply = match signing {
@@ -201,7 +202,11 @@ pub(super) async fn outgoing(
         }
         agent_sign_protocol::verify_response_tag(&exporter, &binding, &reply_bytes, &reply_tag).map_err(|_| ())?;
         let reply = SignReply::decode(&reply_bytes).map_err(|_| ())?;
-        if reply.nonce() != &request.nonce || !authorization.is_current(now()?) || connection.close_reason().is_some() {
+        if reply.nonce() != &request.nonce
+            || !authorization.is_current(now()?)
+            || request.validate(now()?).is_err()
+            || connection.close_reason().is_some()
+        {
             return Err(());
         }
         Ok(reply)

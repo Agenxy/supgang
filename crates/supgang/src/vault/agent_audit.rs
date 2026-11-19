@@ -143,6 +143,9 @@ impl Record {
             return Err(VaultError::AgentAudit);
         }
         let mut record = Self::new(sequence, previous, event)?;
+        if expires_at < record.at {
+            return Err(VaultError::AgentAudit);
+        }
         record.nonce = Some(hex::encode(nonce));
         record.expires_at = Some(expires_at);
         record.hash = hex::encode(record.compute_hash()?);

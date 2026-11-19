@@ -188,6 +188,9 @@ pub fn sign_member(
     if !session_current() {
         return Err(VaultError::MemberAuthority);
     }
+    request
+        .validate(super::unix_now())
+        .map_err(|_| VaultError::InvalidSigningRequest)?;
     super::agent_audit::signed(
         &directory,
         requester,
