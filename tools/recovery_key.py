@@ -22,6 +22,7 @@ not constant-time: run it only on the owner's own computer.
 """
 
 import argparse
+import errno
 import getpass
 import hashlib
 import hmac
@@ -275,6 +276,27 @@ def _require_terminal() -> None:
         raise SystemExit("refusing: the passphrase must be typed at a terminal by the owner")
 
 
+def _print_public(label: str, public: bytes, *, json_output: bool, authenticated: bool | None = None) -> None:
+    if json_output:
+        result: dict[str, object] = {
+            "schema": "supgang.recovery-public-key/v1",
+            "status": "ok",
+            "label": label,
+            "public_key": public.hex(),
+            "fingerprint": fingerprint(public),
+        }
+        if authenticated is not None:
+            result["authenticated"] = authenticated
+        print(json.dumps(result))
+        return
+    if authenticated is not False:
+        print(f"label        {label}")
+    print(f"public key   {public.hex()}")
+    print(f"fingerprint  {fingerprint(public)}")
+    if authenticated is False:
+        print("(unauthenticated until a passphrase is used; compare with the fingerprint recorded at creation)")
+
+
 def _generate(arguments: argparse.Namespace) -> int:
     _require_terminal()
     if not NAME.match(arguments.label):
@@ -293,20 +315,21 @@ def _generate(arguments: argparse.Namespace) -> int:
         os.fsync(handle.fileno())
     parent = os.open(arguments.out.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        os.fsync(parent)
+        try:
+            os.fsync(parent)
+        except OSError as error:
+            if error.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+                raise
+            print("warning: this volume does not support directory sync; safely eject it before removal", file=sys.stderr)
     finally:
         os.close(parent)
-    print(f"label        {document['label']}")
-    print(f"public key   {document['public_key']}")
-    print(f"fingerprint  {document['fingerprint']}")
+    _print_public(arguments.label, parse(document)[1], json_output=arguments.json)
     return 0
 
 
 def _public(arguments: argparse.Namespace) -> int:
-    _, public, _, _, _ = parse(_read(arguments.key))
-    print(f"public key   {public.hex()}")
-    print(f"fingerprint  {fingerprint(public)}")
-    print("(unauthenticated until a passphrase is used; compare with the fingerprint recorded at creation)")
+    label, public, _, _, _ = parse(_read(arguments.key))
+    _print_public(label, public, json_output=arguments.json, authenticated=False)
     return 0
 
 
@@ -341,8 +364,10 @@ def main(argv: list[str] | None = None) -> int:
     generate = commands.add_parser("generate", help="create a sealed recovery key file")
     generate.add_argument("--label", required=True)
     generate.add_argument("--out", required=True, type=Path)
+    generate.add_argument("--json", action="store_true", help="print public metadata as JSON")
     public = commands.add_parser("public", help="show a key file's public key and fingerprint")
     public.add_argument("--key", required=True, type=Path)
+    public.add_argument("--json", action="store_true", help="print public metadata as JSON")
     signer = commands.add_parser("sign", help="sign a supgang-sign/v1 frame")
     signer.add_argument("--key", required=True, type=Path)
     signer.add_argument("--context", required=True)

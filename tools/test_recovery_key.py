@@ -5,9 +5,17 @@
 # ///
 """Offline recovery-key tests against RFC 8032 and the sign-v1 vector. Apache-2.0."""
 
+import contextlib
+import errno
+import io
 import json
+import os
 from pathlib import Path
+import stat
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import recovery_key
 
@@ -106,6 +114,65 @@ class RecoveryKeyTests(unittest.TestCase):
             self.assertFalse(recovery_key.verify(base, b"any message", weak + bytes(32)))
         self.assertFalse(recovery_key.verify(noncanonical, b"any message", forged))
         self.assertFalse(recovery_key.verify(base, b"any message", noncanonical + bytes(32)))
+
+    def test_unsupported_directory_sync_warns_after_file_sync(self) -> None:
+        real_fsync = os.fsync
+        synced_file = False
+
+        def sync_or_refuse_directory(fd: int) -> None:
+            nonlocal synced_file
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, "directory sync unsupported")
+            real_fsync(fd)
+            synced_file = True
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "recovery.json"
+            output, error = io.StringIO(), io.StringIO()
+            with (
+                patch.object(recovery_key, "_require_terminal"),
+                patch.object(recovery_key.getpass, "getpass", return_value="correct horse battery"),
+                patch.object(recovery_key.os, "fsync", side_effect=sync_or_refuse_directory),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(error),
+            ):
+                self.assertEqual(recovery_key._generate(SimpleNamespace(label="recovery", out=path, json=False)), 0)
+            self.assertTrue(synced_file)
+            self.assertIn("public key", output.getvalue())
+            self.assertIn("fingerprint", output.getvalue())
+            self.assertIn("warning: this volume does not support directory sync", error.getvalue())
+            self.assertEqual(recovery_key.parse(recovery_key._read(path))[0], "recovery")
+
+    def test_public_json_contains_only_public_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "recovery.json"
+            generated = io.StringIO()
+            with (
+                patch.object(recovery_key, "_require_terminal"),
+                patch.object(recovery_key.getpass, "getpass", return_value="correct horse battery"),
+                contextlib.redirect_stdout(generated),
+            ):
+                self.assertEqual(recovery_key._generate(SimpleNamespace(label="recovery", out=path, json=True)), 0)
+            created = json.loads(generated.getvalue())
+            self.assertEqual(
+                set(created),
+                {"schema", "status", "label", "public_key", "fingerprint"},
+            )
+            self.assertEqual(created["schema"], "supgang.recovery-public-key/v1")
+            self.assertEqual(created["label"], "recovery")
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                self.assertEqual(recovery_key._public(SimpleNamespace(key=path, json=True)), 0)
+            displayed = json.loads(shown.getvalue())
+            self.assertEqual(displayed, dict(created, authenticated=False))
+            plain = io.StringIO()
+            with contextlib.redirect_stdout(plain):
+                self.assertEqual(recovery_key._public(SimpleNamespace(key=path, json=False)), 0)
+            self.assertTrue(plain.getvalue().startswith("public key   "))
+            self.assertNotIn("label", plain.getvalue())
+            for output in (generated.getvalue(), shown.getvalue()):
+                for private_field in ("sealed_seed", "mac", "kdf"):
+                    self.assertNotIn(private_field, output)
 
 
 if __name__ == "__main__":
