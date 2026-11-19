@@ -38,3 +38,10 @@ printf '%s  %s\n' \
 Cargo omits the registry checksum from `Cargo.lock` when the path patch replaces
 the registry package. This archive hash is the checksum from the unpatched
 `Cargo.lock` on `main` at `04000f70aa92d50829d48736ddfba01bb958b510`.
+
+The patch applies to source-built Supgang binaries in this workspace. Cargo
+does not include a workspace path patch in the crates it packages for
+crates.io: package verification currently resolves registry netwatch 0.19.3,
+which still enables WMI's default `chrono` feature on Windows. A public crate
+release must be blocked until its rehearsed package dependencies are checked
+for all targets and an upstream or distribution fix removes that path.
