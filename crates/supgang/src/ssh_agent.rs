@@ -107,9 +107,20 @@ where
     F: Future<Output = ()>,
 {
     let state = storage::validate_directory(state_directory).map_err(|_| AgentError::UnsafeDirectory)?;
-    let keys = Arc::new(load_keys(&state, key_names, enclave.as_ref())?);
+    if key_names.len() > MAX_AGENT_KEYS {
+        return Err(AgentError::InvalidKeys);
+    }
+    let load_state = state.clone();
+    let load_names = key_names.to_vec();
+    let load_enclave = enclave.clone();
+    let keys = Arc::new(
+        tokio::task::spawn_blocking(move || load_keys(&load_state, &load_names, load_enclave.as_ref()))
+            .await
+            .map_err(|_| AgentError::KeyUnavailable)??,
+    );
     let (listener, _guard) = bind(socket_path)?;
     let capacity = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let signing_capacity = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut tasks = JoinSet::new();
     tokio::pin!(shutdown);
     loop {
@@ -128,11 +139,12 @@ where
         let state = state.clone();
         let keys = keys.clone();
         let enclave = enclave.clone();
+        let signing_capacity = signing_capacity.clone();
         tasks.spawn(async move {
             let _permit = permit;
             let _result = tokio::time::timeout(
                 CONNECTION_DEADLINE,
-                serve_connection(stream, &state, &keys, enclave.as_ref()),
+                serve_connection(stream, state, keys, enclave, signing_capacity),
             )
             .await;
         });
@@ -217,7 +229,13 @@ fn same_user(stream: &UnixStream) -> bool {
     nix::unistd::getpeereid(stream).is_ok_and(|(uid, _gid)| uid.as_raw() == rustix::process::getuid().as_raw())
 }
 
-async fn serve_connection<E: Enclave>(mut stream: UnixStream, state: &Path, keys: &[ExposedKey], enclave: &E) {
+async fn serve_connection<E: Enclave + Send + Sync + 'static>(
+    mut stream: UnixStream,
+    state: PathBuf,
+    keys: Arc<Vec<ExposedKey>>,
+    enclave: Arc<E>,
+    signing_capacity: Arc<Semaphore>,
+) {
     let mut window = Instant::now();
     let mut requests_in_window = 0;
     for _ in 0..MAX_REQUESTS_PER_CONNECTION {
@@ -238,7 +256,23 @@ async fn serve_connection<E: Enclave>(mut stream: UnixStream, state: &Path, keys
             let _result = write_frame(&mut stream, &[FAILURE]).await;
             break;
         }
-        let reply = respond(&payload, state, keys, enclave);
+        let reply = if payload.first() == Some(&SIGN_REQUEST) {
+            let Ok(sign_permit) = signing_capacity.clone().try_acquire_owned() else {
+                let _result = write_frame(&mut stream, &[FAILURE]).await;
+                break;
+            };
+            let sign_state = state.clone();
+            let sign_keys = keys.clone();
+            let sign_enclave = enclave.clone();
+            tokio::task::spawn_blocking(move || {
+                let _permit = sign_permit;
+                respond(&payload, &sign_state, &sign_keys, sign_enclave.as_ref())
+            })
+            .await
+            .unwrap_or_else(|_| vec![FAILURE])
+        } else {
+            respond(&payload, &state, &keys, enclave.as_ref())
+        };
         if write_frame(&mut stream, &reply).await.is_err() {
             break;
         }

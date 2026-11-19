@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// A file-held stand-in for the enclave; production refuses this kind.
-pub(crate) struct Software;
+pub struct Software;
 
 impl Enclave for Software {
     fn generate(&self) -> Result<(SealedKey, [u8; 33]), VaultError> {
@@ -49,7 +49,11 @@ impl Enclave for Software {
     }
 }
 
-pub(crate) fn state_directory() -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
+/// Creates a protected temporary state directory for vault and agent tests.
+///
+/// # Errors
+/// Returns an error when the temporary directory cannot be created or initialized.
+pub fn state_directory() -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("state");
     drop(state::initialize(&path)?);
@@ -375,7 +379,7 @@ fn get_and_run_commands_refuse_ssh_entries() -> Result<(), Box<dyn std::error::E
         let mut error = Vec::new();
         let status = crate::cli_vault::run(&path, command, false, &mut output, &mut error);
         assert_ne!(status, std::process::ExitCode::SUCCESS);
-        assert!(output.is_empty());
+        assert_eq!(output, Vec::<u8>::new());
         assert!(String::from_utf8(error)?.contains("cannot be exported"));
     }
     Ok(())
@@ -417,7 +421,6 @@ fn ssh_kind_downgrades_and_cross_kind_edits_fail_authentication() -> Result<(), 
 #[test]
 fn ssh_fingerprint_matches_ssh_keygen_when_available() -> Result<(), Box<dyn std::error::Error>> {
     if Command::new("ssh-keygen").arg("-V").output().is_err() {
-        eprintln!("ssh-keygen unavailable; external fingerprint comparison skipped");
         return Ok(());
     }
     let (_temporary, path) = state_directory()?;

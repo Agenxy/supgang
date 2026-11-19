@@ -1,10 +1,10 @@
 //! Long-running local SSH-agent command.
 
-use std::{io::Write, path::Path, process::ExitCode, sync::Arc};
+use std::{io::Write, path::Path, process::ExitCode, sync::Arc, time::Duration};
 
 use crate::{cli::render_error, ssh_agent, vault::SecureEnclave};
 
-pub(crate) fn run(
+pub fn run(
     state_directory: &Path,
     socket: &Path,
     keys: &[String],
@@ -12,17 +12,18 @@ pub(crate) fn run(
     output: &mut dyn Write,
     error: &mut dyn Write,
 ) -> ExitCode {
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(_) => return render_error(json, "the SSH agent runtime could not start", output, error),
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+        return render_error(json, "the SSH agent runtime could not start", output, error);
     };
-    match runtime.block_on(ssh_agent::serve_until(
+    let result = runtime.block_on(ssh_agent::serve_until(
         state_directory,
         socket,
         keys,
         Arc::new(SecureEnclave),
         shutdown(),
-    )) {
+    ));
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(problem) => render_error(json, &problem.to_string(), output, error),
     }

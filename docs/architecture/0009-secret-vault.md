@@ -132,8 +132,10 @@ The request body is capped at 256 KiB before allocation. At most 16 keys and 8 s
 connections are admitted, with 256 requests per connection, at most 32 per second per connection,
 a 5-second frame deadline, and a 120-second connection lifetime. Each sign uses the vault read
 audit with purpose `ssh-sign` before opening the seed; an audit failure releases no signature.
-The seed is zeroized after the sign. Agent requests and errors do not log key material, message
-bytes, or the socket path.
+The seed is zeroized after the sign. Vault reads and signs run as bounded blocking work,
+so a slow Secure Enclave call does not stall other clients or shutdown. Shutdown gives lingering
+blocking calls at most one second before the process exits. Agent requests and errors do not log
+key material, message bytes, or the socket path.
 
 The boundary is still the local user account: any process running as the owner can ask for a
 signature while the agent is running. `authorized_keys restrict` limits the remote account's

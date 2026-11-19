@@ -651,7 +651,7 @@ in the local vault and never exports it through `vault get`, `vault run`, or `si
 
 ```text
 supgang vault keygen --ssh ed25519 ssh-login --note "personal login"
-supgang vault ssh-public-key ssh-login
+supgang vault ssh-public-key ssh-login > ssh-login.pub
 supgang ssh-agent --socket "$HOME/Library/Application Support/org.agenxy.supgang/agent.sock" --key ssh-login
 ```
 
@@ -673,7 +673,8 @@ SSH_AUTH_SOCK="$HOME/Library/Application Support/org.agenxy.supgang/agent.sock" 
 
 The paths shown use the macOS default state directory. On Linux the default is
 `${XDG_STATE_HOME:-$HOME/.local/state}/supgang`; use the same socket path in both commands.
-Save the public line from `vault ssh-public-key ssh-login` as `ssh-login.pub` for `-i`. The socket
+The redirected stdout is exactly one valid `.pub` line; the SHA256 fingerprint appears on stderr.
+The socket
 must be inside an existing owner-only directory and is mode `0600`. Only keys named with
 `--key` are listed. The agent answers identity and plain Ed25519 sign requests; it refuses key
 addition, removal, locking, extensions, and nonzero signing flags. Each signing request is audited

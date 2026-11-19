@@ -691,4 +691,5 @@ impl Drop for Lock {
 }
 
 #[cfg(test)]
-pub(crate) mod tests;
+/// Shared test-only enclave and state fixture.
+pub mod tests;
