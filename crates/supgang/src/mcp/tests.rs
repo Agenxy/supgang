@@ -7,15 +7,10 @@ use std::{
     time::Duration,
 };
 
-use rmcp::{
-    ClientServiceExt, ServiceExt,
-    model::{ClientConfig, ProtocolVersion},
-    service::ClientLifecycleMode,
-};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{SupgangMcp, transport::BoundedStdio};
+use super::{protocol, transport::BoundedStdio};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -156,45 +151,88 @@ async fn modern_2026_discovery_is_self_contained_and_cacheable() -> Result<(), B
 }
 
 #[tokio::test]
-async fn official_sdk_clients_use_legacy_initialize_and_modern_discover() -> Result<(), Box<dyn Error>> {
+async fn official_sdk_client_transcript_replays_byte_for_byte() -> Result<(), Box<dyn Error>> {
+    let transcript = include_str!("../../assets/mcp-sdk-client.ndjson");
+    let lines: Vec<&str> = transcript.lines().collect();
+    assert_eq!(lines.len(), 9);
     let directory = tempfile::tempdir()?;
+    for session in [
+        lines.get(..5).ok_or("missing legacy transcript")?,
+        lines.get(5..).ok_or("missing modern transcript")?,
+    ] {
+        let mut input = Vec::new();
+        let mut expected = Vec::new();
+        for line in session {
+            if let Some(message) = line.strip_prefix("C:") {
+                input.extend_from_slice(message.as_bytes());
+                input.push(b'\n');
+            } else if let Some(message) = line.strip_prefix("S:") {
+                expected.extend_from_slice(message.as_bytes());
+                expected.push(b'\n');
+            } else {
+                return Err("invalid captured MCP direction".into());
+            }
+        }
+        assert_eq!(exchange_bytes(directory.path(), &input, false).await?, expected);
+    }
+    Ok(())
+}
 
-    let (client_transport, server_transport) = tokio::io::duplex(super::transport::MAX_MCP_RESPONSE_BYTES * 4);
-    let legacy_server = spawn_server(directory.path(), server_transport);
-    let mut legacy_info = ClientConfig::default();
-    legacy_info.protocol_version = ProtocolVersion::V_2025_11_25;
-    let legacy = legacy_info.serve(client_transport).await?;
-    assert_eq!(
-        legacy.peer_info().map(|info| info.protocol_version.clone()),
-        Some(ProtocolVersion::V_2025_11_25)
-    );
-    assert_eq!(
-        tool_names(&legacy.list_tools(None).await?),
-        ["fleet", "resolve", "status"]
-    );
-    legacy.cancel().await?;
-    legacy_server.await??;
+#[tokio::test]
+async fn captured_resolve_error_replays_byte_for_byte() -> Result<(), Box<dyn Error>> {
+    let transcript = include_str!("../../assets/mcp-resolve-call.ndjson");
+    let mut lines = transcript.lines();
+    let request = lines
+        .next()
+        .and_then(|line| line.strip_prefix("C:"))
+        .ok_or("missing captured request")?;
+    let reply = lines
+        .next()
+        .and_then(|line| line.strip_prefix("S:"))
+        .ok_or("missing captured reply")?;
+    assert!(lines.next().is_none());
 
-    let (client_transport, server_transport) = tokio::io::duplex(super::transport::MAX_MCP_RESPONSE_BYTES * 4);
-    let modern_server = spawn_server(directory.path(), server_transport);
-    let modern = ClientConfig::default()
-        .serve_with_lifecycle(
-            client_transport,
-            ClientLifecycleMode::Discover {
-                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-            },
-        )
-        .await?;
+    let directory = tempfile::tempdir()?;
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
+    let local = crate::state::initialize(directory.path())?;
+    let _name = crate::profile::load_or_create(directory.path(), local.identity().device.node_id())?;
+    drop(local);
+
+    let actual = exchange_bytes(directory.path(), format!("{request}\n").as_bytes(), false).await?;
+    assert_eq!(actual, format!("{reply}\n").as_bytes());
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_and_unknown_requests_have_bounded_json_rpc_errors() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let input = b"{\n[]\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n";
+    let output = exchange_bytes(directory.path(), input, false).await?;
+    let lines = std::str::from_utf8(&output)?.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 3);
     assert_eq!(
-        modern.peer_info().map(|info| info.protocol_version.clone()),
-        Some(ProtocolVersion::V_2026_07_28)
+        serde_json::from_str::<Value>(lines.first().ok_or("missing parse error")?)?,
+        json!({
+            "jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}
+        })
     );
     assert_eq!(
-        tool_names(&modern.list_tools(None).await?),
-        ["fleet", "resolve", "status"]
+        serde_json::from_str::<Value>(lines.get(1).ok_or("missing invalid request")?)?,
+        json!({
+            "jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid request"}
+        })
     );
-    modern.cancel().await?;
-    modern_server.await??;
+    assert_eq!(
+        lines.get(2).copied(),
+        Some("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}")
+    );
+
+    let unknown = request_2026(4, "server/no-such-method", &json!({}));
+    let responses = exchange(directory.path(), &[unknown]).await?;
+    assert_eq!(
+        response_with_id(&responses, 4)?.pointer("/error/code"),
+        Some(&json!(-32601))
+    );
     Ok(())
 }
 
@@ -380,29 +418,6 @@ fn response_with_id(responses: &[Value], id: u64) -> Result<&Value, Box<dyn Erro
         .ok_or_else(|| format!("MCP response {id} is missing").into())
 }
 
-fn tool_names(result: &rmcp::model::ListToolsResult) -> Vec<&str> {
-    result.tools.iter().map(|tool| tool.name.as_ref()).collect()
-}
-
-fn spawn_server(
-    state_directory: &Path,
-    transport: tokio::io::DuplexStream,
-) -> tokio::task::JoinHandle<Result<(), String>> {
-    let owned_state_directory = state_directory.to_path_buf();
-    tokio::spawn(async move {
-        let (server_read, server_write) = tokio::io::split(transport);
-        let running = SupgangMcp::new(owned_state_directory)
-            .serve(BoundedStdio::new(server_read, server_write))
-            .await
-            .map_err(|error| error.to_string())?;
-        running
-            .waiting()
-            .await
-            .map(|_reason| ())
-            .map_err(|error| error.to_string())
-    })
-}
-
 async fn exchange(state_directory: &Path, requests: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
     exchange_with_policy(state_directory, requests, false).await
 }
@@ -442,14 +457,8 @@ async fn exchange_bytes(
     let (server_read, server_write) = tokio::io::split(server);
     let owned_state_directory = state_directory.to_path_buf();
     let server_task = tokio::spawn(async move {
-        let running = SupgangMcp::new(owned_state_directory)
-            .serve(BoundedStdio::new(server_read, server_write))
+        protocol::serve(owned_state_directory, BoundedStdio::new(server_read, server_write))
             .await
-            .map_err(|error| error.to_string())?;
-        running
-            .waiting()
-            .await
-            .map(|_reason| ())
             .map_err(|error| error.to_string())
     });
 

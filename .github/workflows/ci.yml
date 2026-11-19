@@ -36,6 +36,16 @@ jobs:
         # setup-uv only selects this version; the gate runs uv offline, so the
         # interpreter must already be installed.
         run: uv python install 3.15.2
+      - name: Fetch and verify the published netwatch archive
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.19.1.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/netwatch/netwatch-0.19.1.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976 \
+            "$archive" | shasum -a 256 -c -
       - name: Run repository gate
         env:
           SUPGANG_QUALITY_CACHE: off

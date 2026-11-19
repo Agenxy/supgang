@@ -1,0 +1,2 @@
+C:{"id":1,"jsonrpc":"2.0","method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"supgang-test","version":"1"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"arguments":{"peer":"missing"},"name":"resolve"}}
+S:{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[{"type":"text","text":"no known peer significantly matches that name, tag, or fingerprint"}],"isError":true}}
