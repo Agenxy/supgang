@@ -1,13 +1,143 @@
 //! Agent-purpose vault policy and audit tests.
 
+use sha2::Digest as _;
 use std::fs;
 
 use super::{
     VaultError, list, remove, save, sign,
     tests::{Software, state_directory},
 };
+use crate::agent_keygen_protocol::KeygenRequest;
 use crate::agent_sign_protocol::SignRequest;
 use crate::state;
+
+#[test]
+fn remote_member_key_creation_seals_policy_and_spends_nonce() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let commit_lock = std::sync::Mutex::new(());
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let request = KeygenRequest {
+        nonce: [90; 32],
+        purpose: "agent.build".to_owned(),
+        note: "build stages".to_owned(),
+        policy: super::AgentPolicy::new(vec!["build.stage".to_owned()], Some(vec![requester]))?,
+        expires_at: super::unix_now() + 60,
+    };
+    let prepared = super::prepare_member_vault(&path, &Software, requester, &request, || true)?;
+    assert!(matches!(
+        super::keygen_member(&path, &Software, requester, &request, || false, &commit_lock, None),
+        Err(VaultError::MemberAuthority)
+    ));
+    assert_eq!(list(&path)?.len(), 0);
+    let identity = super::keygen_member(&path, &Software, requester, &request, || true, &commit_lock, prepared)?;
+    assert_eq!(
+        identity.fingerprint,
+        hex::encode(sha2::Sha256::digest(identity.public_key))
+    );
+    let audit = String::from_utf8(fs::read(path.join("vault-agent-audit-0000.log"))?)?;
+    assert!(audit.contains("create-reserved"));
+    assert!(audit.contains(&hex::encode(request.nonce)));
+    assert!(audit.contains(&identity.fingerprint));
+    let replay = KeygenRequest {
+        purpose: "agent.other".to_owned(),
+        ..request.clone()
+    };
+    assert!(matches!(
+        super::keygen_member(&path, &Software, requester, &replay, || true, &commit_lock, None),
+        Err(VaultError::AgentNonceReplay)
+    ));
+    assert_eq!(list(&path)?.len(), 1);
+    super::sign_member(
+        &path,
+        &Software,
+        requester,
+        &SignRequest {
+            nonce: [91; 32],
+            purpose: request.purpose,
+            context: "build.stage".to_owned(),
+            digest: [3; 32],
+            expires_at: super::unix_now() + 60,
+        },
+        || true,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn remote_member_cannot_create_a_key_that_excludes_it() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let commit_lock = std::sync::Mutex::new(());
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let policy = super::AgentPolicy::new(
+        vec!["build.stage".to_owned()],
+        Some(vec![crate::ids::NodeId::from_bytes([255; 32])]),
+    )?;
+    let request = KeygenRequest {
+        nonce: [92; 32],
+        purpose: "agent.build".to_owned(),
+        note: String::new(),
+        policy,
+        expires_at: super::unix_now() + 60,
+    };
+    assert!(super::prepare_member_vault(&path, &Software, requester, &request, || true).is_err());
+    assert!(matches!(
+        super::keygen_member(&path, &Software, requester, &request, || true, &commit_lock, None),
+        Err(VaultError::AgentPolicyDenied)
+    ));
+    assert_eq!(list(&path)?.len(), 0);
+    Ok(())
+}
+
+#[test]
+fn interrupted_creation_leaves_a_non_signing_pending_key() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (_temporary, path) = state_directory()?;
+    let commit_lock = std::sync::Mutex::new(());
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let request = KeygenRequest {
+        nonce: [93; 32],
+        purpose: "agent.pending".to_owned(),
+        note: String::new(),
+        policy: super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?,
+        expires_at: super::unix_now() + 60,
+    };
+    let prepared = super::prepare_member_vault(&path, &Software, requester, &request, || true)?;
+    let checks = AtomicUsize::new(0);
+    assert!(matches!(
+        super::keygen_member(
+            &path,
+            &Software,
+            requester,
+            &request,
+            || { checks.fetch_add(1, Ordering::SeqCst) < 4 },
+            &commit_lock,
+            prepared
+        ),
+        Err(VaultError::MemberAuthority)
+    ));
+    assert_eq!(list(&path)?.len(), 1);
+    let audit = String::from_utf8(fs::read(path.join("vault-agent-audit-0000.log"))?)?;
+    assert!(audit.contains("create-reserved"));
+    assert!(!audit.contains("create-activated"));
+    assert!(matches!(
+        super::sign_member(
+            &path,
+            &Software,
+            requester,
+            &SignRequest {
+                nonce: [94; 32],
+                purpose: "agent.pending".to_owned(),
+                context: "build.stage".to_owned(),
+                digest: [8; 32],
+                expires_at: super::unix_now() + 60,
+            },
+            || true
+        ),
+        Err(VaultError::AgentPolicyDenied)
+    ));
+    Ok(())
+}
 
 #[test]
 fn remote_member_nonce_is_spent_before_signing_and_replay_refuses() -> Result<(), Box<dyn std::error::Error>> {

@@ -6,12 +6,20 @@ use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
 use super::{
-    AgentPolicy, Document, Enclave, Kind, Lock, MAX_SECRETS, SealMetadata, VERSION, VaultError, agent_audit,
-    append_audit, audit, load, open, save, seal_entry, signing, unix_now, validate_name, validate_note,
+    AgentPolicy, Document, Enclave, Kind, Lock, MAX_SECRETS, PreparedVault, SealMetadata, VERSION, VaultError,
+    agent_audit, append_audit, audit, load, open, save, seal_entry, signing, unix_now, validate_name, validate_note,
 };
 use crate::{ids::NodeId, storage::validate_directory};
 
 type OpenedSeed = (Zeroizing<Vec<u8>>, [u8; 32], Option<AgentPolicy>);
+
+struct AgentCreation<'a> {
+    policy: &'a [u8],
+    requester: NodeId,
+    nonce: Option<([u8; 32], u64)>,
+    authorize: &'a dyn Fn() -> Result<(), VaultError>,
+    commit_lock: Option<&'a std::sync::Mutex<()>>,
+}
 
 pub(super) fn generate(
     state_directory: &Path,
@@ -20,7 +28,7 @@ pub(super) fn generate(
     note: &str,
     kind: Kind,
 ) -> Result<[u8; 32], VaultError> {
-    generate_with_policy(state_directory, enclave, name, note, kind, None)
+    generate_with_policy(state_directory, enclave, name, note, kind, None, None)
 }
 
 pub(super) fn generate_agent(
@@ -32,13 +40,62 @@ pub(super) fn generate_agent(
     requester: NodeId,
 ) -> Result<[u8; 32], VaultError> {
     let encoded = policy.encode()?;
+    let authorize = || {
+        if signing::current_member(state_directory)? != requester {
+            return Err(VaultError::MemberAuthority);
+        }
+        Ok(())
+    };
     generate_with_policy(
         state_directory,
         enclave,
         name,
         note,
         Kind::SigningEd25519,
-        Some((&encoded, requester)),
+        Some(&AgentCreation {
+            policy: &encoded,
+            requester,
+            nonce: None,
+            authorize: &authorize,
+            commit_lock: None,
+        }),
+        None,
+    )
+}
+
+pub(super) fn generate_agent_member(
+    state_directory: &Path,
+    enclave: &dyn Enclave,
+    request: &crate::agent_keygen_protocol::KeygenRequest,
+    requester: NodeId,
+    session_current: &impl Fn() -> bool,
+    commit_lock: &std::sync::Mutex<()>,
+    prepared: Option<PreparedVault>,
+) -> Result<[u8; 32], VaultError> {
+    let encoded = request.policy.encode()?;
+    let authorize = || {
+        if !session_current() {
+            return Err(VaultError::MemberAuthority);
+        }
+        request
+            .validate(unix_now())
+            .map_err(|_| VaultError::InvalidSigningRequest)?;
+        signing::current_member_for(state_directory, requester)
+    };
+    generate_with_policy(
+        state_directory,
+        enclave,
+        &request.purpose,
+        &request.note,
+        Kind::SigningEd25519,
+        Some(&AgentCreation {
+            policy: &encoded,
+            requester,
+            nonce: Some((request.nonce, request.expires_at)),
+            authorize: &authorize,
+            commit_lock: Some(commit_lock),
+        }),
+        prepared,
     )
 }
 
@@ -48,7 +105,8 @@ fn generate_with_policy(
     name: &str,
     note: &str,
     kind: Kind,
-    agent: Option<(&[u8], NodeId)>,
+    agent: Option<&AgentCreation<'_>>,
+    prepared: Option<PreparedVault>,
 ) -> Result<[u8; 32], VaultError> {
     let operation = match kind {
         Kind::SigningEd25519 => "add-signing",
@@ -58,17 +116,40 @@ fn generate_with_policy(
     validate_name(name)?;
     validate_note(note)?;
     let (directory, _lock) = Lock::acquire(state_directory)?;
-    let mut document = load(&directory)?.map_or_else(
-        || {
-            enclave.generate().map(|(key, public)| Document {
+    if let Some(agent) = &agent {
+        (agent.authorize)()?;
+        if let Some((nonce, _expires_at)) = agent.nonce {
+            agent_audit::preflight_creation_nonce(&directory, &nonce)?;
+        }
+    }
+    let mut document = match load(&directory)? {
+        Some(document) => document,
+        None if agent.as_ref().is_some_and(|creation| creation.nonce.is_some()) => {
+            let prepared = prepared.ok_or(VaultError::Corrupt)?;
+            if agent
+                .as_ref()
+                .and_then(|creation| creation.nonce.map(|(nonce, _)| nonce))
+                != Some(prepared.nonce)
+            {
+                return Err(VaultError::MemberAuthority);
+            }
+            Document {
+                version: VERSION,
+                key: prepared.key,
+                public: prepared.public,
+                entries: Vec::new(),
+            }
+        }
+        None => {
+            let (key, public) = enclave.generate()?;
+            Document {
                 version: VERSION,
                 key,
                 public,
                 entries: Vec::new(),
-            })
-        },
-        Ok,
-    )?;
+            }
+        }
+    };
     if document.entries.iter().any(|entry| entry.name == name) {
         return Err(VaultError::AlreadyExists(name.to_owned()));
     }
@@ -92,23 +173,38 @@ fn generate_with_policy(
             lms_public: None,
             lms_next_q: None,
         },
-        agent.map(|(policy, _)| policy),
+        agent.as_ref().map(|agent| agent.policy),
     )?;
     drop(seed);
     let has_agent_key = document.entries.iter().any(|entry| entry.policy.is_some());
     document.version = VERSION;
     document.entries.push(entry);
     document.entries.sort_by(|left, right| left.name.cmp(&right.name));
-    if let Some((policy, requester)) = agent {
-        if signing::current_member(state_directory)? != requester {
-            return Err(VaultError::MemberAuthority);
-        }
-        agent_audit::create_reserved(&directory, requester, name, policy, &public_key, has_agent_key)?;
-        if signing::current_member(state_directory)? != requester {
-            return Err(VaultError::MemberAuthority);
-        }
+    let _commit_guard = agent
+        .as_ref()
+        .and_then(|agent| agent.commit_lock)
+        .map(|lock| lock.lock().map_err(|_| VaultError::MemberAuthority))
+        .transpose()?;
+    if let Some(agent) = &agent {
+        (agent.authorize)()?;
+        agent_audit::create_reserved(
+            &directory,
+            agent.requester,
+            name,
+            agent.policy,
+            &public_key,
+            has_agent_key,
+            agent.nonce,
+        )?;
+        (agent.authorize)()?;
     }
     save(&directory, &document)?;
+    if let Some(agent) = &agent
+        && agent.nonce.is_some()
+    {
+        (agent.authorize)()?;
+        agent_audit::create_activated(&directory, agent.requester, name, agent.policy, &public_key)?;
+    }
     if agent.is_none() {
         audit(&directory, operation, name, None);
     }

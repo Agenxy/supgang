@@ -94,6 +94,11 @@ pub fn request_sign(state_directory: &Path, request: ControlRequest) -> Result<O
     request_within(state_directory, request, Duration::from_secs(20)).map(|reply| reply.map(|(reply, _pid)| reply))
 }
 
+/// A first vault key may need a bounded Secure Enclave creation operation.
+pub fn request_keygen(state_directory: &Path, request: ControlRequest) -> Result<Option<ControlReply>, ControlError> {
+    request_within(state_directory, request, Duration::from_secs(100)).map(|reply| reply.map(|(reply, _pid)| reply))
+}
+
 /// Sends a health or readiness request that fails fast so its caller can retry.
 ///
 /// # Errors

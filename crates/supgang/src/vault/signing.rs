@@ -69,6 +69,43 @@ pub fn keygen_agent(
     })
 }
 
+/// Create a fresh purpose key for a currently authorized remote member.
+/// The caller holds the matching live member session and discards the result
+/// if that session or its authority expires before the response is sent.
+pub(super) fn keygen_member(
+    state_directory: &Path,
+    enclave: &dyn Enclave,
+    requester: crate::ids::NodeId,
+    request: &crate::agent_keygen_protocol::KeygenRequest,
+    session_current: impl Fn() -> bool,
+    commit_lock: &std::sync::Mutex<()>,
+    prepared: Option<super::PreparedVault>,
+) -> Result<SigningPublic, VaultError> {
+    request
+        .validate(super::unix_now())
+        .map_err(|_| VaultError::InvalidSigningRequest)?;
+    if !request.policy.admits_member(requester) {
+        return Err(VaultError::AgentPolicyDenied);
+    }
+    current_member_for(state_directory, requester)?;
+    if !session_current() {
+        return Err(VaultError::MemberAuthority);
+    }
+    let public_key = keys::generate_agent_member(
+        state_directory,
+        enclave,
+        request,
+        requester,
+        &session_current,
+        commit_lock,
+        prepared,
+    )?;
+    Ok(SigningPublic {
+        public_key,
+        fingerprint: fingerprint(&public_key),
+    })
+}
+
 /// Reads the authenticated public identity of a signing key.
 ///
 /// # Errors
@@ -123,6 +160,8 @@ pub fn sign(
             super::agent_audit::denied(&directory, requester, &request, Some(&public_key))?;
             return Err(VaultError::AgentPolicyDenied);
         }
+        let directory = crate::storage::validate_directory(state_directory)?;
+        super::agent_audit::ensure_activated(&directory, name, &policy.encode()?, &public_key)?;
         let mut nonce = [0_u8; 32];
         getrandom::fill(&mut nonce).map_err(std::io::Error::other)?;
         let request = crate::agent_sign_protocol::SignRequest {
@@ -272,6 +311,21 @@ fn open_member_key(
         )?;
         return Err(VaultError::AgentPolicyDenied);
     }
+    match super::agent_audit::ensure_activated(directory, &request.purpose, &policy.encode()?, &public_key) {
+        Ok(()) => {}
+        Err(VaultError::AgentPolicyDenied) => {
+            record_denial(
+                state_directory,
+                requester,
+                request,
+                session_current,
+                directory,
+                Some(&public_key),
+            )?;
+            return Err(VaultError::AgentPolicyDenied);
+        }
+        Err(error) => return Err(error),
+    }
     Ok((seed, public_key))
 }
 
@@ -293,7 +347,7 @@ fn record_denial(
     super::agent_audit::denied(directory, requester, request, public_key)
 }
 
-fn current_member_for(state_directory: &Path, requester: crate::ids::NodeId) -> Result<(), VaultError> {
+pub(super) fn current_member_for(state_directory: &Path, requester: crate::ids::NodeId) -> Result<(), VaultError> {
     let state = state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
     if state.identity().root.is_none() || state.revocations().contains(&requester) {
         return Err(VaultError::MemberAuthority);

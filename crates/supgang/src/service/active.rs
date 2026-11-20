@@ -20,6 +20,7 @@ pub struct SessionAuthorization {
     expires_at: Arc<AtomicU64>,
     invalidated: Arc<AtomicBool>,
     changed: Arc<tokio::sync::Notify>,
+    commit_lock: Option<Arc<std::sync::Mutex<()>>>,
 }
 
 impl SessionAuthorization {
@@ -28,6 +29,7 @@ impl SessionAuthorization {
             expires_at: Arc::new(AtomicU64::new(expires_at)),
             invalidated: Arc::new(AtomicBool::new(false)),
             changed: Arc::new(tokio::sync::Notify::new()),
+            commit_lock: None,
         })
     }
 
@@ -36,9 +38,18 @@ impl SessionAuthorization {
     }
 
     pub fn invalidate(&self) {
+        let _commit_guard = self
+            .commit_lock
+            .as_ref()
+            .map(|lock| lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         if !self.invalidated.swap(true, Ordering::AcqRel) {
             self.changed.notify_waiters();
         }
+    }
+
+    pub(super) fn with_commit_lock(mut self, lock: Arc<std::sync::Mutex<()>>) -> Self {
+        self.commit_lock = Some(lock);
+        self
     }
 
     fn renew(&self, expires_at: u64, now: u64) {

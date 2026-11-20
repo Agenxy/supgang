@@ -6,7 +6,7 @@ use crate::{agent_sign_protocol::SignRequest, artifact, ids::NodeId, vault::Vaul
 fn nonce_replay_and_purpose_budget_refuse_before_signing() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
-    create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false)?;
+    create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false, None)?;
     let mut request = SignRequest {
         nonce: [0; 32],
         purpose: "build".to_owned(),
@@ -36,7 +36,7 @@ fn nonce_replay_and_purpose_budget_refuse_before_signing() -> Result<(), Box<dyn
 fn authenticated_denials_have_a_separate_bounded_budget() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
-    create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false)?;
+    create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false, None)?;
     let mut request = SignRequest {
         nonce: [8; 32],
         purpose: "build".to_owned(),
@@ -130,10 +130,11 @@ fn creation_limits_count_each_member_and_the_hive() -> Result<(), Box<dyn std::e
                 b"policy",
                 &[3; 32],
                 false,
+                None,
             )?;
         }
         assert!(matches!(
-            create_reserved(directory.path(), requester, "extra", b"policy", &[3; 32], true),
+            create_reserved(directory.path(), requester, "extra", b"policy", &[3; 32], true, None),
             Err(VaultError::AgentKeyCreationLimit)
         ));
     }
@@ -144,7 +145,8 @@ fn creation_limits_count_each_member_and_the_hive() -> Result<(), Box<dyn std::e
             "extra",
             b"policy",
             &[3; 32],
-            true
+            true,
+            None,
         ),
         Err(VaultError::AgentKeyCreationLimit)
     ));

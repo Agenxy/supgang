@@ -34,6 +34,7 @@ fn keygen_without_terminal_refuses_before_accessing_state() {
             owner_terminal: false,
             contexts: Vec::new(),
             members: Vec::new(),
+            remote: None,
         },
         &mut output,
         &mut Vec::new(),

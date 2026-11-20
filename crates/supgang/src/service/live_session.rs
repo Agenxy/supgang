@@ -284,6 +284,10 @@ impl LiveSessionState<'_> {
             connection.close(3_u8.into(), b"peer authorization expired");
             return Ok(());
         };
+        let mut authorization = authorization;
+        if let Some(update) = self.update {
+            authorization = authorization.with_commit_lock(std::sync::Arc::clone(&update.authority_commit));
+        }
         let selected_old = superseded.filter(|stale| {
             self.active
                 .get(&exchange.peer)

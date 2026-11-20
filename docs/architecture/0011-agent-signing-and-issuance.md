@@ -3,12 +3,13 @@
 Status: Accepted, partly implemented. Local agent-purpose key policy, vault
 format v4, bounded append-only audit with a durable head, durable nonce
 reservation, hourly purpose and denial caps, and the member-only remote signing
-stream are implemented in source on the root-authority computer. The remote CLI
+and agent-purpose creation streams are implemented in source on the root-authority computer. The remote signing CLI
 requires an explicit public-key fingerprint pin and verifies the returned
 signature. Other members require a bounded-fresh root status path before
-local agent signing is enabled. Remote key creation, certificate issuance,
-the consumer pin installer, audit checkpoint rotation, phone approval, and
-physical fleet acceptance remain open.
+local agent signing is enabled. Certificate issuance, the consumer pin installer,
+audit checkpoint rotation, phone approval, and remote creation's physical
+fleet acceptance remain open. Remote signing and revocation were demonstrated
+on the laptop and Solis with the same signed alpha.19 artifact.
 
 Date: 2026-11-19
 
@@ -263,7 +264,14 @@ seals the exact immutable policy, audits the requesting certified identity,
 and reports the public key and fingerprint. Creation does not update any
 consumer pin or grant more authority than existing member policy. Exact name
 collisions, excess keys, partial writes and audit failures refuse or leave a
-non-signing pending entry for explicit recovery. No private key leaves.
+non-signing pending entry for explicit recovery. The first Secure Enclave key
+is prepared only in memory; the state owner reserves the creation nonce and
+saves the vault, then appends a separate activation record. Both local and
+remote signing refuse a key without that durable activation. Activation starts
+only while the request and member session are authorized; later expiry cannot
+undo a committed activation. A lost response after activation may require
+reading the target's public key directly before deciding whether to retry.
+No private key leaves.
 
 Release-purpose key creation is later: create a bounded pending candidate and
 show its public fingerprint and fixed policy on the phone. The phone approves

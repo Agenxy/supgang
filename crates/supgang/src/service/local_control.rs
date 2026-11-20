@@ -25,6 +25,7 @@ use crate::{
     sync::{MAX_SYNC_CONTACTS, SyncPage},
 };
 
+mod agent_keygen_control;
 mod agent_sign_control;
 mod reachability;
 mod update_control;
@@ -171,149 +172,8 @@ pub(super) async fn revocation_listener(
     }
 }
 
-pub(super) struct PeerEventState<'a> {
-    pub(super) active: &'a mut BTreeMap<NodeId, ActiveConnection>,
-    pub(super) draining: &'a mut super::draining::DrainingConnections,
-    pub(super) noncanonical_outbound: &'a mut BTreeSet<NodeId>,
-    pub(super) local_state: &'a mut LocalState,
-    pub(super) directory: &'a mut PeerDirectory,
-    pub(super) rendezvous_offers: &'a mut Vec<rendezvous::RendezvousOfferEvent>,
-    pub(super) rendezvous_intents: &'a mut rendezvous::RendezvousIntents,
-    pub(super) sync_budget: &'a mut SyncMutationBudget,
-}
-
-pub(super) fn process_peer_events(
-    receiver: &mut tokio::sync::mpsc::Receiver<PeerEvent>,
-    state: PeerEventState<'_>,
-) -> Result<bool, ServiceError> {
-    let PeerEventState {
-        active,
-        draining,
-        noncanonical_outbound,
-        local_state,
-        directory,
-        rendezvous_offers,
-        rendezvous_intents,
-        sync_budget,
-    } = state;
-    let mut directory_changed = false;
-    while let Ok(event) = receiver.try_recv() {
-        if let Some((peer, connection_id)) = event.source()
-            && !source_is_authorized(active, local_state, peer, connection_id, unix_time()?)
-        {
-            continue;
-        }
-        match event {
-            PeerEvent::Contacts {
-                peer,
-                connection_id,
-                page,
-            } => {
-                if is_current_connection(active, peer, connection_id) {
-                    if page
-                        .revocations
-                        .verify(&local_state.identity().root_verifying_key)
-                        .is_err()
-                    {
-                        if let Some(connection) = active.remove(&peer) {
-                            connection.invalidate(b"invalid revocation snapshot");
-                        }
-                        continue;
-                    }
-                    if merge_received_revocations(local_state, directory, active, draining, page.revocations)? {
-                        directory_changed = true;
-                    }
-                    if close_if_revoked(active, local_state, peer) {
-                        continue;
-                    }
-                    if sync_budget.allow(peer, tokio::time::Instant::now()) {
-                        directory_changed |= import_received(directory, page.contacts, unix_time()?)?;
-                        // Only the verified current peer record can extend this
-                        // live session, and only for its original transport pin
-                        // and generation. Gossip from an unproved node cannot.
-                        let now = unix_time()?;
-                        if let Some(contact) = directory.usable(&peer, now)
-                            && let Some(connection) = active.get(&peer)
-                        {
-                            connection.renew_verified_record(peer, &contact.endpoint.record, now);
-                        }
-                        directory_changed |= import_received_reachability(directory, page.reachability, unix_time()?);
-                    }
-                }
-            }
-            PeerEvent::Revocations {
-                peer,
-                connection_id,
-                revocations,
-            } => {
-                if !is_current_connection(active, peer, connection_id) {
-                    continue;
-                }
-                if revocations.verify(&local_state.identity().root_verifying_key).is_err() {
-                    if let Some(connection) = active.remove(&peer) {
-                        connection.invalidate(b"invalid revocation snapshot");
-                    }
-                    continue;
-                }
-                if merge_received_revocations(local_state, directory, active, draining, revocations)? {
-                    directory_changed = true;
-                }
-                close_if_revoked(active, local_state, peer);
-            }
-            PeerEvent::RendezvousRequest {
-                peer,
-                connection_id,
-                rendezvous_id,
-                target,
-            } => {
-                if is_current_connection(active, peer, connection_id) && !local_state.revocations().contains(&target) {
-                    let local_can_introduce = local_state.local_membership().is_some_and(|membership| {
-                        membership
-                            .certificate
-                            .roles
-                            .contains(crate::membership::MembershipRoles::INTRODUCER)
-                    });
-                    if local_can_introduce {
-                        let _delivered = rendezvous::introduce_active_pair(active, peer, rendezvous_id, target);
-                    }
-                }
-            }
-            PeerEvent::RendezvousOffer {
-                peer,
-                connection_id,
-                rendezvous_id,
-                target,
-                address,
-            } => {
-                if is_current_connection(active, peer, connection_id)
-                    && peer != target
-                    && !active.contains_key(&target)
-                    && !local_state.revocations().contains(&target)
-                    && rendezvous_intents.take(target, peer, connection_id, rendezvous_id, tokio::time::Instant::now())
-                    && rendezvous_offers.len() < super::PEER_EVENT_QUEUE
-                {
-                    rendezvous_offers.push(rendezvous::RendezvousOfferEvent {
-                        introducer: peer,
-                        rendezvous_id,
-                        target,
-                        address,
-                    });
-                }
-            }
-            PeerEvent::Closed { peer, connection_id } => {
-                if is_current_connection(active, peer, connection_id) {
-                    if let Some(connection) = active.remove(&peer) {
-                        connection.authorization().invalidate();
-                    }
-                    noncanonical_outbound.remove(&peer);
-                }
-            }
-        }
-    }
-    prune_unauthorized(active, local_state, unix_time()?);
-    noncanonical_outbound.retain(|peer| active.contains_key(peer));
-    Ok(directory_changed)
-}
+mod peer_events;
+pub(super) use peer_events::{PeerEventState, process_peer_events};
 
 fn is_current_connection(active: &BTreeMap<NodeId, ActiveConnection>, peer: NodeId, connection_id: usize) -> bool {
     connection_event_is_current(active.get(&peer).map(|active| active.stable_id()), connection_id)
@@ -430,6 +290,24 @@ async fn handle_control(
         .await;
         return Ok(false);
     }
+    if let Ok(Ok(ControlRequest::AgentKeygen {
+        target,
+        request: payload,
+        length,
+    })) = &request
+    {
+        agent_keygen_control::handle(
+            stream,
+            *target,
+            payload.clone(),
+            *length,
+            local_state,
+            active,
+            sign_tasks,
+        )
+        .await;
+        return Ok(false);
+    }
     let (reply, changed) = match request {
         Ok(Ok(ControlRequest::AddMapped { address })) => {
             let result = tunnel_control::add_mapped_endpoint(
@@ -469,9 +347,9 @@ async fn handle_control(
             reply.into_unchanged()
         }
         Ok(Ok(ControlRequest::Exposures)) => tunnels.exposure_reply().into_unchanged(),
-        Ok(Ok(ControlRequest::Connect { .. } | ControlRequest::AgentSign { .. })) => {
-            unreachable_connect_reply().into_unchanged()
-        }
+        Ok(Ok(
+            ControlRequest::Connect { .. } | ControlRequest::AgentSign { .. } | ControlRequest::AgentKeygen { .. },
+        )) => unreachable_connect_reply().into_unchanged(),
         Ok(Ok(ControlRequest::Restart)) => {
             restart_reply(instance_id, restart_requested, is_supervised()).into_unchanged()
         }

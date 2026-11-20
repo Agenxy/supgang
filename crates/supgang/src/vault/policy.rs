@@ -76,7 +76,11 @@ impl AgentPolicy {
         self.members.as_deref()
     }
 
-    pub(super) fn encode(&self) -> Result<Vec<u8>, VaultError> {
+    /// Canonical bounded encoding for the immutable vault policy.
+    ///
+    /// # Errors
+    /// Returns an error if the policy cannot be encoded within its bound.
+    pub fn encode(&self) -> Result<Vec<u8>, VaultError> {
         let mut encoder = Encoder::new(Vec::new());
         encoder
             .array(3)
@@ -107,7 +111,11 @@ impl AgentPolicy {
         Ok(bytes)
     }
 
-    pub(super) fn decode(bytes: &[u8]) -> Result<Self, VaultError> {
+    /// Decode only canonical bounded policy bytes.
+    ///
+    /// # Errors
+    /// Returns an error for malformed, noncanonical, or oversized policy bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, VaultError> {
         if bytes.len() > MAX_POLICY_BYTES {
             return Err(VaultError::InvalidAgentPolicy);
         }

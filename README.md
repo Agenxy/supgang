@@ -654,13 +654,16 @@ owner's macOS user can currently request a signature; see ADR 0009 for the progr
 For routine agent signing, create a separate key whose vault name is its purpose. `--context`
 fixes the contexts when the key is created. This path uses the current certified hive member
 identity and does not need an owner terminal. The local agent-key path currently
-runs only on the root-authority computer; other members need the remote
-freshness path described in ADR 0011:
+runs only on the root-authority computer. Another authenticated member can
+create or use a purpose key on that computer through the running Supgang
+service:
 
 ```text
 supgang vault keygen --signing ed25519 --context build.stage build.stage
 supgang vault public-key build.stage --json
 supgang sign build.stage --context build.stage --sha256 HEX_DIGEST --json
+supgang vault keygen --remote MacMarine --signing ed25519 --context build.stage build.remote
+supgang sign build.remote --remote MacMarine --key-pin LOWERCASE_KEY_FINGERPRINT --context build.stage --sha256 HEX_DIGEST --json
 ```
 
 Repeat `--context` for a bounded context set. `--member NODE_ID` narrows the default of all
@@ -668,8 +671,15 @@ current members; the creating member must be in that list. Consumers must pin th
 context and fingerprint themselves. Creation does not install a pin. Agent keys use a separate
 append-only, hash-linked audit in the protected state directory. A corrupt or full audit stops
 signing; creation is limited to eight keys per member and 32 per hive in a rolling day. These
-limits constrain ordinary automation, not a process that controls this macOS user. Remote member
-requests, audit checkpoint rotation and the release phone proof remain future work in
+limits constrain ordinary automation, not a process that controls this macOS user.
+Remote creation and signing require a current member session; they never install
+the returned fingerprint at a consumer. A creation request spends a one-use
+nonce in the same durable audit record as its creation reservation. A lost
+reply may leave a created key on the target; inspect its public key there before
+trying a new purpose name. If creation stops between the vault write and the
+activation audit, the key cannot sign; the root can explicitly remove that
+pending entry before retrying. Audit checkpoint rotation and the release phone
+proof remain future work in
 [ADR 0011](docs/architecture/0011-agent-signing-and-issuance.md).
 
 ### Use a vault SSH key

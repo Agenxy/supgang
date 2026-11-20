@@ -78,6 +78,39 @@ fn member_sign_control_request_rejects_trailing_or_changed_length() -> Result<()
 }
 
 #[test]
+fn member_keygen_control_request_rejects_trailing_or_changed_length() -> Result<(), Box<dyn std::error::Error>> {
+    let request = crate::agent_keygen_protocol::KeygenRequest {
+        nonce: [1; 32],
+        purpose: "build".to_owned(),
+        note: "stage".to_owned(),
+        policy: crate::vault::AgentPolicy::new(vec!["build.stage".to_owned()], None)?,
+        expires_at: 100,
+    };
+    let encoded = request.encode()?;
+    let mut padded = Box::new([0_u8; crate::agent_keygen_protocol::MAX_REQUEST_BYTES]);
+    padded
+        .get_mut(..encoded.len())
+        .ok_or("keygen request too large")?
+        .copy_from_slice(&encoded);
+    let bytes = encode_request(ControlRequest::AgentKeygen {
+        target: NodeId::from_bytes([3; 32]),
+        request: padded,
+        length: u16::try_from(encoded.len())?,
+    });
+    assert!(matches!(decode_request(&bytes)?, ControlRequest::AgentKeygen { .. }));
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(matches!(decode_request(&trailing), Err(ControlError::InvalidRequest)));
+    let mut changed = bytes;
+    changed
+        .get_mut(41..43)
+        .ok_or("missing request length")?
+        .copy_from_slice(&1_u16.to_be_bytes());
+    assert!(matches!(decode_request(&changed), Err(ControlError::InvalidRequest)));
+    Ok(())
+}
+
+#[test]
 fn listener_rejects_symlink_and_cleans_only_its_socket() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     let state_directory = temporary.path().join("state");
