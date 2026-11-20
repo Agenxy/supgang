@@ -613,8 +613,8 @@ fn key_ref(event: &Event<'_>) -> Result<KeyRef, VaultError> {
 /// vault lock through the later durable nonce reservation.
 mod operations;
 pub(super) use operations::{
-    create_activated, create_reserved, denied, ensure_activated, preflight_creation_nonce, preflight_nonce,
-    reserve_nonce, revoke_reserved, signed,
+    create_activated, create_reserved, creation_state, denied, ensure_activated, preflight_creation_nonce,
+    preflight_nonce, reserve_nonce, revoke_reserved, signed,
 };
 
 #[cfg(test)]

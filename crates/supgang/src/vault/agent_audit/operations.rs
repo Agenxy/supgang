@@ -74,6 +74,26 @@ pub(in crate::vault) fn create_activated(
     )
 }
 
+/// Return the durable state of this exact purpose, key and policy tuple.
+pub(in crate::vault) fn creation_state(
+    directory: &Path,
+    purpose: &str,
+    policy: &[u8],
+    public_key: &[u8; 32],
+) -> Result<Option<bool>, VaultError> {
+    let digest: [u8; 32] = Sha256::digest(policy).into();
+    let event = Event {
+        requester: NodeId::from_bytes([0; 32]),
+        action: Action::CreateActivated,
+        purpose,
+        context: None,
+        digest: &digest,
+        public_key: Some(public_key),
+    };
+    let _lock = Lock::open(directory, LOCK_NAME, false).map_err(|_| VaultError::AgentAudit)?;
+    Ok(scan(directory)?.created_keys.get(&key_ref(&event)?).copied())
+}
+
 /// Refuse signing by a remote-created key until its activation is durable.
 pub(in crate::vault) fn ensure_activated(
     directory: &Path,

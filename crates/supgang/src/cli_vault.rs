@@ -21,7 +21,9 @@ use crate::{
     vault::{self, AgentPolicy, MAX_SECRET_BYTES, SecureEnclave, Summary},
 };
 
+mod keygen;
 mod lms;
+mod migration;
 mod remote_keygen;
 mod remote_sign;
 pub use remote_sign::sign_remote;
@@ -129,7 +131,7 @@ pub fn run(
             remote,
             name,
             note,
-        } => keygen_with_terminal(
+        } => keygen::with_terminal(
             state_directory,
             &name,
             &note,
@@ -147,6 +149,20 @@ pub fn run(
             },
             output,
             error,
+        ),
+        VaultCommand::MigrateAgentPolicy {
+            name,
+            expect_fingerprint,
+            contexts,
+            members,
+        } => migration::run(
+            state_directory,
+            &name,
+            &expect_fingerprint,
+            contexts,
+            members,
+            json,
+            output,
         ),
         VaultCommand::PublicKey { name } => public_key(state_directory, &name, json, output),
         VaultCommand::SshPublicKey { name } => ssh_public_key(state_directory, &name, json, output, error),
@@ -230,67 +246,6 @@ fn list(state_directory: &Path, json: bool, output: &mut dyn Write) -> Result<Ex
     };
     written.map_err(|_| "could not write the vault listing".to_owned())?;
     Ok(ExitCode::SUCCESS)
-}
-
-fn keygen_with_terminal(
-    state_directory: &Path,
-    name: &str,
-    note: &str,
-    options: KeygenOptions,
-    output: &mut dyn Write,
-    error: &mut dyn Write,
-) -> Result<ExitCode, String> {
-    if let Some(remote) = options.remote.as_deref() {
-        if !matches!(options.kind, Some(KeygenKind::Signing)) || options.contexts.is_empty() {
-            return Err("remote key creation requires --signing ed25519 and --context".to_owned());
-        }
-        return remote_keygen::create(
-            state_directory,
-            remote,
-            name,
-            note,
-            options.contexts,
-            options.members,
-            options.json,
-            output,
-        );
-    }
-    if options.contexts.is_empty() && !options.owner_terminal {
-        return Err("vault keygen requires an interactive terminal with the owner present".to_owned());
-    }
-    match options.kind {
-        Some(KeygenKind::Signing) => {
-            let identity = if options.contexts.is_empty() {
-                if !options.members.is_empty() {
-                    return Err("--member requires at least one --context".to_owned());
-                }
-                vault::keygen(state_directory, &SecureEnclave, name, note)
-            } else {
-                let mut contexts = options.contexts;
-                contexts.sort();
-                let members = if options.members.is_empty() {
-                    None
-                } else {
-                    let mut members = options.members;
-                    members.sort_unstable();
-                    Some(members)
-                };
-                let policy = AgentPolicy::new(contexts, members).map_err(|error| error.to_string())?;
-                vault::keygen_agent(state_directory, &SecureEnclave, name, note, &policy)
-            }
-            .map_err(|error| error.to_string())?;
-            show_public(name, &identity, options.json, output)
-        }
-        Some(KeygenKind::Ssh) => {
-            if !options.contexts.is_empty() || !options.members.is_empty() {
-                return Err("SSH keys do not accept agent signing contexts or members".to_owned());
-            }
-            let identity =
-                vault::ssh_keygen(state_directory, &SecureEnclave, name, note).map_err(|error| error.to_string())?;
-            show_ssh_public(name, &identity, options.json, output, error)
-        }
-        None => Err("choose exactly one key kind: --signing ed25519 or --ssh ed25519".to_owned()),
-    }
 }
 
 fn public_key(state_directory: &Path, name: &str, json: bool, output: &mut dyn Write) -> Result<ExitCode, String> {

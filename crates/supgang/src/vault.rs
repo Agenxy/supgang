@@ -36,6 +36,7 @@ mod keys;
 mod lms;
 mod lms_rfc;
 mod lock;
+mod migration;
 mod policy;
 mod removal;
 mod signing;
@@ -49,6 +50,7 @@ pub use lms::{
     package as lms_package, preview as lms_preview, public_key as lms_public_key, sign as lms_sign,
 };
 use lock::Lock;
+pub use migration::migrate_agent_policy;
 pub use policy::AgentPolicy;
 pub use removal::remove;
 use signing::fingerprint;

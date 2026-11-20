@@ -8,7 +8,9 @@ requires an explicit public-key fingerprint pin and verifies the returned
 signature. Other members require a bounded-fresh root status path before
 local agent signing is enabled. Certificate issuance, the consumer pin installer,
 audit checkpoint rotation, phone approval, and release-purpose creation remain
-open. Stage-purpose remote creation, signing and refusal were demonstrated on
+open. Explicit fingerprint-pinned migration of a legacy signing key is now in
+source; migration of the live placement key and its consumer acceptance are
+still open. Stage-purpose remote creation, signing and refusal were demonstrated on
 the laptop and Solis with the same signed alpha.20 artifact; see the
 [physical acceptance record](../validation/2026-11-19-agent-keygen-two-host.md).
 
@@ -102,6 +104,14 @@ unscoped key into either policy. Existing unscoped keys remain readable for
 inventory, but new-policy signing refuses them until an explicit migration or
 rotation with a reviewed consumer pin plan. Existing key bytes are never
 exported as part of migration.
+
+An agent-tier migration requires the exact existing public-key fingerprint
+from the reviewed consumer pin, retains that public key, and reseals the seed
+with the new immutable policy. It reserves an audit event before the vault
+write and activates it only after the write; a crash can leave a non-signing
+pending entry that an exact retry resumes. The command does not install a
+consumer pin or authorize a release-tier key. A different policy requires a
+new key and an explicit consumer pin rotation.
 
 ## Authenticated remote request
 
