@@ -4,9 +4,14 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.18` so it cannot be mistaken for the published
-`0.1.0` build that failed physical WAN acceptance. This version advances from `0.2.0-alpha.17`
-so that the member-signing build runs under rollback probation during remote fleet acceptance.
+The corrective source reports version `0.2.0-alpha.19` so it cannot be mistaken for the published
+`0.1.0` build that failed physical WAN acceptance. This version advances from `0.2.0-alpha.18`
+so that the custody-helper repair runs under rollback probation during remote fleet acceptance.
+
+- Let a signed service running from an update slot use the owner-installed Secure Enclave helper
+  when its slot has no sibling helper. Require an owner-only regular file, a valid code signature,
+  the fixed helper identifier, and the same certificate requirement as the running Supgang binary.
+  The installer gives the helper owner-only permissions.
 
 - Add authenticated member-only agent signing, durable nonce replay refusal, bounded denial audit,
   and explicit root-authority guidance for local agent signing. The two-host physical acceptance

@@ -200,6 +200,12 @@ release; the local code signature lets macOS recognize an approved program acros
 macOS update target must retain the same approved designated requirement. Staging, activation, and
 the supervisor all reject a target with an invalid or different macOS identity before execution.
 
+A service started from an update slot can use the Secure Enclave helper installed by `make install`
+in `$HOME/.local/bin` when no helper is beside that slot's executable. This fallback accepts only
+an owner-only regular helper with a valid signature, Supgang's fixed helper identifier, and the
+same signing certificate requirement as the running service. Install the signed helper on the
+root-authority computer before using member signing from an updated service.
+
 The crates.io `0.1.0` package is the failed WAN build described above. Do not use it to evaluate the
 corrective source tree. After a corrected version passes the physical WAN gate and is published, the
 registry install form will be:

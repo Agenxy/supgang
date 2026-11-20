@@ -5,7 +5,7 @@
 use super::custody::UnavailableReason;
 use std::{
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
     time::{Duration, Instant},
@@ -29,9 +29,67 @@ impl Drop for Running {
 
 pub(super) fn invoke(operation: &str, timeout: Duration) -> Result<Zeroizing<String>, UnavailableReason> {
     let executable = std::env::current_exe().map_err(|_| UnavailableReason::HelperMissing)?;
-    let directory = executable.parent().ok_or(UnavailableReason::HelperMissing)?;
     let _guard = IN_FLIGHT.try_lock().map_err(|_| UnavailableReason::HelperBusy)?;
-    exchange(&directory.join(NAME), operation, timeout)
+    exchange(&helper_path(&executable)?, operation, timeout)
+}
+
+fn helper_path(executable: &Path) -> Result<PathBuf, UnavailableReason> {
+    let sibling = executable.parent().ok_or(UnavailableReason::HelperMissing)?.join(NAME);
+    match std::fs::symlink_metadata(&sibling) {
+        Ok(_) => return Ok(sibling),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(UnavailableReason::HelperRefused(error.raw_os_error().unwrap_or(-1))),
+    }
+    #[cfg(target_os = "macos")]
+    return installed_helper(executable);
+    #[cfg(not(target_os = "macos"))]
+    Err(UnavailableReason::HelperMissing)
+}
+
+#[cfg(target_os = "macos")]
+fn installed_helper(executable: &Path) -> Result<PathBuf, UnavailableReason> {
+    use std::{
+        fs::OpenOptions,
+        os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
+    };
+
+    let owner = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .map_err(|_| UnavailableReason::HelperIdentity)?
+        .ok_or(UnavailableReason::HelperIdentity)?;
+    let mut directory = owner.dir;
+    for part in [".local", "bin"] {
+        directory = crate::storage::validate_trusted_owner_directory(&directory)
+            .map_err(|_| UnavailableReason::HelperIdentity)?
+            .join(part);
+    }
+    crate::storage::validate_trusted_owner_directory(&directory).map_err(|_| UnavailableReason::HelperIdentity)?;
+    let helper = directory.join(NAME);
+    let no_follow =
+        i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| UnavailableReason::HelperIdentity)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(no_follow)
+        .open(&helper)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                UnavailableReason::HelperMissing
+            } else {
+                UnavailableReason::HelperIdentity
+            }
+        })?;
+    let metadata = file.metadata().map_err(|_| UnavailableReason::HelperIdentity)?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != rustix::process::getuid().as_raw()
+        || metadata.mode() & 0o777 != 0o700
+        || metadata.len() == 0
+        || metadata.len() > 128 * 1024 * 1024
+        || supgang_acl::reject_non_owner_grants(&file).is_err()
+    {
+        return Err(UnavailableReason::HelperIdentity);
+    }
+    crate::update::executable::validate_secure_enclave_helper(executable, &helper)
+        .map_err(|_| UnavailableReason::HelperIdentity)?;
+    Ok(helper)
 }
 
 fn exchange(path: &Path, operation: &str, timeout: Duration) -> Result<Zeroizing<String>, UnavailableReason> {

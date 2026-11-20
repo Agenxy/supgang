@@ -42,6 +42,33 @@ pub(super) fn validate_compatible_identity(authority: &Path, candidate: &Path) -
     validate_platform_identity(authority, candidate)
 }
 
+/// Checks an installed native helper against the running Supgang certificate.
+/// The two programs have different fixed identifiers but must have the same
+/// remaining designated requirement and valid signatures.
+#[cfg(target_os = "macos")]
+pub fn validate_secure_enclave_helper(program: &Path, helper: &Path) -> Result<(), UpdateError> {
+    validate_platform_signature(program)?;
+    validate_platform_signature(helper)?;
+    helper_requirement_matches(&designated_requirement(program)?, &designated_requirement(helper)?)
+}
+
+#[cfg(target_os = "macos")]
+fn helper_requirement_matches(program: &str, helper: &str) -> Result<(), UpdateError> {
+    const PROGRAM: &str = "identifier \"org.agenxy.supgang.runtime\" and ";
+    const HELPER: &str = "identifier \"org.agenxy.supgang.secure-enclave\" and ";
+    let program_suffix = program
+        .strip_prefix(PROGRAM)
+        .ok_or(UpdateError::IncompatibleCodeIdentity)?;
+    let helper_suffix = helper
+        .strip_prefix(HELPER)
+        .ok_or(UpdateError::IncompatibleCodeIdentity)?;
+    if !program_suffix.is_empty() && program_suffix == helper_suffix {
+        Ok(())
+    } else {
+        Err(UpdateError::IncompatibleCodeIdentity)
+    }
+}
+
 // Off macOS there is no platform code signature to check, so these accept
 // everything. They keep the `Result` shape of their macOS twins on purpose:
 // the callers above are written once for both, and clippy's `const fn` and
@@ -131,8 +158,19 @@ mod tests {
 
     use sha2::{Digest, Sha256};
 
-    use super::{validate_compatible_identity, validate_staged};
+    use super::{helper_requirement_matches, validate_compatible_identity, validate_staged};
     use crate::update::UpdateError;
+
+    #[test]
+    fn native_helper_requires_its_fixed_identifier_and_the_same_signer() {
+        let program = "identifier \"org.agenxy.supgang.runtime\" and certificate root = H\"001122\"";
+        let helper = "identifier \"org.agenxy.supgang.secure-enclave\" and certificate root = H\"001122\"";
+        assert!(helper_requirement_matches(program, helper).is_ok());
+        assert!(helper_requirement_matches(program, &helper.replace("001122", "334455")).is_err());
+        assert!(helper_requirement_matches(program, &helper.replace("secure-enclave", "other")).is_err());
+        assert!(helper_requirement_matches("identifier \"other\" and certificate root = H\"001122\"", helper).is_err());
+        assert!(helper_requirement_matches("identifier \"org.agenxy.supgang.runtime\" and ", helper).is_err());
+    }
 
     #[test]
     fn an_exact_copy_retains_the_approved_designated_requirement() -> Result<(), Box<dyn std::error::Error>> {
