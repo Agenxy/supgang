@@ -204,7 +204,8 @@ A service started from an update slot can use the Secure Enclave helper installe
 in `$HOME/.local/bin` when no helper is beside that slot's executable. This fallback accepts only
 an owner-only regular helper with a valid signature, Supgang's fixed helper identifier, and the
 same signing certificate requirement as the running service. Install the signed helper on the
-root-authority computer before using member signing from an updated service.
+root-authority computer before using member signing from an updated service. A helper already
+beside a managed service is subject to the same checks.
 
 The crates.io `0.1.0` package is the failed WAN build described above. Do not use it to evaluate the
 corrective source tree. After a corrected version passes the physical WAN gate and is published, the

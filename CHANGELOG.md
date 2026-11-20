@@ -11,7 +11,8 @@ so that the custody-helper repair runs under rollback probation during remote fl
 - Let a signed service running from an update slot use the owner-installed Secure Enclave helper
   when its slot has no sibling helper. Require an owner-only regular file, a valid code signature,
   the fixed helper identifier, and the same certificate requirement as the running Supgang binary.
-  The installer gives the helper owner-only permissions.
+  A helper beside a managed service receives the same checks. The installer gives the helper
+  owner-only permissions, and code-signing subprocesses have bounded time and output.
 
 - Add authenticated member-only agent signing, durable nonce replay refusal, bounded denial audit,
   and explicit root-authority guidance for local agent signing. The two-host physical acceptance

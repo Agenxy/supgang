@@ -28,48 +28,72 @@ impl Drop for Running {
 }
 
 pub(super) fn invoke(operation: &str, timeout: Duration) -> Result<Zeroizing<String>, UnavailableReason> {
+    let started = Instant::now();
     let executable = std::env::current_exe().map_err(|_| UnavailableReason::HelperMissing)?;
     let _guard = IN_FLIGHT.try_lock().map_err(|_| UnavailableReason::HelperBusy)?;
-    exchange(&helper_path(&executable)?, operation, timeout)
+    let until = started + timeout;
+    let path = helper_path(&executable, until)?;
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .ok_or(UnavailableReason::HelperTimedOut)?;
+    exchange(&path, operation, remaining)
 }
 
-fn helper_path(executable: &Path) -> Result<PathBuf, UnavailableReason> {
+fn helper_path(executable: &Path, until: Instant) -> Result<PathBuf, UnavailableReason> {
     let sibling = executable.parent().ok_or(UnavailableReason::HelperMissing)?.join(NAME);
     match std::fs::symlink_metadata(&sibling) {
-        Ok(_) => return Ok(sibling),
+        Ok(_) => {
+            #[cfg(target_os = "macos")]
+            if managed_service_path(executable) {
+                trusted_helper(executable, &sibling, until)?;
+            }
+            return Ok(sibling);
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(UnavailableReason::HelperRefused(error.raw_os_error().unwrap_or(-1))),
     }
     #[cfg(target_os = "macos")]
-    return installed_helper(executable);
+    return installed_helper(executable, until);
     #[cfg(not(target_os = "macos"))]
     Err(UnavailableReason::HelperMissing)
 }
 
 #[cfg(target_os = "macos")]
-fn installed_helper(executable: &Path) -> Result<PathBuf, UnavailableReason> {
+fn managed_service_path(executable: &Path) -> bool {
+    use std::ffi::OsStr;
+
+    executable.ancestors().any(|ancestor| {
+        ancestor.file_name() == Some(OsStr::new("org.agenxy.supgang"))
+            && ancestor.parent().and_then(Path::file_name) == Some(OsStr::new("Application Support"))
+            && ancestor.parent().and_then(Path::parent).and_then(Path::file_name) == Some(OsStr::new("Library"))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn installed_helper(executable: &Path, until: Instant) -> Result<PathBuf, UnavailableReason> {
+    let owner = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .map_err(|_| UnavailableReason::HelperIdentity)?
+        .ok_or(UnavailableReason::HelperIdentity)?;
+    let helper = owner.dir.join(".local/bin").join(NAME);
+    trusted_helper(executable, &helper, until)?;
+    Ok(helper)
+}
+
+#[cfg(target_os = "macos")]
+fn trusted_helper(executable: &Path, helper: &Path, until: Instant) -> Result<(), UnavailableReason> {
     use std::{
         fs::OpenOptions,
         os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     };
 
-    let owner = nix::unistd::User::from_uid(nix::unistd::getuid())
-        .map_err(|_| UnavailableReason::HelperIdentity)?
-        .ok_or(UnavailableReason::HelperIdentity)?;
-    let mut directory = owner.dir;
-    for part in [".local", "bin"] {
-        directory = crate::storage::validate_trusted_owner_directory(&directory)
-            .map_err(|_| UnavailableReason::HelperIdentity)?
-            .join(part);
-    }
-    crate::storage::validate_trusted_owner_directory(&directory).map_err(|_| UnavailableReason::HelperIdentity)?;
-    let helper = directory.join(NAME);
+    crate::storage::validate_trusted_owner_directory(helper.parent().ok_or(UnavailableReason::HelperIdentity)?)
+        .map_err(|_| UnavailableReason::HelperIdentity)?;
     let no_follow =
         i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| UnavailableReason::HelperIdentity)?;
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(no_follow)
-        .open(&helper)
+        .open(helper)
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 UnavailableReason::HelperMissing
@@ -87,9 +111,13 @@ fn installed_helper(executable: &Path) -> Result<PathBuf, UnavailableReason> {
     {
         return Err(UnavailableReason::HelperIdentity);
     }
-    crate::update::executable::validate_secure_enclave_helper(executable, &helper)
-        .map_err(|_| UnavailableReason::HelperIdentity)?;
-    Ok(helper)
+    crate::update::executable::validate_secure_enclave_helper(executable, helper, until).map_err(|_| {
+        if Instant::now() >= until {
+            UnavailableReason::HelperTimedOut
+        } else {
+            UnavailableReason::HelperIdentity
+        }
+    })
 }
 
 fn exchange(path: &Path, operation: &str, timeout: Duration) -> Result<Zeroizing<String>, UnavailableReason> {
