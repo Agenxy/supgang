@@ -9,8 +9,10 @@ signature. Other members require a bounded-fresh root status path before
 local agent signing is enabled. Certificate issuance, the consumer pin installer,
 audit checkpoint rotation, phone approval, and release-purpose creation remain
 open. Explicit fingerprint-pinned migration of a legacy signing key is now in
-source; migration of the live placement key and its consumer acceptance are
-still open. Stage-purpose remote creation, signing and refusal were demonstrated on
+source and installed on both physical peers; the live wrong-pin refusal passed,
+but migration of the placement key and its consumer acceptance are still open.
+See the [migration install record](../validation/2026-11-20-agent-policy-migration-install.md).
+Stage-purpose remote creation, signing and refusal were demonstrated on
 the laptop and Solis with the same signed alpha.20 artifact; see the
 [physical acceptance record](../validation/2026-11-19-agent-keygen-two-host.md).
 
