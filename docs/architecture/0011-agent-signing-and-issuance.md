@@ -7,9 +7,10 @@ and agent-purpose creation streams are implemented in source on the root-authori
 requires an explicit public-key fingerprint pin and verifies the returned
 signature. Other members require a bounded-fresh root status path before
 local agent signing is enabled. Certificate issuance, the consumer pin installer,
-audit checkpoint rotation, phone approval, and remote creation's physical
-fleet acceptance remain open. Remote signing and revocation were demonstrated
-on the laptop and Solis with the same signed alpha.19 artifact.
+audit checkpoint rotation, phone approval, and release-purpose creation remain
+open. Stage-purpose remote creation, signing and refusal were demonstrated on
+the laptop and Solis with the same signed alpha.20 artifact; see the
+[physical acceptance record](../validation/2026-11-19-agent-keygen-two-host.md).
 
 Date: 2026-11-19
 
