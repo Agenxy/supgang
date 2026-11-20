@@ -4,9 +4,13 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.17` so it cannot be mistaken for the published
-`0.1.0` build that failed physical WAN acceptance. The version advanced from `0.2.0-alpha.10` so
-that a remote refresh to this source runs under probation.
+The corrective source reports version `0.2.0-alpha.18` so it cannot be mistaken for the published
+`0.1.0` build that failed physical WAN acceptance. This version advances from `0.2.0-alpha.17`
+so that the member-signing build runs under rollback probation during remote fleet acceptance.
+
+- Add authenticated member-only agent signing, durable nonce replay refusal, bounded denial audit,
+  and explicit root-authority guidance for local agent signing. The two-host physical acceptance
+  remains a separate gate for this source.
 
 - Add `tools/recovery_key.py`, an offline owner-held Ed25519 recovery key for supgang-sign/v1
   anchors. Its seed is sealed with an scrypt-derived pad and HMAC-SHA-256, it prints only public
