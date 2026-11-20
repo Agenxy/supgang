@@ -1,7 +1,11 @@
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
-use std::process::{Command, Output};
+use std::{
+    io,
+    process::{Child, Command, Output, Stdio},
+    time::{Duration, Instant},
+};
 
 use sha2::{Digest, Sha256};
 
@@ -42,6 +46,36 @@ pub(super) fn validate_compatible_identity(authority: &Path, candidate: &Path) -
     validate_platform_identity(authority, candidate)
 }
 
+/// Checks an installed native helper against the running Supgang certificate.
+/// The two programs have different fixed identifiers but must have the same
+/// remaining designated requirement and valid signatures.
+#[cfg(target_os = "macos")]
+pub fn validate_secure_enclave_helper(program: &Path, helper: &Path, deadline: Instant) -> Result<(), UpdateError> {
+    validate_platform_signature_until(program, deadline)?;
+    validate_platform_signature_until(helper, deadline)?;
+    helper_requirement_matches(
+        &designated_requirement_until(program, deadline)?,
+        &designated_requirement_until(helper, deadline)?,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn helper_requirement_matches(program: &str, helper: &str) -> Result<(), UpdateError> {
+    const PROGRAM: &str = "identifier \"org.agenxy.supgang.runtime\" and ";
+    const HELPER: &str = "identifier \"org.agenxy.supgang.secure-enclave\" and ";
+    let program_suffix = program
+        .strip_prefix(PROGRAM)
+        .ok_or(UpdateError::IncompatibleCodeIdentity)?;
+    let helper_suffix = helper
+        .strip_prefix(HELPER)
+        .ok_or(UpdateError::IncompatibleCodeIdentity)?;
+    if !program_suffix.is_empty() && program_suffix == helper_suffix {
+        Ok(())
+    } else {
+        Err(UpdateError::IncompatibleCodeIdentity)
+    }
+}
+
 // Off macOS there is no platform code signature to check, so these accept
 // everything. They keep the `Result` shape of their macOS twins on purpose:
 // the callers above are written once for both, and clippy's `const fn` and
@@ -60,10 +94,14 @@ fn validate_platform_identity(_authority: &Path, _candidate: &Path) -> Result<()
 
 #[cfg(target_os = "macos")]
 fn validate_platform_signature(path: &Path) -> Result<(), UpdateError> {
-    let output = Command::new("/usr/bin/codesign")
-        .args(["--verify", "--strict", "--verbose=2"])
-        .arg(path)
-        .output()?;
+    validate_platform_signature_until(path, Instant::now() + Duration::from_secs(10))
+}
+
+#[cfg(target_os = "macos")]
+fn validate_platform_signature_until(path: &Path, deadline: Instant) -> Result<(), UpdateError> {
+    let mut command = Command::new("/usr/bin/codesign");
+    command.args(["--verify", "--strict", "--verbose=2"]).arg(path);
+    let output = bounded_output(&mut command, deadline)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -75,11 +113,12 @@ fn validate_platform_signature(path: &Path) -> Result<(), UpdateError> {
 fn validate_platform_identity(authority: &Path, candidate: &Path) -> Result<(), UpdateError> {
     let requirement = designated_requirement(authority)?;
     let literal_requirement = format!("={requirement}");
-    let output = Command::new("/usr/bin/codesign")
+    let mut command = Command::new("/usr/bin/codesign");
+    command
         .args(["--verify", "--strict", "--test-requirement"])
         .arg(&literal_requirement)
-        .arg(candidate)
-        .output()?;
+        .arg(candidate);
+    let output = bounded_output(&mut command, Instant::now() + Duration::from_secs(10))?;
     if output.status.success() {
         Ok(())
     } else {
@@ -89,14 +128,17 @@ fn validate_platform_identity(authority: &Path, candidate: &Path) -> Result<(), 
 
 #[cfg(target_os = "macos")]
 fn designated_requirement(path: &Path) -> Result<String, UpdateError> {
-    const MAX_CODESIGN_OUTPUT: usize = 16 * 1024;
+    designated_requirement_until(path, Instant::now() + Duration::from_secs(10))
+}
+
+#[cfg(target_os = "macos")]
+fn designated_requirement_until(path: &Path, deadline: Instant) -> Result<String, UpdateError> {
     const MAX_REQUIREMENT: usize = 4 * 1024;
 
-    let output = Command::new("/usr/bin/codesign")
-        .args(["--display", "--requirements", "-"])
-        .arg(path)
-        .output()?;
-    if !output.status.success() || output.stdout.len().saturating_add(output.stderr.len()) > MAX_CODESIGN_OUTPUT {
+    let mut command = Command::new("/usr/bin/codesign");
+    command.args(["--display", "--requirements", "-"]).arg(path);
+    let output = bounded_output(&mut command, deadline)?;
+    if !output.status.success() {
         return Err(UpdateError::IncompatibleCodeIdentity);
     }
     let mut requirement = None;
@@ -119,6 +161,81 @@ fn designated_requirement(path: &Path) -> Result<String, UpdateError> {
 }
 
 #[cfg(target_os = "macos")]
+fn bounded_output(command: &mut Command, deadline: Instant) -> Result<Output, UpdateError> {
+    const MAX_OUTPUT: usize = 16 * 1024;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = Running(command.spawn()?);
+    let mut stdout = child.0.stdout.take().ok_or(UpdateError::IncompatibleCodeIdentity)?;
+    let mut stderr = child.0.stderr.take().ok_or(UpdateError::IncompatibleCodeIdentity)?;
+    nonblocking(&stdout)?;
+    nonblocking(&stderr)?;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut out_eof = false;
+    let mut err_eof = false;
+    loop {
+        let available = MAX_OUTPUT.saturating_sub(out.len() + err.len());
+        read_bounded(&mut stdout, &mut out, &mut out_eof, available)?;
+        let available = MAX_OUTPUT.saturating_sub(out.len() + err.len());
+        read_bounded(&mut stderr, &mut err, &mut err_eof, available)?;
+        if let Some(status) = child.0.try_wait()?
+            && out_eof
+            && err_eof
+        {
+            return Ok(Output {
+                status,
+                stdout: out,
+                stderr: err,
+            });
+        }
+        if Instant::now() >= deadline {
+            return Err(UpdateError::IncompatibleCodeIdentity);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn nonblocking(fd: &impl std::os::fd::AsFd) -> Result<(), UpdateError> {
+    let flags = rustix::fs::fcntl_getfl(fd).map_err(|_| UpdateError::IncompatibleCodeIdentity)?;
+    rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK).map_err(|_| UpdateError::IncompatibleCodeIdentity)
+}
+
+#[cfg(target_os = "macos")]
+fn read_bounded(
+    stream: &mut impl io::Read,
+    data: &mut Vec<u8>,
+    eof: &mut bool,
+    available: usize,
+) -> Result<(), UpdateError> {
+    if *eof {
+        return Ok(());
+    }
+    let mut buffer = [0_u8; 1024];
+    match stream.read(&mut buffer) {
+        Ok(0) => *eof = true,
+        Ok(count) if count <= available => {
+            data.extend_from_slice(buffer.get(..count).ok_or(UpdateError::IncompatibleCodeIdentity)?);
+        }
+        Ok(_) => return Err(UpdateError::IncompatibleCodeIdentity),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+        Err(error) => return Err(UpdateError::Io(error)),
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+struct Running(Child);
+
+#[cfg(target_os = "macos")]
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn output_lines(output: &Output) -> Result<impl Iterator<Item = &str>, UpdateError> {
     let stdout = std::str::from_utf8(&output.stdout).map_err(|_| UpdateError::IncompatibleCodeIdentity)?;
     let stderr = std::str::from_utf8(&output.stderr).map_err(|_| UpdateError::IncompatibleCodeIdentity)?;
@@ -127,12 +244,41 @@ fn output_lines(output: &Output) -> Result<impl Iterator<Item = &str>, UpdateErr
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        process::Command,
+        time::{Duration, Instant},
+    };
 
     use sha2::{Digest, Sha256};
 
-    use super::{validate_compatible_identity, validate_staged};
+    use super::{bounded_output, helper_requirement_matches, validate_compatible_identity, validate_staged};
     use crate::update::UpdateError;
+
+    #[test]
+    fn native_helper_requires_its_fixed_identifier_and_the_same_signer() {
+        let program = "identifier \"org.agenxy.supgang.runtime\" and certificate root = H\"001122\"";
+        let helper = "identifier \"org.agenxy.supgang.secure-enclave\" and certificate root = H\"001122\"";
+        assert!(helper_requirement_matches(program, helper).is_ok());
+        assert!(helper_requirement_matches(program, &helper.replace("001122", "334455")).is_err());
+        assert!(helper_requirement_matches(program, &helper.replace("secure-enclave", "other")).is_err());
+        assert!(helper_requirement_matches("identifier \"other\" and certificate root = H\"001122\"", helper).is_err());
+        assert!(helper_requirement_matches("identifier \"org.agenxy.supgang.runtime\" and ", helper).is_err());
+    }
+
+    #[test]
+    fn code_signing_subprocesses_have_a_shared_time_and_output_bound() {
+        let started = Instant::now();
+        assert!(bounded_output(&mut Command::new("/usr/bin/yes"), started + Duration::from_secs(2)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+
+        let started = Instant::now();
+        let mut sleeping = Command::new("/bin/sleep");
+        sleeping.arg("5");
+        assert!(bounded_output(&mut sleeping, started + Duration::from_millis(50)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn an_exact_copy_retains_the_approved_designated_requirement() -> Result<(), Box<dyn std::error::Error>> {

@@ -401,7 +401,7 @@ fn inspect_package_identity(root: &Path) -> Result<(), String> {
         "name = \"supgang\"",
         "publish = [\"crates-io\"]",
         "name = \"supgang\"\npath = \"src/main.rs\"",
-        "supgang-core = { path = \"../supgang\", version = \"=0.2.0-alpha.18\" }",
+        "supgang-core = { path = \"../supgang\", version = \"=0.2.0-alpha.19\" }",
     ] {
         if !command.contains(required) {
             return Err(format!("command package identity is missing: {required}"));

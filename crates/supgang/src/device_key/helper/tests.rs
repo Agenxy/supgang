@@ -1,5 +1,20 @@
 use super::*;
 
+#[cfg(target_os = "macos")]
+#[test]
+fn managed_service_paths_require_checked_sibling_helpers() {
+    assert!(managed_service_path(Path::new(
+        "/Users/member/Library/Application Support/org.agenxy.supgang/updates/slots/1234/supgang"
+    )));
+    assert!(managed_service_path(Path::new(
+        "/Users/member/Library/Application Support/org.agenxy.supgang/bin/supgang"
+    )));
+    assert!(!managed_service_path(Path::new("/Users/member/.local/bin/supgang")));
+    assert!(!managed_service_path(Path::new(
+        "/Users/member/Library/Application Support/other/updates/slots/1234/supgang"
+    )));
+}
+
 #[test]
 fn protocol_refusals_remain_distinct_and_framing_is_strict() {
     for (wire, reason) in [

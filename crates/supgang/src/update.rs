@@ -20,7 +20,7 @@ mod carriage;
 pub(crate) mod delivery_queue;
 mod download;
 mod error;
-mod executable;
+pub(crate) mod executable;
 mod filesystem_transport;
 mod lifecycle;
 mod lock;

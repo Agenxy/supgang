@@ -33,6 +33,9 @@ pub enum UnavailableReason {
     /// The optional helper was not installed beside Supgang.
     #[error("install supgang-secure-enclave beside supgang")]
     HelperMissing,
+    /// The service's installed helper has an unsafe file or a different signer.
+    #[error("the installed custody helper has an unsafe file or different code-signing identity")]
+    HelperIdentity,
     /// The helper or native API refused, with a numeric status only.
     #[error("the custody helper refused (status {0})")]
     HelperRefused(i32),
