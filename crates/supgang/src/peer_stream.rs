@@ -12,6 +12,7 @@ pub enum StreamKind {
     Update = 2,
     Service = 3,
     AgentSign = 4,
+    AgentKeygen = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -42,6 +43,7 @@ pub async fn accept(connection: &Connection) -> Result<(StreamKind, SendStream, 
         [0, 1, 2] => StreamKind::Update,
         [0, 1, 3] => StreamKind::Service,
         [0, 1, 4] => StreamKind::AgentSign,
+        [0, 1, 5] => StreamKind::AgentKeygen,
         _ => return Err(StreamError::Invalid),
     };
     Ok((kind, send, receive))
@@ -61,5 +63,6 @@ mod tests {
         assert_eq!(header(StreamKind::Sync), [0, 1, 1]);
         assert_eq!(header(StreamKind::Update), [0, 1, 2]);
         assert_eq!(header(StreamKind::AgentSign), [0, 1, 4]);
+        assert_eq!(header(StreamKind::AgentKeygen), [0, 1, 5]);
     }
 }

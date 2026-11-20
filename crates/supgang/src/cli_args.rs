@@ -430,6 +430,9 @@ pub enum VaultCommand {
         /// Narrow an agent key to exact member identities; default is all members.
         #[arg(long = "member", value_name = "NODE_ID", requires = "contexts")]
         members: Vec<crate::ids::NodeId>,
+        /// Create the scoped agent-purpose key on an authenticated hive member.
+        #[arg(long, requires = "contexts", conflicts_with = "ssh")]
+        remote: Option<String>,
         /// Lowercase vault entry name.
         name: String,
         /// Short note on what the key is for.

@@ -1,7 +1,7 @@
 //! Fail-closed, append-only audit segments for agent-purpose keys.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write as _,
     os::unix::fs::OpenOptionsExt as _,
@@ -42,6 +42,7 @@ const NONCE_GRACE_SECONDS: u64 = 120;
 #[serde(rename_all = "kebab-case")]
 enum Action {
     CreateReserved,
+    CreateActivated,
     RevokeReserved,
     Sign,
     NonceReserved,
@@ -99,7 +100,15 @@ struct VerifiedRecord {
     creation: Option<(NodeId, u64)>,
     denial: Option<(NodeId, u64)>,
     nonce: Option<(NodeId, [u8; 32], u64, Option<String>)>,
+    key_event: Option<KeyEvent>,
     at: u64,
+}
+
+type KeyRef = (String, String, String);
+
+enum KeyEvent {
+    Reserved(KeyRef, bool),
+    Activated(KeyRef),
 }
 
 impl Record {
@@ -107,8 +116,10 @@ impl Record {
         validate_name(event.purpose)?;
         if !matches!(
             (event.action, event.context),
-            (Action::CreateReserved | Action::RevokeReserved, None)
-                | (Action::Sign | Action::NonceReserved | Action::Denied, Some(_))
+            (
+                Action::CreateReserved | Action::CreateActivated | Action::RevokeReserved,
+                None
+            ) | (Action::Sign | Action::NonceReserved | Action::Denied, Some(_))
         ) || (event.public_key.is_none() && !matches!(event.action, Action::Denied))
             || event
                 .context
@@ -124,7 +135,7 @@ impl Record {
             action: event.action,
             decision: match event.action {
                 Action::CreateReserved | Action::RevokeReserved | Action::NonceReserved => Decision::Reserved,
-                Action::Sign => Decision::Authorized,
+                Action::CreateActivated | Action::Sign => Decision::Authorized,
                 Action::Denied => Decision::Denied,
             },
             purpose: event.purpose.to_owned(),
@@ -149,7 +160,11 @@ impl Record {
         nonce: [u8; 32],
         expires_at: u64,
     ) -> Result<Self, VaultError> {
-        if !matches!(event.action, Action::NonceReserved | Action::Denied) || expires_at < unix_now() {
+        if !matches!(
+            event.action,
+            Action::NonceReserved | Action::Denied | Action::CreateReserved
+        ) || expires_at < unix_now()
+        {
             return Err(VaultError::AgentAudit);
         }
         let mut record = Self::new(sequence, previous, event)?;
@@ -198,19 +213,25 @@ impl Record {
                 .is_some_and(|value| super::signing::validate_context(value).is_err())
             || !matches!(
                 (record.action, record.context.as_ref()),
-                (Action::CreateReserved | Action::RevokeReserved, None)
-                    | (Action::Sign | Action::NonceReserved | Action::Denied, Some(_))
+                (
+                    Action::CreateReserved | Action::CreateActivated | Action::RevokeReserved,
+                    None
+                ) | (Action::Sign | Action::NonceReserved | Action::Denied, Some(_))
             )
             || !matches!(
                 (record.action, record.decision),
                 (
                     Action::CreateReserved | Action::RevokeReserved | Action::NonceReserved,
                     Decision::Reserved
-                ) | (Action::Sign, Decision::Authorized)
+                ) | (Action::CreateActivated | Action::Sign, Decision::Authorized)
                     | (Action::Denied, Decision::Denied)
             )
-            || matches!(record.action, Action::NonceReserved | Action::Denied)
-                != (record.nonce.is_some() && record.expires_at.is_some())
+            || (matches!(record.action, Action::NonceReserved | Action::Denied)
+                && (record.nonce.is_none() || record.expires_at.is_none()))
+            || (matches!(
+                record.action,
+                Action::CreateActivated | Action::Sign | Action::RevokeReserved
+            ) && (record.nonce.is_some() || record.expires_at.is_some()))
             || record.digest.len() != 64
             || (record.fingerprint.len() != 64
                 && !(matches!(record.action, Action::Denied) && record.fingerprint == "unknown"))
@@ -257,11 +278,22 @@ impl Record {
         }
         let creation = matches!(record.action, Action::CreateReserved).then_some((record.requester, record.at));
         let denial = matches!(record.action, Action::Denied).then_some((record.requester, record.at));
+        let key = (
+            record.purpose.clone(),
+            record.fingerprint.clone(),
+            record.digest.clone(),
+        );
+        let key_event = match record.action {
+            Action::CreateReserved => Some(KeyEvent::Reserved(key, record.nonce.is_some())),
+            Action::CreateActivated => Some(KeyEvent::Activated(key)),
+            _ => None,
+        };
         Ok(VerifiedRecord {
             hash,
             creation,
             denial,
             nonce,
+            key_event,
             at: record.at,
         })
     }
@@ -338,6 +370,7 @@ struct Scan {
     live_nonce_members: Vec<NodeId>,
     recent_signs: Vec<(NodeId, String)>,
     recent_denials: Vec<NodeId>,
+    created_keys: BTreeMap<KeyRef, bool>,
 }
 
 fn scan(directory: &Path) -> Result<Scan, VaultError> {
@@ -352,6 +385,7 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
     let mut live_nonce_members = Vec::new();
     let mut recent_signs = Vec::new();
     let mut recent_denials = Vec::new();
+    let mut created_keys = BTreeMap::new();
     let now = unix_now();
     let cutoff = now.saturating_sub(CREATION_WINDOW_SECONDS);
     for index in 0..MAX_SEGMENTS {
@@ -370,6 +404,22 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
         for line in content.split(|byte| *byte == b'\n') {
             sequence = sequence.checked_add(1).ok_or(VaultError::AgentAudit)?;
             let verified = Record::verify(line, sequence, hash)?;
+            if let Some(key_event) = verified.key_event {
+                match key_event {
+                    KeyEvent::Reserved(key, remote) => {
+                        if created_keys.insert(key, !remote).is_some() {
+                            return Err(VaultError::AgentAudit);
+                        }
+                    }
+                    KeyEvent::Activated(key) => {
+                        let active = created_keys.get_mut(&key).ok_or(VaultError::AgentAudit)?;
+                        if *active {
+                            return Err(VaultError::AgentAudit);
+                        }
+                        *active = true;
+                    }
+                }
+            }
             if verified.at < last_at || verified.at > now {
                 return Err(VaultError::AgentAudit);
             }
@@ -428,6 +478,7 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
         live_nonce_members,
         recent_signs,
         recent_denials,
+        created_keys,
     })
 }
 
@@ -440,6 +491,9 @@ fn append(
     let _lock = Lock::open(directory, LOCK_NAME, false).map_err(|_| VaultError::AgentAudit)?;
     let state = scan(directory)?;
     if require_existing && state.sequence == 0 {
+        return Err(VaultError::AgentAudit);
+    }
+    if matches!(event.action, Action::CreateActivated) && state.created_keys.get(&key_ref(&event)?) != Some(&false) {
         return Err(VaultError::AgentAudit);
     }
     if matches!(event.action, Action::CreateReserved)
@@ -466,8 +520,10 @@ fn append(
     }
     if let Some((value, expires_at)) = nonce {
         let now = unix_now();
-        if !matches!(event.action, Action::NonceReserved | Action::Denied)
-            || expires_at < now
+        if !matches!(
+            event.action,
+            Action::NonceReserved | Action::Denied | Action::CreateReserved
+        ) || expires_at < now
             || expires_at > now.saturating_add(crate::agent_sign_protocol::MAX_REQUEST_LIFETIME_SECONDS)
         {
             return Err(VaultError::AgentAudit);
@@ -544,133 +600,22 @@ fn append(
     Ok(())
 }
 
+fn key_ref(event: &Event<'_>) -> Result<KeyRef, VaultError> {
+    let public_key = event.public_key.ok_or(VaultError::AgentAudit)?;
+    Ok((
+        event.purpose.to_owned(),
+        hex::encode(Sha256::digest(public_key)),
+        hex::encode(event.digest),
+    ))
+}
+
 /// Refuses replay before the key-opening read audit. The caller holds the
 /// vault lock through the later durable nonce reservation.
-pub(super) fn preflight_nonce(directory: &Path, nonce: &[u8; 32]) -> Result<(), VaultError> {
-    let _lock = Lock::open(directory, LOCK_NAME, false).map_err(|_| VaultError::AgentAudit)?;
-    let state = scan(directory)?;
-    if state.sequence == 0 {
-        return Err(VaultError::AgentAudit);
-    }
-    if state.used_nonces.contains(nonce) {
-        return Err(VaultError::AgentNonceReplay);
-    }
-    Ok(())
-}
-
-pub(super) fn create_reserved(
-    directory: &Path,
-    requester: NodeId,
-    purpose: &str,
-    policy: &[u8],
-    public_key: &[u8; 32],
-    require_existing: bool,
-) -> Result<(), VaultError> {
-    let digest: [u8; 32] = Sha256::digest(policy).into();
-    append(
-        directory,
-        Event {
-            requester,
-            action: Action::CreateReserved,
-            purpose,
-            context: None,
-            digest: &digest,
-            public_key: Some(public_key),
-        },
-        require_existing,
-        None,
-    )
-}
-
-pub(super) fn signed(
-    directory: &Path,
-    requester: NodeId,
-    purpose: &str,
-    context: &str,
-    digest: &[u8; 32],
-    public_key: &[u8; 32],
-) -> Result<(), VaultError> {
-    append(
-        directory,
-        Event {
-            requester,
-            action: Action::Sign,
-            purpose,
-            context: Some(context),
-            digest,
-            public_key: Some(public_key),
-        },
-        true,
-        None,
-    )
-}
-
-/// Records an authenticated, policy-level refusal and spends its nonce.
-/// Unknown purposes have no key fingerprint to attribute.
-pub(super) fn denied(
-    directory: &Path,
-    requester: NodeId,
-    request: &crate::agent_sign_protocol::SignRequest,
-    public_key: Option<&[u8; 32]>,
-) -> Result<(), VaultError> {
-    append(
-        directory,
-        Event {
-            requester,
-            action: Action::Denied,
-            purpose: &request.purpose,
-            context: Some(&request.context),
-            digest: &request.digest,
-            public_key,
-        },
-        true,
-        Some((request.nonce, request.expires_at)),
-    )
-}
-
-pub(super) fn revoke_reserved(
-    directory: &Path,
-    requester: NodeId,
-    purpose: &str,
-    policy: &[u8],
-    public_key: &[u8; 32],
-) -> Result<(), VaultError> {
-    let digest: [u8; 32] = Sha256::digest(policy).into();
-    append(
-        directory,
-        Event {
-            requester,
-            action: Action::RevokeReserved,
-            purpose,
-            context: None,
-            digest: &digest,
-            public_key: Some(public_key),
-        },
-        true,
-        None,
-    )
-}
-
-pub(super) fn reserve_nonce(
-    directory: &Path,
-    requester: NodeId,
-    request: &crate::agent_sign_protocol::SignRequest,
-    public_key: &[u8; 32],
-) -> Result<(), VaultError> {
-    append(
-        directory,
-        Event {
-            requester,
-            action: Action::NonceReserved,
-            purpose: &request.purpose,
-            context: Some(&request.context),
-            digest: &request.digest,
-            public_key: Some(public_key),
-        },
-        true,
-        Some((request.nonce, request.expires_at)),
-    )
-}
+mod operations;
+pub(super) use operations::{
+    create_activated, create_reserved, denied, ensure_activated, preflight_creation_nonce, preflight_nonce,
+    reserve_nonce, revoke_reserved, signed,
+};
 
 #[cfg(test)]
 mod tests;

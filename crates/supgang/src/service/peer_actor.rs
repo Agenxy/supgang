@@ -67,6 +67,7 @@ pub(super) struct PeerUpdateContext {
     pub(super) local_node: NodeId,
     pub(super) admission: Arc<tokio::sync::Semaphore>,
     pub(super) sign_admission: Arc<tokio::sync::Semaphore>,
+    pub(super) authority_commit: Arc<std::sync::Mutex<()>>,
     pub(super) tunnels: Option<super::tunnel::TunnelRuntime>,
 }
 
@@ -79,6 +80,7 @@ impl PeerUpdateContext {
             local_node: identity.device.node_id(),
             admission: Arc::new(tokio::sync::Semaphore::new(1)),
             sign_admission: Arc::new(tokio::sync::Semaphore::new(4)),
+            authority_commit: Arc::new(std::sync::Mutex::new(())),
             tunnels: None,
         }
     }
@@ -240,6 +242,10 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
                         super::agent_sign::spawn(&mut sign_tasks, update.as_ref(), &connection, send, receive, peer, &authorization);
                         continue;
                     }
+                    StreamKind::AgentKeygen => {
+                        super::agent_keygen::spawn(&mut sign_tasks, update.as_ref(), &connection, (send, receive), peer, &authorization, &events);
+                        continue;
+                    }
                     StreamKind::Update => {
                         let Some(update) = update.as_ref() else {
                             return b"peer offered an update this computer cannot receive";
@@ -341,6 +347,7 @@ async fn supervise_connection(context: PeerActorContext) {
     authorization.invalidate();
     connection.close(1_u8.into(), reason);
     let _closed = send_closed_event(&events, PeerEvent::Closed { peer, connection_id }, CLOSED_EVENT_TIMEOUT).await;
+    drop(events);
 }
 
 async fn send_closed_event(events: &tokio::sync::mpsc::Sender<PeerEvent>, event: PeerEvent, timeout: Duration) -> bool {
@@ -618,6 +625,7 @@ mod tests {
                 super::PeerEvent::Closed { peer: closed_peer, connection_id }
                     if closed_peer == peer && connection_id == server_connection_id
             ));
+            drop(closed_event);
             tokio::time::timeout(Duration::from_secs(2), actor_tasks.join_next())
                 .await?
                 .ok_or("tracked connection task missing")??;

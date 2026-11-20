@@ -25,16 +25,18 @@ pub fn remove(state_directory: &Path, name: &str) -> Result<(), VaultError> {
     if let Some(policy_bytes) = entry.policy.as_deref() {
         let policy = AgentPolicy::decode(policy_bytes)?;
         let requester = signing::current_member(state_directory)?;
-        if !policy.admits_member(requester) {
+        let public_key = entry.signing_public.ok_or(VaultError::Corrupt)?;
+        // A remote creation interrupted after its vault write is inert, but
+        // it can occupy a purpose name. The root may explicitly remove that
+        // pending entry even when the creator narrowed the signing allowlist.
+        let pending = matches!(
+            agent_audit::ensure_activated(&directory, name, policy_bytes, &public_key),
+            Err(VaultError::AgentPolicyDenied)
+        );
+        if !policy.admits_member(requester) && !pending {
             return Err(VaultError::AgentPolicyDenied);
         }
-        agent_audit::revoke_reserved(
-            &directory,
-            requester,
-            name,
-            policy_bytes,
-            &entry.signing_public.ok_or(VaultError::Corrupt)?,
-        )?;
+        agent_audit::revoke_reserved(&directory, requester, name, policy_bytes, &public_key)?;
     }
     document.entries.remove(index);
     document.version = VERSION;

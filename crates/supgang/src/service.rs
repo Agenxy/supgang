@@ -27,9 +27,9 @@ use crate::{
     transport::{self, TransportError, TransportIdentity},
     transport_storage::{self, TransportStorageError},
 };
-
 mod active;
 mod admission;
+mod agent_keygen;
 mod agent_sign;
 mod config;
 mod connection;
@@ -56,10 +56,14 @@ mod update_delivery;
 use active::ActiveConnection;
 pub(crate) use active::SessionAuthorization;
 use admission::InboundAdmission;
+#[cfg(test)]
+use connection::candidate_race_delay;
 use connection::{AuthenticatedExchange, SessionAuthentication, dial_observed_peer, dial_peer, inbound_session};
 use contact_state::{gossip_page, make_local_contact};
 use events::{PeerEvent, shutdown_receiver, stop_if_requested};
 use gateway_reachability::replace_gateway_reachability;
+#[cfg(test)]
+use interface_refresh::replace_interface_candidates;
 use interface_refresh::{
     InterfaceRefreshHealth, RouterMappingUpdateBudget, bounded_automatic_interfaces, interface_addresses,
     refresh_service_candidates,
@@ -75,11 +79,6 @@ use local_control::{
 use peer_actor::{PeerActorRegistry, PeerUpdateContext, reap_ready_tasks, register_connection};
 use retry_schedule::{aligned_retry_delay, next_service_wait, retry_epoch, should_attempt_peer};
 use update_delivery::UpdateDeliveryQueue;
-
-#[cfg(test)]
-use connection::candidate_race_delay;
-#[cfg(test)]
-use interface_refresh::replace_interface_candidates;
 
 /// Full-handshake deadline for one address candidate.
 pub const CONNECT_TIMEOUT_SECONDS: u64 = 4;
@@ -409,6 +408,8 @@ async fn service_loop(
         let directory_changed = process_peer_events(
             &mut event_receiver,
             PeerEventState {
+                state_directory,
+                authority_commit: &update_context.authority_commit,
                 active: &mut active,
                 draining: &mut draining,
                 noncanonical_outbound: &mut noncanonical_outbound,

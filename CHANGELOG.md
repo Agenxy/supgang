@@ -4,9 +4,17 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.19` so it cannot be mistaken for the published
-`0.1.0` build that failed physical WAN acceptance. This version advances from `0.2.0-alpha.18`
-so that the custody-helper repair runs under rollback probation during remote fleet acceptance.
+The corrective source reports version `0.2.0-alpha.20` so it cannot be mistaken for the published
+`0.1.0` build that failed physical WAN acceptance. This version advances from the alpha.19
+custody-helper build accepted on the laptop and Solis.
+
+- Let a current authenticated hive member request creation of a fresh, scoped agent-purpose
+  Ed25519 key in the root vault without an owner terminal. Bind the canonical request to the
+  member session and stream, spend a durable creation nonce, enforce the existing creation caps,
+  and return only public key material. First-vault hardware preparation stays in memory; a key
+  interrupted before its activation audit remains unable to sign. The service's state owner
+  serializes activation with revocation and session replacement. Consumers still install their
+  own exact purpose and context pin.
 
 - Let a signed service running from an update slot use the owner-installed Secure Enclave helper
   when its slot has no sibling helper. Require an owner-only regular file, a valid code signature,
@@ -16,7 +24,7 @@ so that the custody-helper repair runs under rollback probation during remote fl
 
 - Add authenticated member-only agent signing, durable nonce replay refusal, bounded denial audit,
   and explicit root-authority guidance for local agent signing. The two-host physical acceptance
-  remains a separate gate for this source.
+  passed for the alpha.19 signed artifact; remote creation's physical gate remains separate.
 
 - Add `tools/recovery_key.py`, an offline owner-held Ed25519 recovery key for supgang-sign/v1
   anchors. Its seed is sealed with an scrypt-derived pad and HMAC-SHA-256, it prints only public

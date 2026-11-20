@@ -59,11 +59,76 @@ use signing::{SIGN_DOMAIN, framed_message};
 pub use signing::{SignedDigest, SigningPublic, keygen, keygen_agent, public_key, sign, validate_context};
 pub use ssh::{SshPublic, SshSigned, ssh_key_blob, ssh_keygen, ssh_public_key, ssh_sign};
 
+pub(crate) fn keygen_member(
+    state_directory: &std::path::Path,
+    enclave: &dyn Enclave,
+    requester: crate::ids::NodeId,
+    request: &crate::agent_keygen_protocol::KeygenRequest,
+    session_current: impl Fn() -> bool,
+    commit_lock: &std::sync::Mutex<()>,
+    prepared: Option<PreparedVault>,
+) -> Result<SigningPublic, VaultError> {
+    signing::keygen_member(
+        state_directory,
+        enclave,
+        requester,
+        request,
+        session_current,
+        commit_lock,
+        prepared,
+    )
+}
+
 use crate::{
     artifact,
     device_key::custody::SealedKey,
     storage::{sync_directory, validate_directory},
 };
+
+/// In-memory Secure Enclave preparation for a first remote purpose key.
+/// The restore record never leaves this process or becomes usable until the
+/// state owner commits the key and its audit record together.
+pub(crate) struct PreparedVault {
+    key: SealedKey,
+    public: [u8; PUBLIC_BYTES],
+    nonce: [u8; 32],
+}
+
+/// Prepare a first vault agreement key without a durable write.
+/// The potentially slow Secure Enclave operation runs off the service event
+/// thread; the later authorized key commit remains on that thread.
+pub(crate) fn prepare_member_vault(
+    state_directory: &Path,
+    enclave: &dyn Enclave,
+    requester: crate::ids::NodeId,
+    request: &crate::agent_keygen_protocol::KeygenRequest,
+    session_current: impl Fn() -> bool,
+) -> Result<Option<PreparedVault>, VaultError> {
+    request
+        .validate(unix_now())
+        .map_err(|_| VaultError::InvalidSigningRequest)?;
+    if !request.policy.admits_member(requester) || !session_current() {
+        return Err(VaultError::MemberAuthority);
+    }
+    signing::current_member_for(state_directory, requester)?;
+    let (directory, _lock) = Lock::acquire(state_directory)?;
+    if load(&directory)?.is_some() {
+        return Ok(None);
+    }
+    let (key, public) = enclave.generate()?;
+    request
+        .validate(unix_now())
+        .map_err(|_| VaultError::InvalidSigningRequest)?;
+    if !session_current() {
+        return Err(VaultError::MemberAuthority);
+    }
+    signing::current_member_for(state_directory, requester)?;
+    Ok(Some(PreparedVault {
+        key,
+        public,
+        nonce: request.nonce,
+    }))
+}
 
 /// The vault document inside protected state.
 pub const VAULT_FILE_NAME: &str = "vault.cbor";

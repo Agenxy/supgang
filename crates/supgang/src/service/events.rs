@@ -15,6 +15,14 @@ pub(super) enum PeerEvent {
         connection_id: usize,
         revocations: crate::revocation::SignedRevocationList,
     },
+    AgentKeygen {
+        peer: NodeId,
+        connection_id: usize,
+        request: crate::agent_keygen_protocol::KeygenRequest,
+        prepared: Option<crate::vault::PreparedVault>,
+        reply: tokio::sync::oneshot::Sender<Option<[u8; 32]>>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    },
     RendezvousRequest {
         peer: NodeId,
         connection_id: usize,
@@ -41,6 +49,9 @@ impl PeerEvent {
                 peer, connection_id, ..
             }
             | Self::Revocations {
+                peer, connection_id, ..
+            }
+            | Self::AgentKeygen {
                 peer, connection_id, ..
             }
             | Self::RendezvousRequest {
