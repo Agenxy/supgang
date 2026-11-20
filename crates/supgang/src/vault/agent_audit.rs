@@ -32,6 +32,8 @@ const MAX_CREATIONS_PER_HIVE: usize = 32;
 const SIGN_WINDOW_SECONDS: u64 = 60 * 60;
 const MAX_SIGNS_PER_MEMBER_PURPOSE: usize = 64;
 const MAX_SIGNS_PER_PURPOSE: usize = 256;
+const MAX_DENIALS_PER_MEMBER: usize = 64;
+const MAX_DENIALS_PER_HIVE: usize = 256;
 const MAX_LIVE_NONCES: usize = 4096;
 const MAX_LIVE_NONCES_PER_MEMBER: usize = 256;
 const NONCE_GRACE_SECONDS: u64 = 120;
@@ -43,6 +45,7 @@ enum Action {
     RevokeReserved,
     Sign,
     NonceReserved,
+    Denied,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -50,6 +53,7 @@ enum Action {
 enum Decision {
     Reserved,
     Authorized,
+    Denied,
 }
 
 #[derive(Clone, Copy)]
@@ -59,7 +63,7 @@ struct Event<'a> {
     purpose: &'a str,
     context: Option<&'a str>,
     digest: &'a [u8; 32],
-    public_key: &'a [u8; 32],
+    public_key: Option<&'a [u8; 32]>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -93,7 +97,8 @@ struct Head {
 struct VerifiedRecord {
     hash: [u8; 32],
     creation: Option<(NodeId, u64)>,
-    nonce: Option<(NodeId, [u8; 32], u64, String)>,
+    denial: Option<(NodeId, u64)>,
+    nonce: Option<(NodeId, [u8; 32], u64, Option<String>)>,
     at: u64,
 }
 
@@ -102,10 +107,12 @@ impl Record {
         validate_name(event.purpose)?;
         if !matches!(
             (event.action, event.context),
-            (Action::CreateReserved | Action::RevokeReserved, None) | (Action::Sign | Action::NonceReserved, Some(_))
-        ) || event
-            .context
-            .is_some_and(|value| super::signing::validate_context(value).is_err())
+            (Action::CreateReserved | Action::RevokeReserved, None)
+                | (Action::Sign | Action::NonceReserved | Action::Denied, Some(_))
+        ) || (event.public_key.is_none() && !matches!(event.action, Action::Denied))
+            || event
+                .context
+                .is_some_and(|value| super::signing::validate_context(value).is_err())
         {
             return Err(VaultError::InvalidAgentPolicy);
         }
@@ -118,11 +125,14 @@ impl Record {
             decision: match event.action {
                 Action::CreateReserved | Action::RevokeReserved | Action::NonceReserved => Decision::Reserved,
                 Action::Sign => Decision::Authorized,
+                Action::Denied => Decision::Denied,
             },
             purpose: event.purpose.to_owned(),
             context: event.context.map(str::to_owned),
             digest: hex::encode(event.digest),
-            fingerprint: hex::encode(Sha256::digest(event.public_key)),
+            fingerprint: event
+                .public_key
+                .map_or_else(|| "unknown".to_owned(), |key| hex::encode(Sha256::digest(key))),
             nonce: None,
             expires_at: None,
             at: unix_now(),
@@ -139,7 +149,7 @@ impl Record {
         nonce: [u8; 32],
         expires_at: u64,
     ) -> Result<Self, VaultError> {
-        if !matches!(event.action, Action::NonceReserved) || expires_at < unix_now() {
+        if !matches!(event.action, Action::NonceReserved | Action::Denied) || expires_at < unix_now() {
             return Err(VaultError::AgentAudit);
         }
         let mut record = Self::new(sequence, previous, event)?;
@@ -189,7 +199,7 @@ impl Record {
             || !matches!(
                 (record.action, record.context.as_ref()),
                 (Action::CreateReserved | Action::RevokeReserved, None)
-                    | (Action::Sign | Action::NonceReserved, Some(_))
+                    | (Action::Sign | Action::NonceReserved | Action::Denied, Some(_))
             )
             || !matches!(
                 (record.action, record.decision),
@@ -197,18 +207,22 @@ impl Record {
                     Action::CreateReserved | Action::RevokeReserved | Action::NonceReserved,
                     Decision::Reserved
                 ) | (Action::Sign, Decision::Authorized)
+                    | (Action::Denied, Decision::Denied)
             )
-            || matches!(record.action, Action::NonceReserved) != (record.nonce.is_some() && record.expires_at.is_some())
+            || matches!(record.action, Action::NonceReserved | Action::Denied)
+                != (record.nonce.is_some() && record.expires_at.is_some())
             || record.digest.len() != 64
-            || record.fingerprint.len() != 64
+            || (record.fingerprint.len() != 64
+                && !(matches!(record.action, Action::Denied) && record.fingerprint == "unknown"))
             || record
                 .digest
                 .bytes()
                 .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
-            || record
-                .fingerprint
-                .bytes()
-                .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+            || (record.fingerprint != "unknown"
+                && record
+                    .fingerprint
+                    .bytes()
+                    .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase()))
         {
             return Err(VaultError::AgentAudit);
         }
@@ -231,7 +245,7 @@ impl Record {
                     record.requester,
                     bytes.try_into().map_err(|_| VaultError::AgentAudit)?,
                     expires_at,
-                    record.purpose.clone(),
+                    matches!(record.action, Action::NonceReserved).then(|| record.purpose.clone()),
                 ))
             }
             (None, None) => None,
@@ -242,9 +256,11 @@ impl Record {
             return Err(VaultError::AgentAudit);
         }
         let creation = matches!(record.action, Action::CreateReserved).then_some((record.requester, record.at));
+        let denial = matches!(record.action, Action::Denied).then_some((record.requester, record.at));
         Ok(VerifiedRecord {
             hash,
             creation,
+            denial,
             nonce,
             at: record.at,
         })
@@ -321,6 +337,7 @@ struct Scan {
     used_nonces: BTreeSet<[u8; 32]>,
     live_nonce_members: Vec<NodeId>,
     recent_signs: Vec<(NodeId, String)>,
+    recent_denials: Vec<NodeId>,
 }
 
 fn scan(directory: &Path) -> Result<Scan, VaultError> {
@@ -334,6 +351,7 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
     let mut used_nonces = BTreeSet::new();
     let mut live_nonce_members = Vec::new();
     let mut recent_signs = Vec::new();
+    let mut recent_denials = Vec::new();
     let now = unix_now();
     let cutoff = now.saturating_sub(CREATION_WINDOW_SECONDS);
     for index in 0..MAX_SEGMENTS {
@@ -362,7 +380,15 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
             {
                 recent_creators.push(requester);
             }
-            if let Some((requester, nonce, expires_at, purpose)) = verified.nonce {
+            if let Some((requester, at)) = verified.denial
+                && at >= now.saturating_sub(SIGN_WINDOW_SECONDS)
+            {
+                recent_denials.push(requester);
+                if recent_denials.len() > MAX_DENIALS_PER_HIVE {
+                    return Err(VaultError::AgentAudit);
+                }
+            }
+            if let Some((requester, nonce, expires_at, sign_purpose)) = verified.nonce {
                 if !used_nonces.insert(nonce) {
                     return Err(VaultError::AgentAudit);
                 }
@@ -377,7 +403,9 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
                         return Err(VaultError::AgentAudit);
                     }
                 }
-                if verified.at >= now.saturating_sub(SIGN_WINDOW_SECONDS) {
+                if let Some(purpose) = sign_purpose
+                    && verified.at >= now.saturating_sub(SIGN_WINDOW_SECONDS)
+                {
                     recent_signs.push((requester, purpose));
                 }
             }
@@ -399,6 +427,7 @@ fn scan(directory: &Path) -> Result<Scan, VaultError> {
         used_nonces,
         live_nonce_members,
         recent_signs,
+        recent_denials,
     })
 }
 
@@ -424,9 +453,20 @@ fn append(
     {
         return Err(VaultError::AgentKeyCreationLimit);
     }
+    if matches!(event.action, Action::Denied)
+        && (state.recent_denials.len() >= MAX_DENIALS_PER_HIVE
+            || state
+                .recent_denials
+                .iter()
+                .filter(|member| **member == event.requester)
+                .count()
+                >= MAX_DENIALS_PER_MEMBER)
+    {
+        return Err(VaultError::AgentDenialLimit);
+    }
     if let Some((value, expires_at)) = nonce {
         let now = unix_now();
-        if !matches!(event.action, Action::NonceReserved)
+        if !matches!(event.action, Action::NonceReserved | Action::Denied)
             || expires_at < now
             || expires_at > now.saturating_add(crate::agent_sign_protocol::MAX_REQUEST_LIFETIME_SECONDS)
         {
@@ -445,20 +485,22 @@ fn append(
         {
             return Err(VaultError::AgentNonceLimit);
         }
-        let per_purpose = state
-            .recent_signs
-            .iter()
-            .filter(|(_, purpose)| purpose == event.purpose)
-            .count();
-        let per_member = state
-            .recent_signs
-            .iter()
-            .filter(|(requester, purpose)| *requester == event.requester && purpose == event.purpose)
-            .count();
-        if per_purpose >= MAX_SIGNS_PER_PURPOSE || per_member >= MAX_SIGNS_PER_MEMBER_PURPOSE {
-            return Err(VaultError::AgentSignLimit);
+        if matches!(event.action, Action::NonceReserved) {
+            let per_purpose = state
+                .recent_signs
+                .iter()
+                .filter(|(_, purpose)| purpose == event.purpose)
+                .count();
+            let per_member = state
+                .recent_signs
+                .iter()
+                .filter(|(requester, purpose)| *requester == event.requester && purpose == event.purpose)
+                .count();
+            if per_purpose >= MAX_SIGNS_PER_PURPOSE || per_member >= MAX_SIGNS_PER_MEMBER_PURPOSE {
+                return Err(VaultError::AgentSignLimit);
+            }
         }
-    } else if matches!(event.action, Action::NonceReserved) {
+    } else if matches!(event.action, Action::NonceReserved | Action::Denied) {
         return Err(VaultError::AgentAudit);
     }
     let sequence = state.sequence.checked_add(1).ok_or(VaultError::AgentAudit)?;
@@ -533,7 +575,7 @@ pub(super) fn create_reserved(
             purpose,
             context: None,
             digest: &digest,
-            public_key,
+            public_key: Some(public_key),
         },
         require_existing,
         None,
@@ -556,10 +598,33 @@ pub(super) fn signed(
             purpose,
             context: Some(context),
             digest,
-            public_key,
+            public_key: Some(public_key),
         },
         true,
         None,
+    )
+}
+
+/// Records an authenticated, policy-level refusal and spends its nonce.
+/// Unknown purposes have no key fingerprint to attribute.
+pub(super) fn denied(
+    directory: &Path,
+    requester: NodeId,
+    request: &crate::agent_sign_protocol::SignRequest,
+    public_key: Option<&[u8; 32]>,
+) -> Result<(), VaultError> {
+    append(
+        directory,
+        Event {
+            requester,
+            action: Action::Denied,
+            purpose: &request.purpose,
+            context: Some(&request.context),
+            digest: &request.digest,
+            public_key,
+        },
+        true,
+        Some((request.nonce, request.expires_at)),
     )
 }
 
@@ -579,7 +644,7 @@ pub(super) fn revoke_reserved(
             purpose,
             context: None,
             digest: &digest,
-            public_key,
+            public_key: Some(public_key),
         },
         true,
         None,
@@ -600,7 +665,7 @@ pub(super) fn reserve_nonce(
             purpose: &request.purpose,
             context: Some(&request.context),
             digest: &request.digest,
-            public_key,
+            public_key: Some(public_key),
         },
         true,
         Some((request.nonce, request.expires_at)),

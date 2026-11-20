@@ -66,6 +66,99 @@ fn remote_member_session_refusal_does_not_spend_nonce() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn authenticated_policy_denials_are_audited_without_spending_nonce() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    let key = super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let request = SignRequest {
+        nonce: [44; 32],
+        purpose: "build".to_owned(),
+        context: "build.release".to_owned(),
+        digest: [7; 32],
+        expires_at: super::unix_now() + 300,
+    };
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &request, || true),
+        Err(VaultError::AgentPolicyDenied)
+    ));
+    let audit = String::from_utf8(fs::read(path.join("vault-agent-audit-0000.log"))?)?;
+    assert!(audit.contains("\"action\":\"denied\""));
+    assert!(audit.contains("\"decision\":\"denied\""));
+    assert!(audit.contains(&key.fingerprint));
+    assert!(audit.contains(&hex::encode(request.nonce)));
+    let read_audit = fs::read(path.join(super::AUDIT_FILE_NAME))?;
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &request, || true),
+        Err(VaultError::AgentNonceReplay)
+    ));
+    assert_eq!(fs::read(path.join(super::AUDIT_FILE_NAME))?, read_audit);
+    let accepted = SignRequest {
+        nonce: [46; 32],
+        context: "build.stage".to_owned(),
+        ..request
+    };
+    super::sign_member(&path, &Software, requester, &accepted, || true)?;
+    Ok(())
+}
+
+#[test]
+fn unknown_agent_purpose_has_an_unattributed_denial() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let request = SignRequest {
+        nonce: [45; 32],
+        purpose: "missing".to_owned(),
+        context: "build.stage".to_owned(),
+        digest: [7; 32],
+        expires_at: super::unix_now() + 300,
+    };
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &request, || true),
+        Err(VaultError::NotFound(_))
+    ));
+    let audit = String::from_utf8(fs::read(path.join("vault-agent-audit-0000.log"))?)?;
+    assert!(audit.contains("\"fingerprint\":\"unknown\""));
+    assert!(audit.contains(&hex::encode(request.nonce)));
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &request, || true),
+        Err(VaultError::AgentNonceReplay)
+    ));
+    Ok(())
+}
+
+#[test]
+fn expired_denial_does_not_change_the_agent_audit() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let requester = state::open_read_only(&path)?.identity().device.node_id();
+    let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    super::keygen_agent(&path, &Software, "build", "", &policy)?;
+    let audit_path = path.join("vault-agent-audit-0000.log");
+    let before = fs::read(&audit_path)?;
+    let request = SignRequest {
+        nonce: [47; 32],
+        purpose: "build".to_owned(),
+        context: "build.release".to_owned(),
+        digest: [7; 32],
+        expires_at: super::unix_now() + 1,
+    };
+    let first_check = std::sync::atomic::AtomicBool::new(true);
+    assert!(matches!(
+        super::sign_member(&path, &Software, requester, &request, || {
+            if first_check.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            true
+        }),
+        Err(VaultError::InvalidSigningRequest)
+    ));
+    assert_eq!(fs::read(audit_path)?, before);
+    Ok(())
+}
+
+#[test]
 fn agent_policy_is_immutable_and_restricts_creation_and_signing() -> Result<(), Box<dyn std::error::Error>> {
     let (_temporary, path) = state_directory()?;
     let local = state::open_read_only(&path)?.identity().device.node_id();
@@ -135,7 +228,11 @@ fn non_authority_member_cannot_use_local_agent_key_path() -> Result<(), Box<dyn 
     let policy = super::AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
     assert!(matches!(
         super::keygen_agent(&joiner_path, &Software, "build", "", &policy),
-        Err(VaultError::MemberAuthority)
+        Err(VaultError::RootAuthorityRequired)
+    ));
+    assert!(matches!(
+        sign(&joiner_path, &Software, "build", "build.stage", &[1; 32]),
+        Err(VaultError::RootAuthorityRequired)
     ));
     assert_eq!(list(&joiner_path)?, Vec::<super::Summary>::new());
     Ok(())

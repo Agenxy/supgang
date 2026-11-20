@@ -2,8 +2,8 @@
 
 Status: Accepted, partly implemented. Local agent-purpose key policy, vault
 format v4, bounded append-only audit with a durable head, durable nonce
-reservation, hourly purpose caps, and the member-only remote signing stream
-are implemented in source on the root-authority computer. The remote CLI
+reservation, hourly purpose and denial caps, and the member-only remote signing
+stream are implemented in source on the root-authority computer. The remote CLI
 requires an explicit public-key fingerprint pin and verifies the returned
 signature. Other members require a bounded-fresh root status path before
 local agent signing is enabled. Remote key creation, certificate issuance,
@@ -171,11 +171,21 @@ hour and 256 per purpose across the hive per rolling hour. A crash after
 reservation consumes the count. Agent-policy local signing reserves a fresh
 nonce under the same cap.
 
+Authenticated policy refusals are recorded with a `denied` decision before
+returning the refusal. An unknown purpose is marked with an `unknown` key
+fingerprint, never a claimed key identity. A denial spends its request nonce;
+any replay refuses before opening the key or changing the audit. At most 64
+denials per member and 256 per hive are recorded per rolling
+hour; further requests still refuse, including when the denial audit is full.
+Malformed or unauthenticated traffic does not write this durable audit.
+
 The local `supgang sign` path uses the signer's own current certified device
 identity as requester. It follows the same sealed purpose/context policy,
 nonce ledger, caps and audit path as a remote member. An unscoped legacy key
 cannot be reached through a second, less restricted local signing route after
-its explicit migration. Local callers do not gain an all-purpose exception.
+its explicit migration. A non-authority computer receives a specific refusal
+directing it to request signing from the root-authority computer. Local callers
+do not gain an all-purpose exception.
 
 ## Issuance and provision
 
