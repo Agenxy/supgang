@@ -4,9 +4,15 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.20` so it cannot be mistaken for the published
-`0.1.0` build that failed physical WAN acceptance. This version advances from the alpha.19
-custody-helper build accepted on the laptop and Solis.
+The corrective source reports version `0.2.0-alpha.21` so it cannot be mistaken for the published
+`0.1.0` build that failed physical WAN acceptance. This version advances from the alpha.20
+agent-keygen build accepted on the laptop and Solis.
+
+- Add explicit, fingerprint-pinned migration of an existing unscoped Ed25519
+  signing key to an immutable agent-purpose policy. Its public key and consumer
+  fingerprint stay unchanged. A durable reservation precedes resealing, and a
+  separate activation makes an interrupted migration inert and retryable.
+  Migration never installs or changes a consumer pin.
 
 - Let a current authenticated hive member request creation of a fresh, scoped agent-purpose
   Ed25519 key in the root vault without an owner terminal. Bind the canonical request to the

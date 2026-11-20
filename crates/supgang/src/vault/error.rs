@@ -25,6 +25,12 @@ pub enum VaultError {
     /// The key's immutable agent policy does not admit this request.
     #[error("the signing key's agent policy refuses this member or context")]
     AgentPolicyDenied,
+    /// A supplied public fingerprint does not identify the selected signing key.
+    #[error("the signing key does not match the expected public fingerprint")]
+    AgentFingerprintMismatch,
+    /// An already scoped key cannot be given a different immutable policy.
+    #[error("the signing key already has a different immutable agent policy; rotate to a new key")]
+    AgentPolicyAlreadySet,
     /// Current certified membership could not be established.
     #[error("current local hive membership could not be verified for agent signing")]
     MemberAuthority,

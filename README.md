@@ -682,6 +682,23 @@ pending entry before retrying. Audit checkpoint rotation and the release phone
 proof remain future work in
 [ADR 0011](docs/architecture/0011-agent-signing-and-issuance.md).
 
+An existing unscoped signing key can receive an agent-purpose policy without
+changing its public key or a consumer's existing pin. Confirm the consumer's
+current fingerprint independently, then run this on the root-authority
+computer:
+
+```text
+supgang vault migrate-agent-policy solis-placement-stage --expect-fingerprint REVIEWED_LOWERCASE_SHA256 --context solis.placement.stage
+```
+
+The command is idempotent for the exact same policy and fingerprint. A
+different policy requires a new key and a reviewed consumer pin rotation.
+It reserves the migration in the durable agent audit, reseals the original
+seed under the policy, and activates it only after the vault write succeeds.
+An interrupted entry cannot sign until an exact retry completes activation.
+This is for agent-purpose keys; the launcher release key needs the separate
+phone assertion and consumer two-proof format before rotation.
+
 ### Use a vault SSH key
 
 Generate a separate SSH-only Ed25519 key while present at a terminal. Supgang keeps its seed sealed

@@ -1,4 +1,5 @@
-use super::{KeygenKind, KeygenOptions, keygen_with_terminal, sign, trim_newline, valid_variable};
+use super::keygen::with_terminal as keygen_with_terminal;
+use super::{KeygenKind, KeygenOptions, sign, trim_newline, valid_variable};
 use zeroize::Zeroizing;
 
 #[test]

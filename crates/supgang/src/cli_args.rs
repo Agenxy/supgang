@@ -439,6 +439,20 @@ pub enum VaultCommand {
         #[arg(long, default_value = "")]
         note: String,
     },
+    /// Attach an immutable agent policy to an existing signing key after checking its public pin.
+    MigrateAgentPolicy {
+        /// Existing signing-key name; key bytes and fingerprint stay unchanged.
+        name: String,
+        /// Exact lowercase SHA-256 fingerprint already reviewed at the consumer.
+        #[arg(long, value_name = "FINGERPRINT")]
+        expect_fingerprint: String,
+        /// Exact allowed signing context; repeat for more than one.
+        #[arg(long = "context", value_name = "CONTEXT", required = true)]
+        contexts: Vec<String>,
+        /// Narrow signing to exact certified member identities; default is all members.
+        #[arg(long = "member", value_name = "NODE_ID")]
+        members: Vec<crate::ids::NodeId>,
+    },
     /// Show a signing key's public key and fingerprint.
     PublicKey { name: String },
     /// Show an SSH key's OpenSSH public line and fingerprint.
