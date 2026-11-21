@@ -31,3 +31,7 @@ Order: the ADR 0003 primitive and ADR 0004 (threshold root) first; then the
 code-signing and release roles (Remap and Supgang already need them); then
 SSH; then the identity provider, sync, recovery and time ADRs, none of which
 the first tracks wait for.
+
+Platforms: Linux (amd64, arm64) and riscv64 become first-class on the dated
+path in [ADR 0012](0012-linux-and-risc-v.md). Each service above names its Linux
+custody provider, or says that none exists yet.
