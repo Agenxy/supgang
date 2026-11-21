@@ -697,7 +697,8 @@ supgang vault keygen --ssh ed25519 --remote pro q42-kvm-admin > q42-kvm-admin.pu
 marker shown by `vault list` and `vault ssh-public-key --json`. An existing name, of any key
 kind, is never overwritten. The same one-use nonce, audit, and daily creation caps as remote
 agent keygen apply. Remote SSH creation is refused on the root-authority computer. On `pro`,
-`supgang vault ssh-public-key q42-kvm-admin --json` reads the target's sealed public identity.
+`supgang vault ssh-public-key q42-kvm-admin --json` reads the target's sealed public identity;
+the target's local user can remove the key with `supgang vault remove q42-kvm-admin`.
 
 An existing unscoped signing key can receive an agent-purpose policy without
 changing its public key or a consumer's existing pin. Confirm the consumer's

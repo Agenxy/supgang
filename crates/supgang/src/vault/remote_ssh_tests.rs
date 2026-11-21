@@ -153,6 +153,8 @@ fn remote_ssh_key_is_created_only_on_non_root_target_with_creator_and_nonce() ->
         super::keygen_member(target_path, &Software, founder_id, &keygen, || true, &commit_lock, None),
         Err(VaultError::AgentNonceReplay)
     ));
+    super::remove(target_path, &keygen.purpose)?;
+    assert_eq!(list(target_path)?, Vec::<super::Summary>::new());
 
     Ok(())
 }
