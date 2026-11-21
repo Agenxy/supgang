@@ -41,9 +41,9 @@ pub use error::UpdateError;
 pub use lifecycle::RefreshOutcome;
 pub use lifecycle::{UpdateStatus, activate_staged, cancel_activation, initialize_installed, status};
 pub(crate) use lifecycle::{
-    activation_pending, active_digest, initialize_installed_unlocked, last_refresh_outcome,
-    preflight_local_install_unlocked, preflight_local_refresh_unlocked, record_refresh_outcome,
-    revert_local_candidate_unlocked, revert_target, stage_local_candidate_unlocked,
+    activation_pending, active_digest, initialize_installed_unlocked, initialize_service_installed_unlocked,
+    last_refresh_outcome, preflight_service_install_unlocked, preflight_service_refresh_unlocked,
+    record_refresh_outcome, revert_local_candidate_unlocked, revert_target, stage_local_candidate_unlocked,
 };
 pub(crate) use lock::UpdateLock;
 pub use supervisor::{SupervisorError, SupervisorOptions, run_supervisor};

@@ -42,7 +42,18 @@ pub(super) enum Refreshed {
 pub(super) fn install(state_directory: &Path) -> Result<Refreshed, ServiceError> {
     let peers_before = connected_peers(state_directory).unwrap_or(0);
     let lock = crate::update::UpdateLock::acquire(state_directory).map_err(|error| service_update_error(&error))?;
-    crate::update::preflight_local_refresh_unlocked(state_directory).map_err(|error| service_update_error(&error))?;
+    let transition = crate::update::preflight_service_refresh_unlocked(state_directory)
+        .map_err(|error| service_update_error(&error))?;
+    if transition {
+        // An ad hoc slot cannot be a rollback authority for the pinned owner
+        // certificate. This explicit local operation installs directly, then
+        // the normal service restart verifies the new process.
+        let installed = executable::install_current()?;
+        crate::update::initialize_service_installed_unlocked(state_directory, &installed)
+            .map_err(|error| service_update_error(&error))?;
+        drop(lock);
+        return Ok(Refreshed::Direct);
+    }
     let bytes = executable::read_current()?;
     if let Some(digest) = crate::update::stage_local_candidate_unlocked(state_directory, &bytes)
         .map_err(|error| service_update_error(&error))?

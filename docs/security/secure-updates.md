@@ -163,6 +163,19 @@ attempts exhaust that candidate's budget and return to the active release; only 
 activation resets the budget. Ordinary clean exits let the native manager re-execute the
 supervisor, and supervised shutdown first allows bounded graceful termination.
 
+There is one explicit local transition for a legacy ad hoc active slot. `service install` and
+`service refresh` may accept an active designated requirement consisting only of a `cdhash` when
+the invoking command has a valid signature satisfying Supgang's compiled-in owner-certificate
+requirement. The candidate's requirement must equal that pinned requirement exactly. The local
+command records SHA-256 hashes of both requirements and both executables in an owner-only,
+bounded, durable identity-transition audit before replacing the active slot. `service refresh`
+installs this transition directly: the ad hoc slot cannot be a rollback authority for the new
+certificate identity, so its previous-slot record is cleared. The resulting active record points to the content-addressed,
+owner-certificate-signed executable. Later updates remain bound to that certificate. A
+certificate-to-ad-hoc change, a change between certificates, and a change between ad hoc cdhashes
+remain refused. Background update, peer delivery, supervisor handoff, and revert never take the
+transition path.
+
 An optional administrator-owned macOS boot definition runs the entire service as the ordinary
 owner. After the one-time setup approval, restart uses the existing owner-authenticated local
 socket and verifies a new random runtime instance. No network request gains administrator
