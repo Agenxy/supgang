@@ -126,7 +126,8 @@ computer, verifies the requester against the target's durable current peer conta
 revocation state, and applies the existing remote-key creation nonce, audit, and rate caps.
 Vault format v5 binds the requester member ID to a remote SSH entry as authenticated metadata;
 local SSH keys have no creator marker. The creator is visible in `vault list` and
-`ssh-public-key --json`. Remote creation does not start an SSH agent or grant signing use.
+`ssh-public-key --json` on the target. The remote creation reply contains only the OpenSSH
+public line and fingerprint. Remote creation does not start an SSH agent or grant signing use.
 
 `ssh-agent --socket PATH --key NAME` serves only the named SSH-kind entries. The socket must be
 in an existing owner-only directory; Supgang creates it mode `0600` and verifies the connecting

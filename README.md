@@ -685,7 +685,7 @@ proof remain future work in
 For an SSH login key held by another member computer, ask that computer to create it over
 the authenticated session. The target must be a non-root member with a fresh, durably cached
 contact for the requesting member. The private key stays in the target's vault; this command
-prints only its OpenSSH public line on stdout and its fingerprint and creator member ID on stderr.
+prints only its OpenSSH public line on stdout and its fingerprint on stderr.
 The target's local user must later select the key with `ssh-agent --key`; creation alone grants
 no SSH use.
 

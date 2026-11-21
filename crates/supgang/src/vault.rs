@@ -67,8 +67,8 @@ pub use ssh::{SshPublic, SshSigned, ssh_key_blob, ssh_keygen, ssh_public_key, ss
 
 /// Format public SSH identity returned by an authenticated remote creation.
 #[must_use]
-pub fn ssh_public_from(name: &str, public_key: [u8; 32], remote_creator: crate::ids::NodeId) -> SshPublic {
-    ssh::public(name, public_key, Some(remote_creator))
+pub(crate) fn ssh_public_from(name: &str, public_key: [u8; 32]) -> SshPublic {
+    ssh::public(name, public_key, None)
 }
 
 pub(crate) fn keygen_member(

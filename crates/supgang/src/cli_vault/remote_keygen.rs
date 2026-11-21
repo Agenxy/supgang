@@ -77,12 +77,7 @@ pub(super) fn create_ssh(
         expires_at: now.checked_add(60).ok_or("clock is invalid")?,
     };
     let identity = send_request(state_directory, remote, &request)?;
-    let creator = crate::state::open_read_only(state_directory)
-        .map_err(|_| "could not read local membership")?
-        .identity()
-        .device
-        .node_id();
-    let ssh = vault::ssh_public_from(name, identity.public_key, creator);
+    let ssh = vault::ssh_public_from(name, identity.public_key);
     show_ssh_public(name, &ssh, json, output, error)
 }
 
@@ -132,8 +127,12 @@ fn verify_reply(reply: Option<ControlReply>, request: &KeygenRequest) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::verify_reply;
-    use crate::{agent_keygen_protocol::KeygenRequest, control::ControlReply, vault::AgentPolicy};
+    use super::{show_ssh_public, verify_reply};
+    use crate::{
+        agent_keygen_protocol::KeygenRequest,
+        control::ControlReply,
+        vault::{self, AgentPolicy},
+    };
 
     #[test]
     fn reply_is_bound_to_request_nonce() -> Result<(), Box<dyn std::error::Error>> {
@@ -150,6 +149,18 @@ mod tests {
             public_key: hex::encode([9; 32]),
         };
         assert!(verify_reply(Some(reply), &request).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn remote_ssh_reply_contains_only_public_line_and_fingerprint() -> Result<(), Box<dyn std::error::Error>> {
+        let public = vault::ssh_public_from("q42-kvm-admin", [9; 32]);
+        assert_eq!(public.remote_creator, None);
+        let mut output = Vec::new();
+        let mut error = Vec::new();
+        show_ssh_public("q42-kvm-admin", &public, false, &mut output, &mut error)?;
+        assert_eq!(String::from_utf8(output)?, format!("{}\n", public.line));
+        assert_eq!(String::from_utf8(error)?, format!("{}\n", public.fingerprint));
         Ok(())
     }
 }
