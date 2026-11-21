@@ -330,14 +330,14 @@ fn replace_installed_executable(state_directory: &Path, require_active: bool) ->
     let update_lock =
         crate::update::UpdateLock::acquire(state_directory).map_err(|error| service_update_error(&error))?;
     if require_active {
-        crate::update::preflight_local_refresh_unlocked(state_directory)
+        crate::update::preflight_service_refresh_unlocked(state_directory)
             .map_err(|error| service_update_error(&error))?;
     } else {
-        crate::update::preflight_local_install_unlocked(state_directory)
+        crate::update::preflight_service_install_unlocked(state_directory)
             .map_err(|error| service_update_error(&error))?;
     }
     let executable = executable::install_current()?;
-    crate::update::initialize_installed_unlocked(state_directory, &executable)
+    crate::update::initialize_service_installed_unlocked(state_directory, &executable)
         .map_err(|error| service_update_error(&error))?;
     drop(update_lock);
     Ok(executable)

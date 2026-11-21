@@ -46,6 +46,42 @@ pub(super) fn validate_compatible_identity(authority: &Path, candidate: &Path) -
     validate_platform_identity(authority, candidate)
 }
 
+/// The one owner-controlled identity change accepted by an explicit service
+/// install or refresh. Background update paths keep using the strict check.
+pub(super) fn validate_service_identity(authority: &Path, candidate: &Path) -> Result<bool, UpdateError> {
+    validate_platform_signature(authority)?;
+    validate_platform_signature(candidate)?;
+    if validate_platform_identity(authority, candidate).is_ok() {
+        return Ok(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let old = designated_requirement(authority)?;
+        let new = designated_requirement(candidate)?;
+        if !service_transition_requirements(&old, &new) {
+            return Err(UpdateError::IncompatibleCodeIdentity);
+        }
+        validate_literal_requirement(candidate, OWNER_RUNTIME_REQUIREMENT)?;
+        Ok(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(UpdateError::IncompatibleCodeIdentity)
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) const OWNER_RUNTIME_REQUIREMENT: &str =
+    "identifier \"org.agenxy.supgang.runtime\" and certificate root = H\"cbf3bc78f05905fec061719f5065ffcd1349f938\"";
+
+#[cfg(target_os = "macos")]
+fn service_transition_requirements(old: &str, new: &str) -> bool {
+    let Some(hex) = old.strip_prefix("cdhash H\"").and_then(|value| value.strip_suffix('"')) else {
+        return false;
+    };
+    hex.len() == 40 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) && new == OWNER_RUNTIME_REQUIREMENT
+}
+
 /// Checks an installed native helper against the running Supgang certificate.
 /// The two programs have different fixed identifiers but must have the same
 /// remaining designated requirement and valid signatures.
@@ -112,6 +148,11 @@ fn validate_platform_signature_until(path: &Path, deadline: Instant) -> Result<(
 #[cfg(target_os = "macos")]
 fn validate_platform_identity(authority: &Path, candidate: &Path) -> Result<(), UpdateError> {
     let requirement = designated_requirement(authority)?;
+    validate_literal_requirement(candidate, &requirement)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_literal_requirement(candidate: &Path, requirement: &str) -> Result<(), UpdateError> {
     let literal_requirement = format!("={requirement}");
     let mut command = Command::new("/usr/bin/codesign");
     command
@@ -127,7 +168,7 @@ fn validate_platform_identity(authority: &Path, candidate: &Path) -> Result<(), 
 }
 
 #[cfg(target_os = "macos")]
-fn designated_requirement(path: &Path) -> Result<String, UpdateError> {
+pub(super) fn designated_requirement(path: &Path) -> Result<String, UpdateError> {
     designated_requirement_until(path, Instant::now() + Duration::from_secs(10))
 }
 
@@ -253,7 +294,10 @@ mod tests {
 
     use sha2::{Digest, Sha256};
 
-    use super::{bounded_output, helper_requirement_matches, validate_compatible_identity, validate_staged};
+    use super::{
+        OWNER_RUNTIME_REQUIREMENT, bounded_output, helper_requirement_matches, service_transition_requirements,
+        validate_compatible_identity, validate_service_identity, validate_staged,
+    };
     use crate::update::UpdateError;
 
     #[test]
@@ -318,6 +362,61 @@ mod tests {
         validate_staged(&candidate, &digest)?;
         assert!(matches!(
             validate_compatible_identity(&authority, &candidate),
+            Err(UpdateError::IncompatibleCodeIdentity)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn service_identity_transition_accepts_only_ad_hoc_to_pinned_owner_certificate() {
+        let ad_hoc_a = "cdhash H\"0000000000000000000000000000000000000001\"";
+        let ad_hoc_b = "cdhash H\"0000000000000000000000000000000000000002\"";
+        let cert_b = OWNER_RUNTIME_REQUIREMENT.replace("cbf3bc78", "00000000");
+        assert!(service_transition_requirements(ad_hoc_a, OWNER_RUNTIME_REQUIREMENT));
+        assert!(!service_transition_requirements(OWNER_RUNTIME_REQUIREMENT, ad_hoc_a));
+        assert!(!service_transition_requirements(OWNER_RUNTIME_REQUIREMENT, &cert_b));
+        assert!(!service_transition_requirements(ad_hoc_a, ad_hoc_b));
+        assert!(!service_transition_requirements(
+            "cdhash H\"short\"",
+            OWNER_RUNTIME_REQUIREMENT
+        ));
+    }
+
+    #[test]
+    fn service_transition_rejects_a_tampered_candidate_signature() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let temporary = tempfile::tempdir()?;
+        let authority = temporary.path().join("authority");
+        let candidate = temporary.path().join("candidate");
+        fs::copy(std::env::current_exe()?, &authority)?;
+        fs::copy(&authority, &candidate)?;
+        for path in [&authority, &candidate] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            let status = Command::new("/usr/bin/codesign")
+                .args([
+                    "--force",
+                    "--sign",
+                    "-",
+                    "--identifier",
+                    "org.agenxy.supgang.runtime",
+                    "--timestamp=none",
+                ])
+                .arg(path)
+                .status()?;
+            if !status.success() {
+                return Err("codesign did not create the test identity".into());
+            }
+        }
+        let mut file = fs::OpenOptions::new().read(true).write(true).open(&candidate)?;
+        file.seek(SeekFrom::Start(4096))?;
+        let mut byte = [0];
+        file.read_exact(&mut byte)?;
+        file.seek(SeekFrom::Start(4096))?;
+        file.write_all(&[byte[0] ^ 0xff])?;
+        file.sync_all()?;
+        assert!(matches!(
+            validate_service_identity(&authority, &candidate),
             Err(UpdateError::IncompatibleCodeIdentity)
         ));
         Ok(())

@@ -21,12 +21,16 @@ const MAX_SLOT_ENTRIES_PER_PASS: usize = 16;
 
 mod filesystem;
 mod local_candidate;
+mod service_identity;
 use filesystem::remove_file;
 pub(super) use filesystem::{write_atomic, write_atomic_bounded};
 pub use local_candidate::{
     RefreshOutcome, active_digest, last_refresh_outcome, record_refresh_outcome, revert_local_candidate_unlocked,
     revert_target, stage_local_candidate_unlocked,
 };
+#[cfg(test)]
+use service_identity::{preflight_local_install_unlocked, preflight_local_refresh_unlocked};
+pub use service_identity::{preflight_service_install_unlocked, preflight_service_refresh_unlocked};
 
 /// Non-secret local update readiness and activation state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -158,12 +162,32 @@ pub fn initialize_installed(state_directory: &Path, executable: &Path) -> Result
 }
 
 pub fn initialize_installed_unlocked(state_directory: &Path, executable: &Path) -> Result<PathBuf, UpdateError> {
+    initialize_installed_with_policy(state_directory, executable, false)
+}
+
+pub fn initialize_service_installed_unlocked(
+    state_directory: &Path,
+    executable: &Path,
+) -> Result<PathBuf, UpdateError> {
+    initialize_installed_with_policy(state_directory, executable, true)
+}
+
+fn initialize_installed_with_policy(
+    state_directory: &Path,
+    executable: &Path,
+    service_command: bool,
+) -> Result<PathBuf, UpdateError> {
     let updates = updates_directory(state_directory, true)?;
     let installed_version = Version::parse(VERSION).map_err(|_| UpdateError::InvalidTargetName)?;
     let existing = read_record(&updates.join(ACTIVE_FILE))?;
+    let mut transition = false;
     if let Some(active) = existing.as_ref() {
         validate_record(&updates, active)?;
-        super::executable::validate_compatible_identity(&active.executable, executable)?;
+        if service_command {
+            transition = super::executable::validate_service_identity(&active.executable, executable)?;
+        } else {
+            super::executable::validate_compatible_identity(&active.executable, executable)?;
+        }
         let active_version = Version::parse(&active.version).map_err(|_| UpdateError::InvalidTargetName)?;
         if installed_version < active_version {
             return Err(UpdateError::Rollback);
@@ -204,6 +228,14 @@ pub fn initialize_installed_unlocked(state_directory: &Path, executable: &Path) 
         }
         target
     };
+    if transition {
+        service_identity::record_transition_audit(
+            &updates,
+            existing.as_ref().ok_or(UpdateError::InvalidBundle)?,
+            executable,
+            &digest,
+        )?;
+    }
     remove_file(&updates.join(STAGED_FILE))?;
     remove_file(&updates.join(PENDING_FILE))?;
     if existing
@@ -220,12 +252,18 @@ pub fn initialize_installed_unlocked(state_directory: &Path, executable: &Path) 
         executable: target.clone(),
     };
     if let Some(active) = existing {
-        write_atomic(
-            &updates,
-            PREVIOUS_FILE,
-            &serde_json::to_vec(&active).map_err(|_| UpdateError::InvalidBundle)?,
-            0o600,
-        )?;
+        if transition {
+            // An ad hoc slot cannot be selected as a fallback after the
+            // owner-certificate identity becomes active.
+            remove_file(&updates.join(PREVIOUS_FILE))?;
+        } else {
+            write_atomic(
+                &updates,
+                PREVIOUS_FILE,
+                &serde_json::to_vec(&active).map_err(|_| UpdateError::InvalidBundle)?,
+                0o600,
+            )?;
+        }
     }
     write_atomic(
         &updates,
@@ -235,33 +273,6 @@ pub fn initialize_installed_unlocked(state_directory: &Path, executable: &Path) 
     )?;
     prune_slots(&updates)?;
     Ok(target)
-}
-
-pub fn preflight_local_refresh_unlocked(state_directory: &Path) -> Result<(), UpdateError> {
-    let updates = updates_directory(state_directory, false)?;
-    if read_record(&updates.join(ACTIVE_FILE))?.is_none() {
-        return Err(UpdateError::InvalidBundle);
-    }
-    preflight_local_install_unlocked(state_directory)
-}
-
-pub fn preflight_local_install_unlocked(state_directory: &Path) -> Result<(), UpdateError> {
-    let updates = updates_directory(state_directory, false)?;
-    let installed_version = Version::parse(VERSION).map_err(|_| UpdateError::InvalidTargetName)?;
-    let active = read_record(&updates.join(ACTIVE_FILE))?;
-    if let Some(active) = &active {
-        validate_record(&updates, active)?;
-        if installed_version < Version::parse(&active.version).map_err(|_| UpdateError::InvalidTargetName)? {
-            return Err(UpdateError::Rollback);
-        }
-    }
-    if installed_version < effective_version_floor(&updates)? {
-        return Err(UpdateError::Rollback);
-    }
-    if let Some(active) = active {
-        super::executable::validate_compatible_identity(&active.executable, &std::env::current_exe()?)?;
-    }
-    Ok(())
 }
 
 pub(super) fn read_pending(state_directory: &Path) -> Result<Option<SlotRecord>, UpdateError> {
