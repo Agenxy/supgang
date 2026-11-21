@@ -25,6 +25,7 @@ fn fixture() -> Result<(tempfile::TempDir, PathBuf, LmsPublic), Box<dyn std::err
                 signing_public: None,
                 lms_public: Some(lms_public),
                 lms_next_q: Some(0),
+                remote_creator: None,
             },
             None,
         )?],
@@ -40,7 +41,7 @@ fn v3_remains_readable_and_aad_rejects_q_edit() -> Result<(), Box<dyn std::error
     let (_temporary, directory, expected) = fixture()?;
     assert_eq!(public_key(&directory, &Software, "nc0")?, expected);
     let mut document = load(&directory)?.ok_or("missing vault")?;
-    assert_eq!(document.version, 4);
+    assert_eq!(document.version, VERSION);
     assert_eq!(document.entries.first().ok_or("no entry")?.lms_next_q, Some(0));
     document.version = 3;
     fs::write(

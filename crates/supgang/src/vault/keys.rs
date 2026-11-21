@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{ids::NodeId, storage::validate_directory};
 
-type OpenedSeed = (Zeroizing<Vec<u8>>, [u8; 32], Option<AgentPolicy>);
+type OpenedSeed = (Zeroizing<Vec<u8>>, [u8; 32], Option<AgentPolicy>, Option<NodeId>);
 
 struct AgentCreation<'a> {
     policy: &'a [u8],
@@ -72,6 +72,9 @@ pub(super) fn generate_agent_member(
     commit_lock: &std::sync::Mutex<()>,
     prepared: Option<PreparedVault>,
 ) -> Result<[u8; 32], VaultError> {
+    if request.ssh {
+        return Err(VaultError::InvalidAgentPolicy);
+    }
     let encoded = request.policy.encode()?;
     let authorize = || {
         if !session_current() {
@@ -88,6 +91,49 @@ pub(super) fn generate_agent_member(
         &request.purpose,
         &request.note,
         Kind::SigningEd25519,
+        Some(&AgentCreation {
+            policy: &encoded,
+            requester,
+            nonce: Some((request.nonce, request.expires_at)),
+            authorize: &authorize,
+            commit_lock: Some(commit_lock),
+        }),
+        prepared,
+    )
+}
+
+pub(super) fn generate_ssh_member(
+    state_directory: &Path,
+    enclave: &dyn Enclave,
+    request: &crate::agent_keygen_protocol::KeygenRequest,
+    requester: NodeId,
+    session_current: &impl Fn() -> bool,
+    commit_lock: &std::sync::Mutex<()>,
+    prepared: Option<PreparedVault>,
+) -> Result<[u8; 32], VaultError> {
+    if !request.ssh || request.policy.contexts() != ["ssh.keygen"] {
+        return Err(VaultError::InvalidAgentPolicy);
+    }
+    let encoded = request.policy.encode()?;
+    let authorize = || {
+        if !session_current() {
+            return Err(VaultError::MemberAuthority);
+        }
+        request
+            .validate(unix_now())
+            .map_err(|_| VaultError::InvalidSigningRequest)?;
+        let state = crate::state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
+        if state.identity().root.is_some() {
+            return Err(VaultError::MemberAuthority);
+        }
+        signing::current_member_for_ssh_target(state_directory, requester)
+    };
+    generate_with_policy(
+        state_directory,
+        enclave,
+        &request.purpose,
+        &request.note,
+        Kind::SshEd25519,
         Some(&AgentCreation {
             policy: &encoded,
             requester,
@@ -172,6 +218,9 @@ fn generate_with_policy(
             signing_public: Some(public_key),
             lms_public: None,
             lms_next_q: None,
+            remote_creator: agent
+                .filter(|_| kind == Kind::SshEd25519)
+                .map(|creation| creation.requester),
         },
         agent.as_ref().map(|agent| agent.policy),
     )?;
@@ -244,5 +293,5 @@ pub(super) fn open_seed(
     if derived != public_key {
         return Err(VaultError::Corrupt);
     }
-    Ok((seed, public_key, policy))
+    Ok((seed, public_key, policy, entry.remote_creator))
 }

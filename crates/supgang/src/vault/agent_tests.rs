@@ -17,6 +17,7 @@ fn remote_member_key_creation_seals_policy_and_spends_nonce() -> Result<(), Box<
     let commit_lock = std::sync::Mutex::new(());
     let requester = state::open_read_only(&path)?.identity().device.node_id();
     let request = KeygenRequest {
+        ssh: false,
         nonce: [90; 32],
         purpose: "agent.build".to_owned(),
         note: "build stages".to_owned(),
@@ -73,6 +74,7 @@ fn remote_member_cannot_create_a_key_that_excludes_it() -> Result<(), Box<dyn st
         Some(vec![crate::ids::NodeId::from_bytes([255; 32])]),
     )?;
     let request = KeygenRequest {
+        ssh: false,
         nonce: [92; 32],
         purpose: "agent.build".to_owned(),
         note: String::new(),
@@ -96,6 +98,7 @@ fn interrupted_creation_leaves_a_non_signing_pending_key() -> Result<(), Box<dyn
     let commit_lock = std::sync::Mutex::new(());
     let requester = state::open_read_only(&path)?.identity().device.node_id();
     let request = KeygenRequest {
+        ssh: false,
         nonce: [93; 32],
         purpose: "agent.pending".to_owned(),
         note: String::new(),

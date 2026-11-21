@@ -415,7 +415,7 @@ pub enum ServiceCommand {
 pub enum VaultCommand {
     /// List stored secret names and notes; never their values.
     List,
-    /// Generate a non-exportable Ed25519 signing key in this Mac's vault.
+    /// Generate a non-exportable Ed25519 signing or SSH key in a local or member vault.
     Keygen {
         /// Generate a context-bound signing key.
         #[arg(long, value_parser = ["ed25519"], conflicts_with = "ssh", required_unless_present = "ssh")]
@@ -427,11 +427,11 @@ pub enum VaultCommand {
         /// A signing key with contexts is an unattended agent-purpose key.
         #[arg(long = "context", value_name = "CONTEXT", conflicts_with = "ssh")]
         contexts: Vec<String>,
-        /// Narrow an agent key to exact member identities; default is all members.
-        #[arg(long = "member", value_name = "NODE_ID", requires = "contexts")]
+        /// Narrow a remote key request to exact member identities; default is all members.
+        #[arg(long = "member", value_name = "NODE_ID")]
         members: Vec<crate::ids::NodeId>,
-        /// Create the scoped agent-purpose key on an authenticated hive member.
-        #[arg(long, requires = "contexts", conflicts_with = "ssh")]
+        /// Create the key on an authenticated hive member.
+        #[arg(long)]
         remote: Option<String>,
         /// Lowercase vault entry name.
         name: String,

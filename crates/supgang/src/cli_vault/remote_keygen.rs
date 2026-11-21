@@ -4,7 +4,7 @@ use std::{io::Write, path::Path, process::ExitCode};
 
 use sha2::Digest as _;
 
-use super::show_public;
+use super::{show_public, show_ssh_public};
 use crate::{
     agent_keygen_protocol::{KeygenRequest, MAX_REQUEST_BYTES},
     cli_control,
@@ -29,7 +29,6 @@ pub(super) fn create(
     members.sort_unstable();
     let policy =
         AgentPolicy::new(contexts, (!members.is_empty()).then_some(members)).map_err(|error| error.to_string())?;
-    let target = cli_control::resolve_peer_node(state_directory, remote)?;
     let mut nonce = [0_u8; 32];
     getrandom::fill(&mut nonce).map_err(|_| "could not create a key request nonce")?;
     let now = std::time::SystemTime::now()
@@ -37,12 +36,58 @@ pub(super) fn create(
         .map_err(|_| "clock is invalid")?
         .as_secs();
     let request = KeygenRequest {
+        ssh: false,
         nonce,
         purpose: name.to_owned(),
         note: note.to_owned(),
         policy,
         expires_at: now.checked_add(60).ok_or("clock is invalid")?,
     };
+    let identity = send_request(state_directory, remote, &request)?;
+    show_public(name, &identity, json, output)
+}
+
+#[expect(clippy::too_many_arguments, reason = "one flat command with its output streams")]
+pub(super) fn create_ssh(
+    state_directory: &Path,
+    remote: &str,
+    name: &str,
+    note: &str,
+    mut members: Vec<NodeId>,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> Result<ExitCode, String> {
+    members.sort_unstable();
+    let policy = AgentPolicy::new(vec!["ssh.keygen".to_owned()], (!members.is_empty()).then_some(members))
+        .map_err(|error| error.to_string())?;
+    vault::validate_name(name).map_err(|error| error.to_string())?;
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut nonce).map_err(|_| "could not create a key request nonce")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_err(|_| "clock is invalid")?
+        .as_secs();
+    let request = KeygenRequest {
+        ssh: true,
+        nonce,
+        purpose: name.to_owned(),
+        note: note.to_owned(),
+        policy,
+        expires_at: now.checked_add(60).ok_or("clock is invalid")?,
+    };
+    let identity = send_request(state_directory, remote, &request)?;
+    let creator = crate::state::open_read_only(state_directory)
+        .map_err(|_| "could not read local membership")?
+        .identity()
+        .device
+        .node_id();
+    let ssh = vault::ssh_public_from(name, identity.public_key, creator);
+    show_ssh_public(name, &ssh, json, output, error)
+}
+
+fn send_request(state_directory: &Path, remote: &str, request: &KeygenRequest) -> Result<SigningPublic, String> {
+    let target = cli_control::resolve_peer_node(state_directory, remote)?;
     let bytes = request.encode().map_err(|_| "key creation request is invalid")?;
     let mut padded = Box::new([0_u8; MAX_REQUEST_BYTES]);
     padded
@@ -58,8 +103,7 @@ pub(super) fn create(
         },
     )
     .map_err(|error| error.to_string())?;
-    let identity = verify_reply(reply, &request)?;
-    show_public(name, &identity, json, output)
+    verify_reply(reply, request)
 }
 
 fn verify_reply(reply: Option<ControlReply>, request: &KeygenRequest) -> Result<SigningPublic, String> {
@@ -94,6 +138,7 @@ mod tests {
     #[test]
     fn reply_is_bound_to_request_nonce() -> Result<(), Box<dyn std::error::Error>> {
         let request = KeygenRequest {
+            ssh: false,
             nonce: [7; 32],
             purpose: "build.stage".to_owned(),
             note: String::new(),

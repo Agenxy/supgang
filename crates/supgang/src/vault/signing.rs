@@ -111,7 +111,7 @@ pub(super) fn keygen_member(
 /// # Errors
 /// Refuses unknown or changed entries and any failed read audit.
 pub fn public_key(state_directory: &Path, enclave: &dyn Enclave, name: &str) -> Result<SigningPublic, VaultError> {
-    let (seed, public_key, _policy) =
+    let (seed, public_key, _policy, _remote_creator) =
         keys::open_seed(state_directory, enclave, name, "public-key", Kind::SigningEd25519)?;
     drop(seed);
     Ok(SigningPublic {
@@ -133,17 +133,17 @@ pub fn sign(
 ) -> Result<SignedDigest, VaultError> {
     validate_context(context)?;
     let (_directory, _vault_lock) = Lock::acquire(state_directory)?;
-    let (seed, public_key, policy) = match keys::open_seed(state_directory, enclave, name, "sign", Kind::SigningEd25519)
-    {
-        Err(error @ VaultError::NotFound(_)) => {
-            let state = state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
-            if state.identity().root.is_none() {
-                return Err(VaultError::RootAuthorityRequired);
+    let (seed, public_key, policy, _remote_creator) =
+        match keys::open_seed(state_directory, enclave, name, "sign", Kind::SigningEd25519) {
+            Err(error @ VaultError::NotFound(_)) => {
+                let state = state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
+                if state.identity().root.is_none() {
+                    return Err(VaultError::RootAuthorityRequired);
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-        other => other?,
-    };
+            other => other?,
+        };
     let requester = if let Some(policy) = policy {
         let requester = current_member(state_directory)?;
         if !policy.admits_member(requester) || !policy.admits_context(context) {
@@ -280,7 +280,7 @@ fn open_member_key(
     session_current: &impl Fn() -> bool,
     directory: &Path,
 ) -> Result<(Zeroizing<Vec<u8>>, [u8; 32]), VaultError> {
-    let (seed, public_key, policy) =
+    let (seed, public_key, policy, _remote_creator) =
         match keys::open_seed(state_directory, enclave, &request.purpose, "sign", Kind::SigningEd25519) {
             Ok(opened) => opened,
             Err(error @ (VaultError::NotFound(_) | VaultError::NotSigningKey)) => {
@@ -348,12 +348,45 @@ fn record_denial(
 }
 
 pub(super) fn current_member_for(state_directory: &Path, requester: crate::ids::NodeId) -> Result<(), VaultError> {
+    current_member_for_target(state_directory, requester, true)
+}
+
+pub(super) fn current_member_for_ssh_target(
+    state_directory: &Path,
+    requester: crate::ids::NodeId,
+) -> Result<(), VaultError> {
+    current_member_for_target(state_directory, requester, false)
+}
+
+fn current_member_for_target(
+    state_directory: &Path,
+    requester: crate::ids::NodeId,
+    require_root: bool,
+) -> Result<(), VaultError> {
     let state = state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
-    if state.identity().root.is_none() || state.revocations().contains(&requester) {
+    if (require_root && state.identity().root.is_none()) || state.revocations().contains(&requester) {
         return Err(VaultError::MemberAuthority);
     }
-    let certificate = state.membership(&requester).ok_or(VaultError::MemberAuthority)?;
     let now = super::unix_now();
+    if !require_root {
+        let local = state.local_membership().ok_or(VaultError::MemberAuthority)?;
+        local
+            .certificate
+            .validate_time(now)
+            .map_err(|_| VaultError::MemberAuthority)?;
+        let directory = crate::peer_directory::PeerDirectory::open_read_only(
+            state_directory,
+            state.identity().root_verifying_key,
+            state.identity().device.node_id(),
+            state.revocations(),
+        )
+        .map_err(|_| VaultError::MemberAuthority)?;
+        if directory.usable(&requester, now).is_none() {
+            return Err(VaultError::MemberAuthority);
+        }
+        return Ok(());
+    }
+    let certificate = state.membership(&requester).ok_or(VaultError::MemberAuthority)?;
     if certificate.certificate.issued_at > now {
         return Err(VaultError::MemberAuthority);
     }

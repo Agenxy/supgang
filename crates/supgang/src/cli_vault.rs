@@ -38,6 +38,8 @@ struct SecretOutput {
     bytes: usize,
     kind: &'static str,
     fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_creator: Option<crate::ids::NodeId>,
 }
 
 impl From<Summary> for SecretOutput {
@@ -49,6 +51,7 @@ impl From<Summary> for SecretOutput {
             bytes: summary.bytes,
             kind: summary.kind,
             fingerprint: summary.fingerprint,
+            remote_creator: summary.remote_creator,
         }
     }
 }
@@ -86,6 +89,8 @@ struct SshPublicOutput {
     name: String,
     public_key: String,
     fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_creator: Option<crate::ids::NodeId>,
 }
 
 #[derive(Clone, Copy)]
@@ -241,7 +246,14 @@ fn list(state_directory: &Path, json: bool, output: &mut dyn Write) -> Result<Ex
             } else {
                 format!("  {}", secret.note)
             };
-            writeln!(output, "{}  {}{}{}", secret.name, secret.kind, fingerprint, note)
+            let creator = secret
+                .remote_creator
+                .map_or(String::new(), |id| format!("  remote by {id}"));
+            writeln!(
+                output,
+                "{}  {}{}{}{}",
+                secret.name, secret.kind, fingerprint, note, creator
+            )
         })
     };
     written.map_err(|_| "could not write the vault listing".to_owned())?;
@@ -287,6 +299,7 @@ pub fn show_ssh_public(
                 name: name.to_owned(),
                 public_key: identity.line.clone(),
                 fingerprint: identity.fingerprint.clone(),
+                remote_creator: identity.remote_creator,
             },
             output,
             &mut sink,
@@ -294,6 +307,10 @@ pub fn show_ssh_public(
     }
     writeln!(output, "{}", identity.line).map_err(|_| "could not write the SSH public key".to_owned())?;
     writeln!(error, "{}", identity.fingerprint).map_err(|_| "could not write the SSH fingerprint".to_owned())?;
+    if let Some(creator) = identity.remote_creator {
+        writeln!(error, "Created remotely by member {creator}")
+            .map_err(|_| "could not write the SSH creator".to_owned())?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 

@@ -80,6 +80,7 @@ fn member_sign_control_request_rejects_trailing_or_changed_length() -> Result<()
 #[test]
 fn member_keygen_control_request_rejects_trailing_or_changed_length() -> Result<(), Box<dyn std::error::Error>> {
     let request = crate::agent_keygen_protocol::KeygenRequest {
+        ssh: false,
         nonce: [1; 32],
         purpose: "build".to_owned(),
         note: "stage".to_owned(),

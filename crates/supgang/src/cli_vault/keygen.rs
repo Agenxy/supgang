@@ -15,19 +15,32 @@ pub(super) fn with_terminal(
     error: &mut dyn Write,
 ) -> Result<ExitCode, String> {
     if let Some(remote) = options.remote.as_deref() {
-        if !matches!(options.kind, Some(KeygenKind::Signing)) || options.contexts.is_empty() {
-            return Err("remote key creation requires --signing ed25519 and --context".to_owned());
-        }
-        return remote_keygen::create(
-            state_directory,
-            remote,
-            name,
-            note,
-            options.contexts,
-            options.members,
-            options.json,
-            output,
-        );
+        return match options.kind {
+            Some(KeygenKind::Signing) if !options.contexts.is_empty() => remote_keygen::create(
+                state_directory,
+                remote,
+                name,
+                note,
+                options.contexts,
+                options.members,
+                options.json,
+                output,
+            ),
+            Some(KeygenKind::Ssh) if options.contexts.is_empty() => remote_keygen::create_ssh(
+                state_directory,
+                remote,
+                name,
+                note,
+                options.members,
+                options.json,
+                output,
+                error,
+            ),
+            _ => Err(
+                "remote key creation requires --signing ed25519 with --context or --ssh ed25519 without --context"
+                    .to_owned(),
+            ),
+        };
     }
     if options.contexts.is_empty() && !options.owner_terminal {
         return Err("vault keygen requires an interactive terminal with the owner present".to_owned());
