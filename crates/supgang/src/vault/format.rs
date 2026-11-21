@@ -10,12 +10,18 @@ use super::{
 };
 use crate::device_key::custody::SealedKey;
 
-/// Canonical CBOR v1-v3 stay readable; v4 adds optional agent signing policy.
+/// Canonical CBOR v1-v3 stay readable; v4 adds agent policy and v5 remote creator.
 pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultError> {
     if document.entries.iter().any(|entry| {
-        entry.policy.as_deref().is_some_and(|bytes| {
-            document.version < 4 || entry.kind != Kind::SigningEd25519 || AgentPolicy::decode(bytes).is_err()
-        })
+        (entry.remote_creator.is_some() != (entry.kind == Kind::SshEd25519 && entry.policy.is_some()))
+            || (entry.remote_creator.is_some() && document.version < 5)
+            || entry.policy.as_deref().is_some_and(|bytes| {
+                document.version < 4
+                    || !matches!(entry.kind, Kind::SigningEd25519 | Kind::SshEd25519)
+                    || AgentPolicy::decode(bytes).is_err()
+                    || (entry.kind == Kind::SshEd25519
+                        && AgentPolicy::decode(bytes).is_ok_and(|policy| policy.contexts() != ["ssh.keygen"]))
+            })
     }) {
         return Err(VaultError::Corrupt);
     }
@@ -35,7 +41,8 @@ pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultErr
                 1 => 6,
                 2 => 8,
                 3 => 10,
-                _ => 11,
+                4 => 11,
+                _ => 12,
             })
             .and_then(|e| e.str(&entry.name))
             .and_then(|e| e.str(&entry.note))
@@ -86,6 +93,15 @@ pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultErr
                     e.null()
                 }
             })
+            .and_then(|e| {
+                if document.version < 5 {
+                    Ok(e)
+                } else if let Some(creator) = entry.remote_creator {
+                    e.bytes(creator.as_bytes())
+                } else {
+                    e.null()
+                }
+            })
             .map(|_| ())
         });
     }
@@ -101,7 +117,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
             return Err(invalid("vault version"));
         }
         let version = d.u8()?;
-        if version != 1 && version != 2 && version != 3 && version != VERSION {
+        if version != 1 && version != 2 && version != 3 && version != 4 && version != VERSION {
             return Err(invalid("vault version"));
         }
         let key = SealedKey::decode(d.bytes()?).map_err(|_| invalid("vault key"))?;
@@ -117,7 +133,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                     1 => 6,
                     2 => 8,
                     3 => 10,
-                    _ => 11,
+                    4 => 11,
+                    _ => 12,
                 })
             {
                 return Err(invalid("vault entry"));
@@ -174,11 +191,27 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 None
             } else {
                 let bytes = d.bytes()?;
-                if kind != Kind::SigningEd25519 || AgentPolicy::decode(bytes).is_err() {
+                if !matches!(kind, Kind::SigningEd25519 | Kind::SshEd25519)
+                    || AgentPolicy::decode(bytes).is_err()
+                    || (kind == Kind::SshEd25519
+                        && AgentPolicy::decode(bytes).is_ok_and(|policy| policy.contexts() != ["ssh.keygen"]))
+                {
                     return Err(invalid("vault agent policy"));
                 }
                 Some(bytes.to_vec())
             };
+            let remote_creator = if version < 5 {
+                None
+            } else if d.datatype()? == minicbor::data::Type::Null {
+                d.null()?;
+                None
+            } else {
+                let bytes: [u8; 32] = d.bytes()?.try_into().map_err(|_| invalid("vault remote creator"))?;
+                Some(crate::ids::NodeId::from_bytes(bytes))
+            };
+            if remote_creator.is_some() != (kind == Kind::SshEd25519 && policy.is_some()) {
+                return Err(invalid("vault remote creator"));
+            }
             let entry = Entry {
                 kind,
                 signing_public,
@@ -191,6 +224,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 nonce,
                 ciphertext,
                 policy,
+                remote_creator,
             };
             let length = entry.ciphertext.len();
             if validate_name(&entry.name).is_err()

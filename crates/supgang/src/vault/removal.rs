@@ -24,7 +24,12 @@ pub fn remove(state_directory: &Path, name: &str) -> Result<(), VaultError> {
     let agent_key = entry.policy.is_some();
     if let Some(policy_bytes) = entry.policy.as_deref() {
         let policy = AgentPolicy::decode(policy_bytes)?;
-        let requester = signing::current_member(state_directory)?;
+        let remote_ssh = entry.kind == Kind::SshEd25519 && entry.remote_creator.is_some();
+        let requester = if remote_ssh {
+            current_local_member_for_ssh_removal(state_directory)?
+        } else {
+            signing::current_member(state_directory)?
+        };
         let public_key = entry.signing_public.ok_or(VaultError::Corrupt)?;
         // A remote creation interrupted after its vault write is inert, but
         // it can occupy a purpose name. The root may explicitly remove that
@@ -33,7 +38,7 @@ pub fn remove(state_directory: &Path, name: &str) -> Result<(), VaultError> {
             agent_audit::ensure_activated(&directory, name, policy_bytes, &public_key),
             Err(VaultError::AgentPolicyDenied)
         );
-        if !policy.admits_member(requester) && !pending {
+        if !remote_ssh && !policy.admits_member(requester) && !pending {
             return Err(VaultError::AgentPolicyDenied);
         }
         agent_audit::revoke_reserved(&directory, requester, name, policy_bytes, &public_key)?;
@@ -45,4 +50,19 @@ pub fn remove(state_directory: &Path, name: &str) -> Result<(), VaultError> {
         audit(&directory, "remove", name, None);
     }
     Ok(())
+}
+
+fn current_local_member_for_ssh_removal(state_directory: &Path) -> Result<crate::ids::NodeId, VaultError> {
+    let state = crate::state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
+    let node = state.identity().device.node_id();
+    if state.revocations().contains(&node) {
+        return Err(VaultError::MemberAuthority);
+    }
+    state
+        .local_membership()
+        .ok_or(VaultError::MemberAuthority)?
+        .certificate
+        .validate_time(super::unix_now())
+        .map_err(|_| VaultError::MemberAuthority)?;
+    Ok(node)
 }

@@ -325,6 +325,7 @@ fn reseal_next_q(document: &mut Document, index: usize, private: &LmsPrivate, ne
             signing_public: None,
             lms_public: Some(private.identity.public_key),
             lms_next_q: Some(next_q),
+            remote_creator: None,
         },
         None,
     )?;
@@ -386,6 +387,7 @@ pub fn keygen(
             signing_public: None,
             lms_public: Some(identity.public_key),
             lms_next_q: Some(0),
+            remote_creator: None,
         },
         None,
     )?;

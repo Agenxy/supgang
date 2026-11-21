@@ -120,6 +120,15 @@ request. `vault get`, `vault run`, and `sign` refuse SSH entries.
 of SHA-256 over the full SSH public-key blob, matching `ssh-keygen -lf`. The JSON schema is
 `supgang.ssh-public-key/v1`.
 
+Remote `vault keygen --ssh ed25519 --remote MEMBER NAME` uses a current authenticated member
+session and creates the SSH key in the target member's vault. It refuses the root-authority
+computer, verifies the requester against the target's durable current peer contact and
+revocation state, and applies the existing remote-key creation nonce, audit, and rate caps.
+Vault format v5 binds the requester member ID to a remote SSH entry as authenticated metadata;
+local SSH keys have no creator marker. The creator is visible in `vault list` and
+`ssh-public-key --json` on the target. The remote creation reply contains only the OpenSSH
+public line and fingerprint. Remote creation does not start an SSH agent or grant signing use.
+
 `ssh-agent --socket PATH --key NAME` serves only the named SSH-kind entries. The socket must be
 in an existing owner-only directory; Supgang creates it mode `0600` and verifies the connecting
 process has the same user ID. It answers OpenSSH identity-list (11) and plain Ed25519 sign (13)

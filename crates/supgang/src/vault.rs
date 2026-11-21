@@ -25,6 +25,7 @@ use p256::{PublicKey, SecretKey, elliptic_curve::sec1::ToSec1Point};
 use sha2::Digest;
 use zeroize::Zeroizing;
 
+mod aad;
 mod agent_audit;
 #[cfg(test)]
 mod agent_tests;
@@ -38,10 +39,13 @@ mod lms_rfc;
 mod lock;
 mod migration;
 mod policy;
+#[cfg(test)]
+mod remote_ssh_tests;
 mod removal;
 mod signing;
 mod ssh;
 
+use aad::associated_data;
 use audit::{append_audit, audit};
 pub use error::VaultError;
 use format::{decode, encode};
@@ -61,6 +65,12 @@ use signing::{SIGN_DOMAIN, framed_message};
 pub use signing::{SignedDigest, SigningPublic, keygen, keygen_agent, public_key, sign, validate_context};
 pub use ssh::{SshPublic, SshSigned, ssh_key_blob, ssh_keygen, ssh_public_key, ssh_sign};
 
+/// Format public SSH identity returned by an authenticated remote creation.
+#[must_use]
+pub(crate) fn ssh_public_from(name: &str, public_key: [u8; 32]) -> SshPublic {
+    ssh::public(name, public_key, None)
+}
+
 pub(crate) fn keygen_member(
     state_directory: &std::path::Path,
     enclave: &dyn Enclave,
@@ -70,6 +80,27 @@ pub(crate) fn keygen_member(
     commit_lock: &std::sync::Mutex<()>,
     prepared: Option<PreparedVault>,
 ) -> Result<SigningPublic, VaultError> {
+    if request.ssh {
+        request
+            .validate(unix_now())
+            .map_err(|_| VaultError::InvalidSigningRequest)?;
+        if !request.policy.admits_member(requester) {
+            return Err(VaultError::AgentPolicyDenied);
+        }
+        let public_key = keys::generate_ssh_member(
+            state_directory,
+            enclave,
+            request,
+            requester,
+            &session_current,
+            commit_lock,
+            prepared,
+        )?;
+        return Ok(SigningPublic {
+            public_key,
+            fingerprint: ssh::fingerprint(&public_key),
+        });
+    }
     signing::keygen_member(
         state_directory,
         enclave,
@@ -112,7 +143,17 @@ pub(crate) fn prepare_member_vault(
     if !request.policy.admits_member(requester) || !session_current() {
         return Err(VaultError::MemberAuthority);
     }
-    signing::current_member_for(state_directory, requester)?;
+    if request.ssh {
+        let state = crate::state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
+        if state.identity().root.is_some() {
+            return Err(VaultError::MemberAuthority);
+        }
+    }
+    if request.ssh {
+        signing::current_member_for_ssh_target(state_directory, requester)?;
+    } else {
+        signing::current_member_for(state_directory, requester)?;
+    }
     let (directory, _lock) = Lock::acquire(state_directory)?;
     if load(&directory)?.is_some() {
         return Ok(None);
@@ -124,7 +165,11 @@ pub(crate) fn prepare_member_vault(
     if !session_current() {
         return Err(VaultError::MemberAuthority);
     }
-    signing::current_member_for(state_directory, requester)?;
+    if request.ssh {
+        signing::current_member_for_ssh_target(state_directory, requester)?;
+    } else {
+        signing::current_member_for(state_directory, requester)?;
+    }
     Ok(Some(PreparedVault {
         key,
         public,
@@ -146,7 +191,7 @@ pub const MAX_NAME_BYTES: usize = 64;
 pub const MAX_NOTE_BYTES: usize = 200;
 
 const ENTRY_DOMAIN: &[u8] = b"supgang/vault-entry/v1\0";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 const LOCK_FILE_NAME: &str = "vault.lock";
 const AUDIT_LOCK_FILE_NAME: &str = "vault-audit.lock";
 const PUBLIC_BYTES: usize = 33;
@@ -154,7 +199,7 @@ const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 const MAX_KEY_RECORD_BYTES: usize = 4 * 1024 + 16;
 const MAX_ENTRY_BYTES: usize =
-    MAX_NAME_BYTES + MAX_NOTE_BYTES + PUBLIC_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + policy::MAX_POLICY_BYTES + 144;
+    MAX_NAME_BYTES + MAX_NOTE_BYTES + PUBLIC_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + policy::MAX_POLICY_BYTES + 184;
 const MAX_VAULT_BYTES: usize = MAX_KEY_RECORD_BYTES + PUBLIC_BYTES + MAX_SECRETS * MAX_ENTRY_BYTES + 64;
 const MAX_AUDIT_BYTES: u64 = 256 * 1024;
 const TEMPORARY_ATTEMPTS: usize = 8;
@@ -219,6 +264,8 @@ pub struct Summary {
     pub kind: &'static str,
     /// Lowercase SHA-256 of the public key, when applicable.
     pub fingerprint: Option<String>,
+    /// Member that requested creation on this device, for remote SSH keys.
+    pub remote_creator: Option<crate::ids::NodeId>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -253,6 +300,7 @@ struct Entry {
     nonce: [u8; NONCE_BYTES],
     ciphertext: Vec<u8>,
     policy: Option<Vec<u8>>,
+    remote_creator: Option<crate::ids::NodeId>,
 }
 
 impl Entry {
@@ -272,6 +320,7 @@ impl Entry {
                         Kind::Secret | Kind::SigningEd25519 | Kind::LmsSha256H20W1 => fingerprint(&key),
                     })
                 }),
+            remote_creator: self.remote_creator,
         }
     }
 }
@@ -457,6 +506,7 @@ fn seal(
             signing_public,
             lms_public: None,
             lms_next_q: None,
+            remote_creator: None,
         },
         None,
     )
@@ -468,6 +518,7 @@ struct SealMetadata {
     signing_public: Option<[u8; 32]>,
     lms_public: Option<[u8; lms_rfc::PUBLIC_LEN]>,
     lms_next_q: Option<u32>,
+    remote_creator: Option<crate::ids::NodeId>,
 }
 
 fn seal_entry(
@@ -480,8 +531,14 @@ fn seal_entry(
     policy: Option<&[u8]>,
 ) -> Result<Entry, VaultError> {
     if let Some(policy) = policy
-        && (metadata.kind != Kind::SigningEd25519 || AgentPolicy::decode(policy).is_err())
+        && (!matches!(metadata.kind, Kind::SigningEd25519 | Kind::SshEd25519)
+            || AgentPolicy::decode(policy).is_err()
+            || (metadata.kind == Kind::SshEd25519
+                && AgentPolicy::decode(policy).is_ok_and(|policy| policy.contexts() != ["ssh.keygen"])))
     {
+        return Err(VaultError::InvalidAgentPolicy);
+    }
+    if metadata.remote_creator.is_some() != (metadata.kind == Kind::SshEd25519 && policy.is_some()) {
         return Err(VaultError::InvalidAgentPolicy);
     }
     let recipient = PublicKey::from_sec1_bytes(public).map_err(|_| VaultError::Corrupt)?;
@@ -509,6 +566,7 @@ fn seal_entry(
         nonce,
         ciphertext,
         policy: policy.map(<[u8]>::to_vec),
+        remote_creator: metadata.remote_creator,
     })
 }
 
@@ -537,6 +595,7 @@ fn open(shared: &[u8; 32], public: &[u8; PUBLIC_BYTES], entry: &Entry) -> Result
             signing_public: entry.signing_public,
             lms_public: entry.lms_public,
             lms_next_q: entry.lms_next_q,
+            remote_creator: entry.remote_creator,
         },
         entry.policy.as_deref(),
     );
@@ -572,49 +631,6 @@ fn cipher(
         .expand(&info, key.as_mut())
         .map_err(|_| VaultError::Corrupt)?;
     ChaCha20Poly1305::new_from_slice(key.as_ref()).map_err(|_| VaultError::Corrupt)
-}
-
-/// `domain || name || 0 || ephemeral || stored_at (big-endian) || note`: every
-/// field of the entry except the ciphertext and nonce, so editing any fails.
-/// Signing entries append `\0signing-ed25519\0 || public` to prevent decoding
-/// them as exportable secrets. This suffix cannot be forged through `note`
-/// because `validate_note`, called on both add and decode, forbids control
-/// characters including NUL. Keep that restriction if the note grammar changes.
-fn associated_data(
-    name: &str,
-    note: &str,
-    stored_at: u64,
-    ephemeral: &[u8; PUBLIC_BYTES],
-    metadata: &SealMetadata,
-    policy: Option<&[u8]>,
-) -> Vec<u8> {
-    let mut aad = Vec::with_capacity(ENTRY_DOMAIN.len() + name.len() + 1 + PUBLIC_BYTES + 8 + note.len() + 48);
-    aad.extend_from_slice(ENTRY_DOMAIN);
-    aad.extend_from_slice(name.as_bytes());
-    aad.push(0);
-    aad.extend_from_slice(ephemeral);
-    aad.extend_from_slice(&stored_at.to_be_bytes());
-    aad.extend_from_slice(note.as_bytes());
-    if metadata.kind != Kind::Secret {
-        aad.push(0);
-        aad.extend_from_slice(metadata.kind.label().as_bytes());
-        aad.push(0);
-        if let Some(public) = metadata.signing_public {
-            aad.extend_from_slice(&public);
-        }
-        if let Some(public) = metadata.lms_public {
-            aad.extend_from_slice(&public);
-        }
-        if let Some(next_q) = metadata.lms_next_q {
-            aad.extend_from_slice(&next_q.to_be_bytes());
-        }
-    }
-    if let Some(policy) = policy {
-        aad.push(0);
-        aad.extend_from_slice(b"agent-policy/v1\0");
-        aad.extend_from_slice(policy);
-    }
-    aad
 }
 
 fn load(directory: &Path) -> Result<Option<Document>, VaultError> {

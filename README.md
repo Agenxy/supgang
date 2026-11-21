@@ -682,6 +682,24 @@ pending entry before retrying. Audit checkpoint rotation and the release phone
 proof remain future work in
 [ADR 0011](docs/architecture/0011-agent-signing-and-issuance.md).
 
+For an SSH login key held by another member computer, ask that computer to create it over
+the authenticated session. The target must be a non-root member with a fresh, durably cached
+contact for the requesting member. The private key stays in the target's vault; this command
+prints only its OpenSSH public line on stdout and its fingerprint on stderr.
+The target's local user must later select the key with `ssh-agent --key`; creation alone grants
+no SSH use.
+
+```text
+supgang vault keygen --ssh ed25519 --remote pro q42-kvm-admin > q42-kvm-admin.pub
+```
+
+`--member NODE_ID` can narrow who may request creation. A remote SSH key has a sealed creator
+marker shown by `vault list` and `vault ssh-public-key --json`. An existing name, of any key
+kind, is never overwritten. The same one-use nonce, audit, and daily creation caps as remote
+agent keygen apply. Remote SSH creation is refused on the root-authority computer. On `pro`,
+`supgang vault ssh-public-key q42-kvm-admin --json` reads the target's sealed public identity;
+the target's local user can remove the key with `supgang vault remove q42-kvm-admin`.
+
 An existing unscoped signing key can receive an agent-purpose policy without
 changing its public key or a consumer's existing pin. Confirm the consumer's
 current fingerprint independently, then run this on the root-authority

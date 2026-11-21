@@ -7,8 +7,9 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::{
-    AUDIT_FILE_NAME, Enclave, MAX_AUDIT_BYTES, MAX_SECRET_BYTES, VAULT_FILE_NAME, VaultError, add, append_audit,
-    decode, keygen, list, public_key, remove, reveal, save, sign, validate_context, validate_name,
+    AUDIT_FILE_NAME, AgentPolicy, Enclave, MAX_AUDIT_BYTES, MAX_SECRET_BYTES, VAULT_FILE_NAME, VERSION, VaultError,
+    add, append_audit, decode, keygen, keygen_agent, list, public_key, remove, reveal, save, sign, validate_context,
+    validate_name,
 };
 use crate::{
     device_key::custody::{CustodyKind, SealedKey},
@@ -489,6 +490,22 @@ fn version_one_secret_survives_signing_upgrade() -> Result<(), Box<dyn std::erro
     assert_eq!(reveal(&path, &Software, "token", None)?.as_slice(), b"old value");
     keygen(&path, &Software, "launcher", "")?;
     assert_eq!(reveal(&path, &Software, "token", None)?.as_slice(), b"old value");
+    Ok(())
+}
+
+#[test]
+fn version_four_agent_key_survives_remote_ssh_vault_upgrade() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, path) = state_directory()?;
+    let policy = AgentPolicy::new(vec!["build.stage".to_owned()], None)?;
+    let original = keygen_agent(&path, &Software, "build", "", &policy)?;
+    let mut document = super::load(&path)?.ok_or("missing vault")?;
+    document.version = 4;
+    save(&path, &document)?;
+    assert_eq!(super::load(&path)?.ok_or("missing v4 vault")?.version, 4);
+    assert_eq!(public_key(&path, &Software, "build")?, original);
+    keygen_agent(&path, &Software, "other", "", &policy)?;
+    assert_eq!(super::load(&path)?.ok_or("missing v5 vault")?.version, VERSION);
+    assert_eq!(public_key(&path, &Software, "build")?, original);
     Ok(())
 }
 

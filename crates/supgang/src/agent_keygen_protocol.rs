@@ -19,6 +19,8 @@ const RESPONSE_DOMAIN: &[u8] = b"supgang/agent-keygen/response-mac/v1\0";
 /// One authenticated request to create a fresh, unpinned purpose key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeygenRequest {
+    /// SSH-only key creation uses the fixed `ssh.keygen` creation policy.
+    pub ssh: bool,
     /// One-use caller-generated value.
     pub nonce: [u8; 32],
     /// Exact vault purpose name.
@@ -46,6 +48,9 @@ impl KeygenRequest {
         {
             return Err(ProtocolError::Invalid);
         }
+        if self.ssh && self.policy.contexts() != ["ssh.keygen"] {
+            return Err(ProtocolError::Invalid);
+        }
         Ok(())
     }
 
@@ -58,13 +63,14 @@ impl KeygenRequest {
         let policy = self.policy.encode().map_err(|_| ProtocolError::Invalid)?;
         let mut encoder = Encoder::new(Vec::new());
         encoder
-            .array(6)
-            .and_then(|e| e.u8(1))
+            .array(if self.ssh { 7 } else { 6 })
+            .and_then(|e| e.u8(if self.ssh { 2 } else { 1 }))
             .and_then(|e| e.bytes(&self.nonce))
             .and_then(|e| e.str(&self.purpose))
             .and_then(|e| e.str(&self.note))
             .and_then(|e| e.bytes(&policy))
             .and_then(|e| e.u64(self.expires_at))
+            .and_then(|e| if self.ssh { e.u8(1) } else { Ok(e) })
             .map_err(|_| ProtocolError::Invalid)?;
         let bytes = encoder.into_writer();
         if bytes.is_empty() || bytes.len() > MAX_REQUEST_BYTES {
@@ -82,9 +88,9 @@ impl KeygenRequest {
             return Err(ProtocolError::Invalid);
         }
         let mut decoder = Decoder::new(bytes);
-        if decoder.array().map_err(|_| ProtocolError::Invalid)? != Some(6)
-            || decoder.u8().map_err(|_| ProtocolError::Invalid)? != 1
-        {
+        let count = decoder.array().map_err(|_| ProtocolError::Invalid)?;
+        let version = decoder.u8().map_err(|_| ProtocolError::Invalid)?;
+        if !matches!((count, version), (Some(6), 1) | (Some(7), 2)) {
             return Err(ProtocolError::Invalid);
         }
         let nonce: [u8; 32] = decoder
@@ -97,7 +103,13 @@ impl KeygenRequest {
         let policy = AgentPolicy::decode(decoder.bytes().map_err(|_| ProtocolError::Invalid)?)
             .map_err(|_| ProtocolError::Invalid)?;
         let expires_at = decoder.u64().map_err(|_| ProtocolError::Invalid)?;
+        let ssh = if version == 2 {
+            decoder.u8().map_err(|_| ProtocolError::Invalid)? == 1
+        } else {
+            false
+        };
         let result = Self {
+            ssh,
             nonce,
             purpose,
             note,
@@ -115,6 +127,9 @@ impl KeygenRequest {
             || self.note.len() > vault::MAX_NOTE_BYTES
             || self.note.chars().any(char::is_control)
         {
+            return Err(ProtocolError::Invalid);
+        }
+        if self.ssh && self.policy.contexts() != ["ssh.keygen"] {
             return Err(ProtocolError::Invalid);
         }
         Ok(())
@@ -315,6 +330,7 @@ mod tests {
     #[test]
     fn creation_messages_are_canonical_bounded_and_session_bound() -> Result<(), Box<dyn std::error::Error>> {
         let request = KeygenRequest {
+            ssh: false,
             nonce: [1; 32],
             purpose: "build".to_owned(),
             note: "stage".to_owned(),
@@ -344,6 +360,29 @@ mod tests {
             public_key: [6; 32],
         };
         assert_eq!(KeygenReply::decode(&reply.encode()?)?, reply);
+        Ok(())
+    }
+
+    #[test]
+    fn ssh_creation_has_distinct_canonical_request_and_fixed_context() -> Result<(), Box<dyn std::error::Error>> {
+        let request = KeygenRequest {
+            ssh: true,
+            nonce: [9; 32],
+            purpose: "ssh-login".to_owned(),
+            note: String::new(),
+            policy: AgentPolicy::new(vec!["ssh.keygen".to_owned()], None)?,
+            expires_at: 100,
+        };
+        let bytes = request.encode()?;
+        assert_eq!(KeygenRequest::decode(&bytes)?, request);
+        let mut wrong_kind = bytes;
+        *wrong_kind.last_mut().ok_or("missing request kind")? = 0;
+        assert_eq!(KeygenRequest::decode(&wrong_kind), Err(ProtocolError::Invalid));
+        let wrong_policy = KeygenRequest {
+            policy: AgentPolicy::new(vec!["build.stage".to_owned()], None)?,
+            ..request
+        };
+        assert_eq!(wrong_policy.encode(), Err(ProtocolError::Invalid));
         Ok(())
     }
 }
