@@ -364,7 +364,10 @@ fn current_member_for_target(
     require_root: bool,
 ) -> Result<(), VaultError> {
     let state = state::open_read_only(state_directory).map_err(|_| VaultError::MemberAuthority)?;
-    if (require_root && state.identity().root.is_none()) || state.revocations().contains(&requester) {
+    if (require_root && state.identity().root.is_none())
+        || state.revocations().contains(&requester)
+        || state.revocations().contains(&state.identity().device.node_id())
+    {
         return Err(VaultError::MemberAuthority);
     }
     let now = super::unix_now();

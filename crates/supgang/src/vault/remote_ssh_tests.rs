@@ -224,3 +224,28 @@ fn remote_ssh_pending_activation_and_creator_tamper_refuse_use() -> Result<(), B
     ));
     Ok(())
 }
+
+#[test]
+fn revoked_target_refuses_remote_ssh_creation_before_vault_mutation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = remote_ssh_target()?;
+    let mut founder = state::open(&fixture.founder_path)?;
+    let revoked = founder.revoke(fixture.target_id, super::unix_now())?;
+    drop(founder);
+    let mut target = state::open(&fixture.target_path)?;
+    assert!(target.merge_revocations(revoked)?);
+    drop(target);
+    let request = KeygenRequest {
+        ssh: true,
+        nonce: [39; 32],
+        purpose: "revoked-target".to_owned(),
+        note: String::new(),
+        policy: super::AgentPolicy::new(vec!["ssh.keygen".to_owned()], None)?,
+        expires_at: super::unix_now() + 60,
+    };
+    assert!(matches!(
+        super::prepare_member_vault(&fixture.target_path, &Software, fixture.founder_id, &request, || true),
+        Err(VaultError::MemberAuthority)
+    ));
+    assert_eq!(list(&fixture.target_path)?, Vec::<super::Summary>::new());
+    Ok(())
+}
