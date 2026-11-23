@@ -49,6 +49,15 @@ pub enum EndpointCommand {
 pub enum Command {
     /// Show the binary's static capabilities without reading state or contacting a service.
     Capabilities,
+    /// Generate an offline NC0 LMS root into independent passphrase-encrypted age files.
+    LmsKeygen {
+        /// Owner-only ceremony; no vault, service, or network is used.
+        #[arg(long, value_name = "NAME")]
+        escrow_only: String,
+        /// New destination file; repeat two to four times on separate media.
+        #[arg(long = "to", value_name = "PATH", required = true)]
+        to: Vec<PathBuf>,
+    },
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
     ///
     /// Exit 0 on success, 75 for a transient setup failure, or 3 for refusal or misconfiguration.

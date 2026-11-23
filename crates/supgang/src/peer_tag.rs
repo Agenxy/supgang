@@ -45,6 +45,7 @@ const RESERVED_TAGS: &[&str] = &[
     "invite",
     "join",
     "join-request",
+    "lms-keygen",
     "mcp",
     "name",
     "peers",

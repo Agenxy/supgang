@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub(crate) mod age_scrypt;
 pub mod agent_keygen_protocol;
 pub mod agent_sign_protocol;
 pub mod artifact;
@@ -11,6 +12,7 @@ pub mod cli;
 pub(crate) mod cli_args;
 pub(crate) mod cli_background;
 pub(crate) mod cli_control;
+pub(crate) mod cli_lms_escrow;
 pub(crate) mod cli_peer;
 pub(crate) mod cli_peer_types;
 pub(crate) mod cli_profile;
