@@ -32,6 +32,7 @@ def main() -> None:
                  version + b"public --sealed AA\n", version + b"sign --sealed 01 00\n",
                  version + b"generate-agreement --presence extra\n", version + b"agree --sealed 01\n",
                  version + b"agree --presence --sealed 01\n",
+                 version + b"agree --presence --sealed 01 00 --reason 0a\n",
                  version + b"agree --sealed 01 00\n", version + b"agree --sealed 01 " + b"AA" * 33 + b"\n",
                  b"a" * 16385 + b"\n"]
     for request in malformed:

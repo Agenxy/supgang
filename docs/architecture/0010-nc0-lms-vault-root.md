@@ -65,6 +65,13 @@ agreement and decrypt SEED/I while holding the vault lock, before either q
 record changes. A declined or unavailable presence prompt returns without a
 signature or output file and without changing the vault q or journal q. The
 existing journal-before-vault reservation order follows a successful unwrap.
+The helper allows up to 60 seconds for the owner prompt, so the vault lock can
+be held for that entire interval. Other vault changes wait for it; they do not
+start another LMS reservation.
+The owner prompt names the LMS key, the q being reserved, and the first 16
+hex digits of the validated package SHA-256. This reason text is supplied by
+the caller, not attested by the Secure Enclave; any same-user process can
+trigger a prompt with its own text.
 `preview`, public-key reads, and journal agreement checks use only the
 ordinary vault agreement and do not prompt. The owner prompt approves use
 of the Secure Enclave private key; it does not attest that the requesting

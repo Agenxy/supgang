@@ -2,7 +2,9 @@
 
 use zeroize::Zeroizing;
 
-use super::{PUBLIC_BYTES, VaultError, compressed_point};
+#[cfg(target_os = "macos")]
+use super::compressed_point;
+use super::{PUBLIC_BYTES, VaultError};
 use crate::device_key::custody::SealedKey;
 
 /// The key-agreement key a vault is sealed to.
@@ -26,7 +28,12 @@ pub trait Enclave {
     ///
     /// # Errors
     /// Refuses when presence is declined or unavailable.
-    fn agree_presence(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError>;
+    fn agree_presence(
+        &self,
+        sealed: &SealedKey,
+        peer: &[u8; PUBLIC_BYTES],
+        reason: &str,
+    ) -> Result<Zeroizing<[u8; 32]>, VaultError>;
 }
 
 /// This Mac's Secure Enclave, through the sibling helper.
@@ -46,8 +53,13 @@ impl Enclave for SecureEnclave {
     fn agree(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         Ok(crate::device_key::secure_enclave::agree(sealed, peer)?)
     }
-    fn agree_presence(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
-        Ok(crate::device_key::secure_enclave::agree_presence(sealed, peer)?)
+    fn agree_presence(
+        &self,
+        sealed: &SealedKey,
+        peer: &[u8; PUBLIC_BYTES],
+        reason: &str,
+    ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        Ok(crate::device_key::secure_enclave::agree_presence(sealed, peer, reason)?)
     }
 }
 
@@ -75,6 +87,7 @@ impl Enclave for SecureEnclave {
         &self,
         _sealed: &SealedKey,
         _peer: &[u8; PUBLIC_BYTES],
+        _reason: &str,
     ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         Err(crate::device_key::custody::CustodyError::Unavailable(
             crate::device_key::custody::UnavailableReason::WrongPlatform,

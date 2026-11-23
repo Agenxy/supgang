@@ -304,11 +304,16 @@ fn open_state(document: &Document, index: usize, enclave: &dyn Enclave) -> Resul
     })
 }
 
-fn open_private(document: &Document, index: usize, enclave: &dyn Enclave) -> Result<LmsPrivate, VaultError> {
+fn open_private(
+    document: &Document,
+    index: usize,
+    enclave: &dyn Enclave,
+    state: &LmsState,
+    reason: &str,
+) -> Result<LmsPrivate, VaultError> {
     let entry = document.entries.get(index).ok_or(VaultError::Corrupt)?;
     let wrap = entry.lms_presence.as_ref().ok_or(VaultError::LmsPresenceRequired)?;
-    let state = open_state(document, index, enclave)?;
-    let secret = open_presence(enclave, entry, wrap, &state.identity.public_key)?;
+    let secret = open_presence(enclave, entry, wrap, &state.identity.public_key, reason)?;
     if secret.len() != 48 || state.identity.public_key.get(8..24) != secret.get(32..48) {
         return Err(VaultError::Corrupt);
     }
@@ -320,7 +325,7 @@ fn open_private(document: &Document, index: usize, enclave: &dyn Enclave) -> Res
     Ok(LmsPrivate {
         seed,
         id,
-        identity: state.identity,
+        identity: state.identity.clone(),
     })
 }
 
@@ -565,7 +570,7 @@ pub fn sign(
     validate_name(name)?;
     let (directory, _lock) = Lock::acquire(state_directory)?;
     append_audit(&directory, "lms-sign", name, None).map_err(|_| VaultError::Audit)?;
-    let (private, q) = reserve_locked(&directory, enclave, name, log, expected_q)?;
+    let (private, q) = reserve_locked(&directory, enclave, name, package.digest, log, expected_q)?;
     let (root, path) = lms_rfc::tree(
         &private.seed,
         &private.id,
@@ -596,6 +601,7 @@ fn reserve_locked(
     directory: &Path,
     enclave: &dyn Enclave,
     name: &str,
+    package_digest: [u8; 32],
     log: ReleaseLog,
     expected_q: u32,
 ) -> Result<(LmsPrivate, u32), VaultError> {
@@ -613,7 +619,9 @@ fn reserve_locked(
     check_external(log, q, &head)?;
     // The presence-gated agreement completes after all noninteractive checks,
     // before either q record changes. A refusal leaves both records untouched.
-    let private = open_private(&document, index, enclave)?;
+    let digest_prefix = hex::encode(package_digest.get(..8).ok_or(VaultError::Corrupt)?);
+    let reason = format!("Approve Supgang LMS {name} q={q} sha256={digest_prefix}");
+    let private = open_private(&document, index, enclave, &state, &reason)?;
     append_journal(
         directory,
         name,

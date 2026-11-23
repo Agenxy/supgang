@@ -113,8 +113,9 @@ pub(super) fn open_presence(
     entry: &Entry,
     wrap: &PresenceWrap,
     public: &[u8; lms_rfc::PUBLIC_LEN],
+    reason: &str,
 ) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-    let shared = enclave.agree_presence(&wrap.key, &wrap.ephemeral)?;
+    let shared = enclave.agree_presence(&wrap.key, &wrap.ephemeral, reason)?;
     let secret = cipher(&shared, &wrap.ephemeral, &wrap.public, &entry.name)?
         .decrypt(
             &wrap.nonce.into(),

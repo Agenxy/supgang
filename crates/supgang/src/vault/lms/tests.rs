@@ -24,7 +24,13 @@ impl Enclave for DeclinePresence {
         }
         Software.agree(sealed, peer)
     }
-    fn agree_presence(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+    fn agree_presence(
+        &self,
+        sealed: &SealedKey,
+        peer: &[u8; PUBLIC_BYTES],
+        reason: &str,
+    ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        assert_eq!(reason, "Approve Supgang LMS nc0 q=0 sha256=0000000000000000");
         self.agree(sealed, peer)
     }
 }
@@ -231,14 +237,14 @@ fn external_log_mismatch_and_forward_only_recovery() -> Result<(), Box<dyn std::
 fn reservation_is_durable_before_signature_computation() -> Result<(), Box<dyn std::error::Error>> {
     let (_temporary, directory, expected) = fixture()?;
     let (_, _lock) = Lock::acquire(&directory)?;
-    let (_private, q) = reserve_locked(&directory, &Software, "nc0", ReleaseLog::FirstSignature, 0)?;
+    let (_private, q) = reserve_locked(&directory, &Software, "nc0", [0_u8; 32], ReleaseLog::FirstSignature, 0)?;
     assert_eq!(q, 0);
     let document = load(&directory)?.ok_or("missing vault")?;
     assert_eq!(document.entries.first().ok_or("no entry")?.lms_next_q, Some(1));
     assert_eq!(read_journal(&directory, "nc0", &expected.public_key)?.next_q, 1);
     assert_eq!(preview(&directory, &Software, "nc0", ReleaseLog::After(0))?.q, 1);
     assert!(matches!(
-        reserve_locked(&directory, &Software, "nc0", ReleaseLog::After(0), 0),
+        reserve_locked(&directory, &Software, "nc0", [0_u8; 32], ReleaseLog::After(0), 0),
         Err(VaultError::LmsStateMismatch)
     ));
     Ok(())

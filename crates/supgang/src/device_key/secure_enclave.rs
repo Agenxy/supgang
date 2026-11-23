@@ -140,32 +140,39 @@ pub fn generate_presence_agreement() -> Result<(SealedKey, Vec<u8>), CustodyErro
 /// # Errors
 /// Refuses another custody kind, an unavailable helper and protocol violations.
 pub fn agree(sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>, CustodyError> {
-    agree_with_timeout(sealed, peer, false)
+    agree_with_timeout(sealed, peer, None)
 }
 
 /// Completes a presence-gated LMS agreement with a full owner prompt window.
 ///
 /// # Errors
 /// Refuses a declined or unavailable owner prompt and helper failures.
-pub fn agree_presence(sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>, CustodyError> {
-    agree_with_timeout(sealed, peer, true)
+pub fn agree_presence(sealed: &SealedKey, peer: &[u8; 33], reason: &str) -> Result<Zeroizing<[u8; 32]>, CustodyError> {
+    agree_with_timeout(sealed, peer, Some(reason))
 }
 
 fn agree_with_timeout(
     sealed: &SealedKey,
     peer: &[u8; 33],
-    presence: bool,
+    reason: Option<&str>,
 ) -> Result<Zeroizing<[u8; 32]>, CustodyError> {
     sealed.require_kind(CustodyKind::SecureEnclave)?;
-    let flag = if presence { " --presence" } else { "" };
+    if reason.is_some_and(|text| text.len() > 128 || !text.bytes().all(|byte| byte == b' ' || byte.is_ascii_graphic()))
+    {
+        return Err(UnavailableReason::HelperProtocol.into());
+    }
+    let flag = if reason.is_some() { " --presence" } else { "" };
+    let reason_field = reason.map_or_else(String::new, |text| {
+        format!(" --reason {}", hex::encode(text.as_bytes()))
+    });
     let request = Zeroizing::new(format!(
-        "agree{flag} --sealed {} {}",
+        "agree{flag} --sealed {} {}{reason_field}",
         hex::encode(&sealed.bytes),
         hex::encode(peer)
     ));
     let response = helper::invoke(
         &request,
-        if presence {
+        if reason.is_some() {
             Duration::from_mins(1)
         } else {
             Duration::from_secs(5)

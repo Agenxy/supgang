@@ -51,7 +51,12 @@ impl Enclave for Software {
         raw.copy_from_slice(shared.raw_secret_bytes());
         Ok(raw)
     }
-    fn agree_presence(&self, sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+    fn agree_presence(
+        &self,
+        sealed: &SealedKey,
+        peer: &[u8; 33],
+        _reason: &str,
+    ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         self.agree(sealed, peer)
     }
 }
