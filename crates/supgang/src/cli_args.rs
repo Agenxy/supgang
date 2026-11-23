@@ -457,7 +457,7 @@ pub enum VaultCommand {
     PublicKey { name: String },
     /// Show an SSH key's OpenSSH public line and fingerprint.
     SshPublicKey { name: String },
-    /// Create a non-exportable NC0 LMS root; this takes time and needs an owner terminal.
+    /// Create a vault NC0 LMS root; this takes time and needs an owner terminal.
     LmsKeygen {
         /// Lowercase vault entry name.
         name: String,
