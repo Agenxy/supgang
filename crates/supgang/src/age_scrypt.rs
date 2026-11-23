@@ -166,6 +166,16 @@ mod tests {
     use super::{decrypt, encrypt};
 
     #[test]
+    fn decrypts_reference_age_v1_scrypt_fixture() -> Result<(), Box<dyn std::error::Error>> {
+        // Produced by age v1.2.1 with `age -p`; the plaintext and passphrase
+        // are test-only values and contain no product root material.
+        let encrypted = hex::decode(include_str!("../tests/fixtures/age-reference-scrypt-v1.hex").trim())?;
+        let plaintext = decrypt(&encrypted, b"test-only-age-reference-passphrase-2026")?;
+        assert_eq!(plaintext.as_slice(), b"supgang reference age scrypt fixture v1\n");
+        Ok(())
+    }
+
+    #[test]
     fn standard_age_v1_scrypt_round_trip_and_must_fails() -> Result<(), Box<dyn std::error::Error>> {
         let passphrase = b"test-only-long-passphrase-2026";
         let plaintext = b"test-only-supgang-lms-escrow-record";
