@@ -100,13 +100,25 @@ boundary. A hardware monotonic counter is outside this slice.
 ## Offline product-root escrow ceremony
 
 NC0 product roots use `supgang lms-keygen --escrow-only NAME --to PATH --to
-PATH` at an owner terminal on a network-off laptop. The command rejects a
-peer or state-directory argument and never opens the vault, service, or
-network. It requires two to four distinct new files. Each file is an
-independently randomized standard age v1 scrypt ciphertext with work factor
-`2^18`, `r=8`, and `p=1`. The passphrase is 16 through 256 bytes, read twice
-with terminal echo and line editing disabled, then entered once more to
-verify every written file. It is never accepted in argv or environment.
+PATH --generate-passphrase` at an owner terminal on a network-off laptop. Run
+the command separately for each root, with a different passphrase each time.
+The command rejects a peer or state-directory argument and never opens the
+vault, service, or network. Before generation, it reads the local IPv4 and
+IPv6 routing table and refuses while a default route exists. The explicit
+`--i-confirm-offline` override is for tests only and prints a warning. It
+requires two to four distinct new files. Each file is an independently
+randomized standard age v1 scrypt ciphertext with work factor `2^20`, `r=8`,
+and `p=1`; decryption accepts only work factors `2^18` through `2^22`.
+
+`--generate-passphrase` draws seven words from the embedded, hash-pinned EFF
+large wordlist using bounded unbiased rejection sampling from the OS CSPRNG.
+It shows the passphrase once on the terminal and requires the owner to type it
+back before any file is written, then requests ANSI screen and scrollback
+clearing. Terminals and capture software may retain earlier output. Without
+that flag, the owner enters a manual passphrase of at least seven words or 40
+bytes, then confirms it. Passphrases are at most 256 bytes, read with terminal
+echo and line editing disabled, and entered again to verify every written
+file. They are never accepted in argv or environment.
 
 Keygen draws a random SEED32, I16, and LM-OTS randomizer, computes the H20/W1
 root and its q=0 authentication path in one streaming pass, then signs
@@ -116,8 +128,8 @@ the signature against the new root before any write. The versioned escrow
 record contains LMS type 8, LM-OTS type 1, I, SEED, public key, name,
 `next_q=1`, q=0 marked as used for the known answer, and the signature. The
 public output schema is `supgang.nc0-lms-public-key/v1`; human and JSON
-output include the public root fingerprint and known-answer signature SHA-256
-for the owner photo.
+output include the public root fingerprint, known-answer signature SHA-256,
+and the SHA-256 of each verified escrow file for the owner record.
 
 The plaintext record exists only in zeroizing process memory. The ceremony
 disables process core dumps before generating SEED/I. It creates no temporary

@@ -114,6 +114,8 @@ where
     if let Some(Command::LmsKeygen {
         ref escrow_only,
         ref to,
+        generate_passphrase,
+        i_confirm_offline,
     }) = cli.command
     {
         if cli.state_dir.is_some() || cli.peer.is_some() {
@@ -124,7 +126,15 @@ where
                 error,
             );
         }
-        return crate::cli_lms_escrow::run(escrow_only, to, cli.json, output, error);
+        return crate::cli_lms_escrow::run(
+            escrow_only,
+            to,
+            generate_passphrase,
+            i_confirm_offline,
+            cli.json,
+            output,
+            error,
+        );
     }
     let state_directory = match cli.state_dir.map_or_else(storage::default_state_directory, Ok) {
         Ok(path) => path,

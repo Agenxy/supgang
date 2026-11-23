@@ -10,11 +10,11 @@ use std::{
 };
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::{age_scrypt, artifact, cli::render_error, vault};
+use crate::{age_scrypt, artifact, cli::render_error, eff_passphrase, offline_route, vault};
 
-const MIN_PASSPHRASE: usize = 16;
 const MAX_PASSPHRASE: usize = 256;
 const MIN_FILES: usize = 2;
 const MAX_FILES: usize = 4;
@@ -29,6 +29,13 @@ struct PublicOutput<'a> {
     known_answer_signature_sha256: &'a str,
     next_q: u32,
     escrow_files_verified: usize,
+    escrow_files: &'a [EscrowFileReceipt],
+}
+
+#[derive(Serialize)]
+struct EscrowFileReceipt {
+    path: String,
+    sha256: String,
 }
 
 struct HiddenTerminal {
@@ -83,10 +90,30 @@ fn hidden_passphrase(prompt: &str, error: &mut dyn Write) -> Result<Zeroizing<Ve
     };
     let _ = writeln!(error);
     read?;
-    if secret.len() < MIN_PASSPHRASE {
-        return Err("passphrase must be at least 16 bytes".to_owned());
-    }
     Ok(secret)
+}
+
+fn manual_passphrase_is_strong(secret: &[u8]) -> bool {
+    if secret.len() >= 40 {
+        return true;
+    }
+    secret
+        .split(u8::is_ascii_whitespace)
+        .filter(|word| !word.is_empty())
+        .take(7)
+        .count()
+        >= 7
+}
+
+fn clear_generated_display(error: &mut dyn Write) -> Result<(), String> {
+    error
+        .write_all(b"\x1b[3J\x1b[2J\x1b[H")
+        .map_err(|_| "could not request terminal screen and scrollback clear")?;
+    writeln!(error, "Passphrase display and scrollback clear requested.")
+        .map_err(|_| "could not show terminal clear notice")?;
+    error
+        .flush()
+        .map_err(|_| "could not flush terminal clear notice".to_owned())
 }
 
 fn validate_destinations(paths: &[PathBuf]) -> Result<(), String> {
@@ -120,6 +147,8 @@ fn validate_destinations(paths: &[PathBuf]) -> Result<(), String> {
 fn ceremony(
     name: &str,
     paths: &[PathBuf],
+    generate_passphrase: bool,
+    i_confirm_offline: bool,
     json: bool,
     output: &mut dyn Write,
     error: &mut dyn Write,
@@ -137,6 +166,15 @@ fn ceremony(
     .map_err(|_| "could not disable core dumps")?;
     validate_destinations(paths)?;
     vault::validate_name(name).map_err(|problem| problem.to_string())?;
+    if i_confirm_offline {
+        writeln!(
+            error,
+            "WARNING: test-only offline override; a default route may be present."
+        )
+        .map_err(|_| "could not show offline override warning")?;
+    } else if offline_route::has_default_route()? {
+        return Err("default route is present; disconnect network before generating an LMS root".to_owned());
+    }
     writeln!(error, "Generating offline LMS root {name}; computing 1,048,576 leaves.")
         .map_err(|_| "could not show LMS progress")?;
     let started = Instant::now();
@@ -152,12 +190,33 @@ fn ceremony(
         started.elapsed().as_secs_f64()
     )
     .map_err(|_| "could not show LMS timing")?;
-    let passphrase = hidden_passphrase("Escrow passphrase (hidden): ", error)?;
-    let confirmation = hidden_passphrase("Repeat escrow passphrase (hidden): ", error)?;
-    if passphrase.as_slice() != confirmation.as_slice() {
-        return Err("passphrases differ; no escrow files were written".to_owned());
-    }
-    drop(confirmation);
+    let passphrase = if generate_passphrase {
+        let generated = eff_passphrase::generate().map_err(str::to_owned)?;
+        error
+            .write_all(b"Generated seven-word EFF passphrase (shown once): ")
+            .map_err(|_| "could not show generated passphrase")?;
+        error
+            .write_all(&generated)
+            .map_err(|_| "could not show generated passphrase")?;
+        writeln!(error).map_err(|_| "could not finish generated passphrase display")?;
+        let typed = hidden_passphrase("Type the displayed passphrase back (hidden): ", error);
+        clear_generated_display(error)?;
+        let typed = typed?;
+        if generated.as_slice() != typed.as_slice() {
+            return Err("typed passphrase differs; no escrow files were written".to_owned());
+        }
+        generated
+    } else {
+        let entered = hidden_passphrase("Escrow passphrase (hidden): ", error)?;
+        if !manual_passphrase_is_strong(&entered) {
+            return Err("passphrase must have at least seven words or 40 bytes".to_owned());
+        }
+        let confirmation = hidden_passphrase("Repeat escrow passphrase (hidden): ", error)?;
+        if entered.as_slice() != confirmation.as_slice() {
+            return Err("passphrases differ; no escrow files were written".to_owned());
+        }
+        entered
+    };
     for path in paths {
         let encrypted = age_scrypt::encrypt(key.record(), &passphrase).map_err(str::to_owned)?;
         artifact::write_new(path, &encrypted, age_scrypt::MAX_FILE)
@@ -165,10 +224,12 @@ fn ceremony(
     }
     drop(passphrase);
     let verification_passphrase = hidden_passphrase("Re-enter passphrase to verify every file (hidden): ", error)?;
+    let mut escrow_files = Vec::with_capacity(MAX_FILES);
     for path in paths {
         let file = Zeroizing::new(
             artifact::read(path, age_scrypt::MAX_FILE).map_err(|problem| format!("{}: {problem}", path.display()))?,
         );
+        let sha256 = hex::encode(Sha256::digest(file.as_slice()));
         let plaintext = age_scrypt::decrypt(&file, &verification_passphrase)
             .map_err(|problem| format!("{}: {problem}", path.display()))?;
         vault::verify_escrow(&plaintext, name, key.public(), |done, total| {
@@ -177,6 +238,10 @@ fn ceremony(
             }
         })
         .map_err(|problem| format!("{}: {problem}", path.display()))?;
+        escrow_files.push(EscrowFileReceipt {
+            path: path.display().to_string(),
+            sha256,
+        });
     }
     let receipt = key.public();
     let public_key = hex::encode(receipt.identity.public_key);
@@ -190,18 +255,31 @@ fn ceremony(
             known_answer_signature_sha256: &receipt.signature_sha256,
             next_q: receipt.next_q,
             escrow_files_verified: paths.len(),
+            escrow_files: &escrow_files,
         };
         serde_json::to_writer(&mut *output, &response).map_err(|_| "could not write JSON result")?;
         writeln!(output).map_err(|_| "could not finish JSON result")?;
     } else {
         writeln!(output, "Public key: {public_key}\nFingerprint: {}\nKnown-answer signature SHA-256: {}\nNext q: {}\nVerified escrow files: {}", receipt.identity.fingerprint, receipt.signature_sha256, receipt.next_q, paths.len())
             .map_err(|_| "could not write public receipt")?;
+        for file in &escrow_files {
+            writeln!(output, "Escrow file SHA-256: {}  {}", file.sha256, file.path)
+                .map_err(|_| "could not write escrow file digest")?;
+        }
     }
     Ok(())
 }
 
-pub fn run(name: &str, paths: &[PathBuf], json: bool, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
-    match ceremony(name, paths, json, output, error) {
+pub fn run(
+    name: &str,
+    paths: &[PathBuf],
+    generate_passphrase: bool,
+    i_confirm_offline: bool,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> ExitCode {
+    match ceremony(name, paths, generate_passphrase, i_confirm_offline, json, output, error) {
         Ok(()) => ExitCode::SUCCESS,
         Err(problem) => render_error(json, &problem, output, error),
     }
@@ -209,7 +287,15 @@ pub fn run(name: &str, paths: &[PathBuf], json: bool, output: &mut dyn Write, er
 
 #[cfg(test)]
 mod tests {
-    use super::validate_destinations;
+    use super::{manual_passphrase_is_strong, validate_destinations};
+
+    #[test]
+    fn manual_passphrase_floor_accepts_seven_words_or_forty_bytes() {
+        assert!(manual_passphrase_is_strong(b"one two three four five six seven"));
+        assert!(manual_passphrase_is_strong(b"1234567890123456789012345678901234567890"));
+        assert!(!manual_passphrase_is_strong(b"one two three four five six"));
+        assert!(!manual_passphrase_is_strong(b"123456789012345678901234567890123456789"));
+    }
 
     #[test]
     fn escrow_destinations_must_be_new_distinct_and_bounded() -> Result<(), Box<dyn std::error::Error>> {

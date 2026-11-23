@@ -57,6 +57,12 @@ pub enum Command {
         /// New destination file; repeat two to four times on separate media.
         #[arg(long = "to", value_name = "PATH", required = true)]
         to: Vec<PathBuf>,
+        /// Generate seven EFF words, show them once, and require a typed confirmation.
+        #[arg(long)]
+        generate_passphrase: bool,
+        /// Test-only override when a default route is present.
+        #[arg(long)]
+        i_confirm_offline: bool,
     },
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
     ///
