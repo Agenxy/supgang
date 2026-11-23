@@ -1,7 +1,33 @@
 use std::{fs, path::PathBuf};
 
 use super::*;
-use crate::vault::tests::{Software, state_directory};
+use crate::device_key::custody::{CustodyError, UnavailableReason};
+use crate::vault::{
+    PUBLIC_BYTES,
+    tests::{Software, state_directory},
+};
+
+struct DeclinePresence {
+    presence_key: SealedKey,
+}
+
+impl Enclave for DeclinePresence {
+    fn generate(&self) -> Result<(SealedKey, [u8; PUBLIC_BYTES]), VaultError> {
+        Software.generate()
+    }
+    fn generate_presence(&self) -> Result<(SealedKey, [u8; PUBLIC_BYTES]), VaultError> {
+        Software.generate_presence()
+    }
+    fn agree(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        if sealed == &self.presence_key {
+            return Err(CustodyError::Unavailable(UnavailableReason::OwnerDeclinedPresence).into());
+        }
+        Software.agree(sealed, peer)
+    }
+    fn agree_presence(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        self.agree(sealed, peer)
+    }
+}
 
 fn fixture() -> Result<(tempfile::TempDir, PathBuf, LmsPublic), Box<dyn std::error::Error>> {
     let (temporary, directory) = state_directory()?;
@@ -10,25 +36,29 @@ fn fixture() -> Result<(tempfile::TempDir, PathBuf, LmsPublic), Box<dyn std::err
     let lms_public = lms_rfc::public_key(&id, &[3_u8; 32]);
     let mut private = [7_u8; 48];
     private.get_mut(32..).ok_or("short private")?.copy_from_slice(&id);
+    let wrap = seal_presence(&Software, "nc0", "test root", 1, &lms_public, &private)?;
+    let mut entry = seal_entry(
+        &public,
+        "nc0",
+        "test root",
+        1,
+        &[1_u8],
+        SealMetadata {
+            kind: Kind::LmsSha256H20W1,
+            signing_public: None,
+            lms_public: Some(lms_public),
+            lms_next_q: Some(0),
+            remote_creator: None,
+            presence_digest: Some(wrap.digest()),
+        },
+        None,
+    )?;
+    entry.lms_presence = Some(wrap);
     let mut document = Document {
         version: VERSION,
         key,
         public,
-        entries: vec![seal_entry(
-            &public,
-            "nc0",
-            "test root",
-            1,
-            &private,
-            SealMetadata {
-                kind: Kind::LmsSha256H20W1,
-                signing_public: None,
-                lms_public: Some(lms_public),
-                lms_next_q: Some(0),
-                remote_creator: None,
-            },
-            None,
-        )?],
+        entries: vec![entry],
     };
     create_journal(&directory, "nc0", &lms_public, &document.key)?;
     save(&directory, &document)?;
@@ -43,6 +73,25 @@ fn v3_remains_readable_and_aad_rejects_q_edit() -> Result<(), Box<dyn std::error
     let mut document = load(&directory)?.ok_or("missing vault")?;
     assert_eq!(document.version, VERSION);
     assert_eq!(document.entries.first().ok_or("no entry")?.lms_next_q, Some(0));
+    let id: [u8; 16] = expected.public_key[8..24].try_into()?;
+    let mut private = [7_u8; 48];
+    private[32..].copy_from_slice(&id);
+    *document.entries.get_mut(0).ok_or("missing entry")? = seal_entry(
+        &document.public,
+        "nc0",
+        "test root",
+        1,
+        &private,
+        SealMetadata {
+            kind: Kind::LmsSha256H20W1,
+            signing_public: None,
+            lms_public: Some(expected.public_key),
+            lms_next_q: Some(0),
+            remote_creator: None,
+            presence_digest: None,
+        },
+        None,
+    )?;
     document.version = 3;
     fs::write(
         directory.join(super::super::VAULT_FILE_NAME),
@@ -50,6 +99,23 @@ fn v3_remains_readable_and_aad_rejects_q_edit() -> Result<(), Box<dyn std::error
     )?;
     assert_eq!(public_key(&directory, &Software, "nc0")?, expected);
     assert_eq!(load(&directory)?.ok_or("missing v3 vault")?.version, 3);
+    let before = fs::read(journal_path(&directory, "nc0"))?;
+    assert!(matches!(
+        sign(
+            &directory,
+            &Software,
+            "nc0",
+            &Nc0Package {
+                digest: [0_u8; 32],
+                bytes: 65
+            },
+            ReleaseLog::FirstSignature,
+            0,
+            |_, _| {}
+        ),
+        Err(VaultError::LmsPresenceRequired)
+    ));
+    assert_eq!(fs::read(journal_path(&directory, "nc0"))?, before);
     document.entries.first_mut().ok_or("no entry")?.lms_next_q = Some(1);
     fs::write(
         directory.join(super::super::VAULT_FILE_NAME),
@@ -59,6 +125,71 @@ fn v3_remains_readable_and_aad_rejects_q_edit() -> Result<(), Box<dyn std::error
         public_key(&directory, &Software, "nc0"),
         Err(VaultError::Corrupt)
     ));
+    Ok(())
+}
+
+#[test]
+fn presence_refusal_precedes_q_reservation() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, directory, expected) = fixture()?;
+    let document = load(&directory)?.ok_or("missing vault")?;
+    let entry = document.entries.first().ok_or("missing entry")?;
+    let presence_key = entry.lms_presence.as_ref().ok_or("missing wrap")?.key.clone();
+    let enclave = DeclinePresence { presence_key };
+    assert_eq!(preview(&directory, &enclave, "nc0", ReleaseLog::FirstSignature)?.q, 0);
+    let vault_before = fs::read(directory.join(super::super::VAULT_FILE_NAME))?;
+    let journal_before = fs::read(journal_path(&directory, "nc0"))?;
+    assert!(matches!(
+        sign(
+            &directory,
+            &enclave,
+            "nc0",
+            &Nc0Package {
+                digest: [0_u8; 32],
+                bytes: 65
+            },
+            ReleaseLog::FirstSignature,
+            0,
+            |_, _| {}
+        ),
+        Err(VaultError::Enclave(CustodyError::Unavailable(
+            UnavailableReason::OwnerDeclinedPresence
+        )))
+    ));
+    assert_eq!(fs::read(directory.join(super::super::VAULT_FILE_NAME))?, vault_before);
+    assert_eq!(fs::read(journal_path(&directory, "nc0"))?, journal_before);
+    assert_eq!(read_journal(&directory, "nc0", &expected.public_key)?.next_q, 0);
+    Ok(())
+}
+
+#[test]
+fn presence_wrap_tamper_and_stripping_refuse() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, directory, _) = fixture()?;
+    let original = load(&directory)?.ok_or("missing vault")?;
+    let mut document = original.clone();
+    let wrap = document
+        .entries
+        .first_mut()
+        .ok_or("missing entry")?
+        .lms_presence
+        .as_mut()
+        .ok_or("missing wrap")?;
+    *wrap.ciphertext.get_mut(0).ok_or("empty ciphertext")? ^= 1;
+    save(&directory, &document)?;
+    assert!(matches!(
+        preview(&directory, &Software, "nc0", ReleaseLog::FirstSignature),
+        Err(VaultError::Corrupt)
+    ));
+
+    let mut downgraded = original.clone();
+    downgraded.version = 5;
+    assert!(super::super::encode(&downgraded).is_err());
+
+    let mut stripped = original;
+    stripped.entries.first_mut().ok_or("missing entry")?.lms_presence = None;
+    stripped.version = 5;
+    assert!(super::super::encode(&stripped).is_err());
+    stripped.version = VERSION;
+    assert!(super::super::encode(&stripped).is_err());
     Ok(())
 }
 

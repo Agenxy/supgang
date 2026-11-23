@@ -64,6 +64,10 @@ impl Enclave for SlowEnclave {
         Software.generate()
     }
 
+    fn generate_presence(&self) -> Result<(SealedKey, [u8; 33]), VaultError> {
+        Software.generate_presence()
+    }
+
     fn agree(&self, sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
             self.blocked.store(true, Ordering::SeqCst);
@@ -75,6 +79,9 @@ impl Enclave for SlowEnclave {
             drop(ready);
         }
         Software.agree(sealed, peer)
+    }
+    fn agree_presence(&self, sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        self.agree(sealed, peer)
     }
 }
 

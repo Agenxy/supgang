@@ -10,11 +10,15 @@ use super::{
 };
 use crate::device_key::custody::SealedKey;
 
-/// Canonical CBOR v1-v3 stay readable; v4 adds agent policy and v5 remote creator.
+/// Canonical CBOR v1-v5 stay readable; v6 adds an LMS presence wrap.
 pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultError> {
     if document.entries.iter().any(|entry| {
         (entry.remote_creator.is_some() != (entry.kind == Kind::SshEd25519 && entry.policy.is_some()))
+            || (entry.kind == Kind::LmsSha256H20W1
+                && entry.ciphertext.len() != TAG_BYTES + if entry.lms_presence.is_some() { 1 } else { 48 })
             || (entry.remote_creator.is_some() && document.version < 5)
+            || (entry.lms_presence.is_some() && (document.version < 6 || entry.kind != Kind::LmsSha256H20W1))
+            || entry.lms_presence.as_ref().is_some_and(|wrap| !wrap.valid())
             || entry.policy.as_deref().is_some_and(|bytes| {
                 document.version < 4
                     || !matches!(entry.kind, Kind::SigningEd25519 | Kind::SshEd25519)
@@ -42,7 +46,8 @@ pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultErr
                 2 => 8,
                 3 => 10,
                 4 => 11,
-                _ => 12,
+                5 => 12,
+                _ => 13,
             })
             .and_then(|e| e.str(&entry.name))
             .and_then(|e| e.str(&entry.note))
@@ -102,6 +107,25 @@ pub(super) fn encode(document: &Document) -> Result<Zeroizing<Vec<u8>>, VaultErr
                     e.null()
                 }
             })
+            .and_then(|e| {
+                if document.version < 6 {
+                    Ok(e)
+                } else if let Some(wrap) = &entry.lms_presence {
+                    e.array(5)?
+                        .bytes(
+                            &wrap
+                                .key
+                                .encode()
+                                .map_err(|_| minicbor::encode::Error::message("vault presence key"))?,
+                        )?
+                        .bytes(&wrap.public)?
+                        .bytes(&wrap.ephemeral)?
+                        .bytes(&wrap.nonce)?
+                        .bytes(&wrap.ciphertext)
+                } else {
+                    e.null()
+                }
+            })
             .map(|_| ())
         });
     }
@@ -117,7 +141,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
             return Err(invalid("vault version"));
         }
         let version = d.u8()?;
-        if version != 1 && version != 2 && version != 3 && version != 4 && version != VERSION {
+        if version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != VERSION {
             return Err(invalid("vault version"));
         }
         let key = SealedKey::decode(d.bytes()?).map_err(|_| invalid("vault key"))?;
@@ -134,7 +158,8 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                     2 => 8,
                     3 => 10,
                     4 => 11,
-                    _ => 12,
+                    5 => 12,
+                    _ => 13,
                 })
             {
                 return Err(invalid("vault entry"));
@@ -209,6 +234,27 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 let bytes: [u8; 32] = d.bytes()?.try_into().map_err(|_| invalid("vault remote creator"))?;
                 Some(crate::ids::NodeId::from_bytes(bytes))
             };
+            let lms_presence = if version < 6 || d.datatype()? == minicbor::data::Type::Null {
+                if version >= 6 {
+                    d.null()?;
+                }
+                None
+            } else {
+                if kind != Kind::LmsSha256H20W1 || d.array()? != Some(5) {
+                    return Err(invalid("vault LMS presence wrap"));
+                }
+                let wrap = super::lms::PresenceWrap {
+                    key: SealedKey::decode(d.bytes()?).map_err(|_| invalid("vault LMS presence key"))?,
+                    public: compressed_point(d.bytes()?).map_err(|_| invalid("vault LMS presence public"))?,
+                    ephemeral: compressed_point(d.bytes()?).map_err(|_| invalid("vault LMS presence ephemeral"))?,
+                    nonce: d.bytes()?.try_into().map_err(|_| invalid("vault LMS presence nonce"))?,
+                    ciphertext: d.bytes()?.to_vec(),
+                };
+                if !wrap.valid() {
+                    return Err(invalid("vault LMS presence wrap"));
+                }
+                Some(wrap)
+            };
             if remote_creator.is_some() != (kind == Kind::SshEd25519 && policy.is_some()) {
                 return Err(invalid("vault remote creator"));
             }
@@ -225,12 +271,20 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Document, VaultError> {
                 ciphertext,
                 policy,
                 remote_creator,
+                lms_presence,
             };
             let length = entry.ciphertext.len();
             if validate_name(&entry.name).is_err()
                 || validate_note(&entry.note).is_err()
                 || !(TAG_BYTES + 1..=TAG_BYTES + MAX_SECRET_BYTES).contains(&length)
-                || (kind != Kind::Secret && length != TAG_BYTES + if kind == Kind::LmsSha256H20W1 { 48 } else { 32 })
+                || (kind != Kind::Secret
+                    && length
+                        != TAG_BYTES
+                            + if kind == Kind::LmsSha256H20W1 {
+                                if entry.lms_presence.is_some() { 1 } else { 48 }
+                            } else {
+                                32
+                            })
                 || entries.last().is_some_and(|last: &Entry| last.name >= entry.name)
             {
                 return Err(invalid("vault entry"));

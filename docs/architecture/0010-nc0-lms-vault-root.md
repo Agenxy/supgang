@@ -14,9 +14,9 @@ their lowercase SHA-256. A signature is exactly 9164 bytes:
 `u32be(q) || u32be(1) || C[32] || y[265][32] || u32be(8) || path[20][32]`.
 Reject other public parameter sets. Internal parameterized code may exist only
 to check RFC test vectors. Generate a random 32-byte SEED and 16-byte I;
-encrypt both under the existing Secure Enclave protected vault agreement, with
-kind and public key in authenticated associated data. The Secure Enclave
-protects the vault agreement key; it does not itself execute LMS. Never export
+encrypt both to a new per-root Secure Enclave P-256 agreement public key whose
+private agreement requires owner presence on every use. The Secure Enclave
+protects the agreement key; it does not itself execute LMS. Never export
 SEED or I through `vault get` or `vault run`.
 
 The key is single-purpose: NC0 format-2 application packages. The signer
@@ -41,6 +41,35 @@ show progress and measure wall time in the installed acceptance run. Vault
 format v3 adds the LMS kind, its 56-byte public key, and `next_q` under
 authenticated encryption. Existing v1/v2 documents remain readable and are
 upgraded canonically on mutation without changing their entry authentication.
+
+### Presence from root creation (vault v6)
+
+Every new LMS root gets a distinct agreement key with
+`[.privateKeyUsage, .userPresence]`,
+`AfterFirstUnlockThisDeviceOnly`, and an LAContext with reuse duration zero.
+Creation uses its public half and ephemeral ECDH, so it does not request
+presence. The existing unattended vault agreement remains unchanged for
+other secrets. In v6, the LMS SEED and I exist only in the separate presence
+wrap. The ordinary vault ciphertext holds a one-byte state marker; its AAD
+binds q, public root and the digest of the complete presence wrap. The
+presence ciphertext AAD binds the root, entry name, note, time, presence
+public key and ephemeral key, but excludes q so advancing q cannot rewrap
+the seed. A changed or removed wrap cannot authenticate as the original
+state. The vault format upgrade is one-way; v1-v5 LMS entries remain readable
+for public-key and q inspection, but signing them is refused. They cannot be
+rewrapped into product roots because a prior plaintext copy cannot be ruled
+out. `lms-keygen` has no flag to omit presence.
+
+After command confirmation, `lms-sign` must complete the presence-gated
+agreement and decrypt SEED/I while holding the vault lock, before either q
+record changes. A declined or unavailable presence prompt returns without a
+signature or output file and without changing the vault q or journal q. The
+existing journal-before-vault reservation order follows a successful unwrap.
+`preview`, public-key reads, and journal agreement checks use only the
+ordinary vault agreement and do not prompt. The owner prompt approves use
+of the Secure Enclave private key; it does not attest that the requesting
+process is a human-owned console. A headless or agent-pty refusal is an
+installed acceptance observation, not a portable platform guarantee.
 
 An independent owner-only append-only reservation journal is bound to the
 public-key hash. Its initial durable record says `next_q=0`. Both the sealed
