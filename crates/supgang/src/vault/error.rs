@@ -75,6 +75,10 @@ pub enum VaultError {
     /// The entry is not an LMS root.
     #[error("the named vault entry is not an LMS root")]
     NotLmsKey,
+    /// Older LMS roots remain readable but cannot sign without a per-root
+    /// Secure Enclave presence wrap created before the seed existed.
+    #[error("the LMS root lacks a presence-bound seed wrap and cannot sign; create a new root")]
+    LmsPresenceRequired,
     /// The NC0 package header, size, or contents are invalid.
     #[error("the NC0 format-2 package is invalid or changed while being read")]
     InvalidNc0Package,
@@ -90,6 +94,12 @@ pub enum VaultError {
     /// Forward-only recovery target is unsafe.
     #[error("LMS advance target must exceed both local records and the external release log")]
     LmsAdvanceRefused,
+    /// Product-root role label is not recognized.
+    #[error("NC0 root role must be 'primary' or 'recovery'")]
+    InvalidLmsRole,
+    /// Master secret length is not 32 bytes.
+    #[error("NC0 master secret must be exactly 32 bytes")]
+    InvalidLmsMasterLength,
     /// Key generation could not prove that its orphan journal was removed.
     #[error("LMS key generation could not verify or clean its orphan journal; inspect vault state before retrying")]
     LmsOrphanCleanup,

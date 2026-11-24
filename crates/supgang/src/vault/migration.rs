@@ -110,6 +110,7 @@ pub(super) fn migrate_with_authority(
             lms_public: None,
             lms_next_q: None,
             remote_creator: None,
+            presence_digest: None,
         },
         Some(&policy_bytes),
     )?;

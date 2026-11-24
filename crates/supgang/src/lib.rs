@@ -12,6 +12,7 @@ pub mod cli;
 pub(crate) mod cli_args;
 pub(crate) mod cli_background;
 pub(crate) mod cli_control;
+pub(crate) mod cli_lms_derive;
 pub(crate) mod cli_lms_escrow;
 pub(crate) mod cli_lms_verify;
 pub(crate) mod cli_peer;
@@ -53,6 +54,7 @@ pub mod session;
 pub mod settings;
 #[cfg(test)]
 pub(crate) mod simnet;
+pub mod slip39;
 pub mod ssh_agent;
 pub mod state;
 pub mod state_lock;

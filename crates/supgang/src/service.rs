@@ -309,6 +309,7 @@ async fn service_loop(
         .map(RouterMapping::start);
     let mut router_mapping_budget = RouterMappingUpdateBudget::new(tokio::time::Instant::now());
     let mut interface_refresh_health = InterfaceRefreshHealth::new();
+    let mut known_networks = crate::network::interface_networks().unwrap_or_default();
     let anchor_mode = config.max_active_peers > MAX_ACTIVE_PEERS;
     let mut update_context = PeerUpdateContext::new(state_directory, local_state.identity());
     let tunnels = tunnel::TunnelRuntime::new(state_directory).map_err(|_| ServiceError::InvalidConfiguration)?;
@@ -377,6 +378,7 @@ async fn service_loop(
                 &mut noncanonical_outbound,
                 [&mut outbound_tasks, &mut inbound_tasks, &mut priority_inbound_tasks],
                 &mut outbound_in_flight,
+                &mut known_networks,
             )
             .await;
             next_dial = retry_schedule::on_link_retry_deadline(&active, directory, unix_time()?, now, next_dial);
@@ -415,11 +417,8 @@ async fn service_loop(
         reap_ready_tasks(&mut tunnel_tasks)?;
         reap_ready_tasks(&mut sign_tasks)?;
         let mut unused_outbound_slot = false;
-        finish_ready_sessions(
-            &mut priority_inbound_tasks,
-            &mut inbound_admission,
-            &mut unused_outbound_slot,
-            &mut LiveSessionState {
+        {
+            let mut live = LiveSessionState {
                 update: Some(&update_context),
                 local_node,
                 local_state,
@@ -432,35 +431,25 @@ async fn service_loop(
                 replacement_tasks: &mut replacement_tasks,
                 quality: &mut path_quality,
                 noncanonical_outbound: &mut noncanonical_outbound,
+                known_networks: &known_networks,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
                 actor_tasks: &mut actor_tasks,
                 gossip_cursor: &mut gossip_cursor,
-            },
-        )?;
-        finish_ready_sessions(
-            &mut inbound_tasks,
-            &mut inbound_admission,
-            &mut unused_outbound_slot,
-            &mut LiveSessionState {
-                update: Some(&update_context),
-                local_node,
-                local_state,
-                directory,
-                config: &mut config,
-                local_contact: &mut local_contact,
-                active: &mut active,
-                draining: &mut draining,
-                replacements: &mut replacements,
-                replacement_tasks: &mut replacement_tasks,
-                quality: &mut path_quality,
-                noncanonical_outbound: &mut noncanonical_outbound,
-                page_sender: &page_sender,
-                event_sender: &event_sender,
-                actor_tasks: &mut actor_tasks,
-                gossip_cursor: &mut gossip_cursor,
-            },
-        )?;
+            };
+            finish_ready_sessions(
+                &mut priority_inbound_tasks,
+                &mut inbound_admission,
+                &mut unused_outbound_slot,
+                &mut live,
+            )?;
+            finish_ready_sessions(
+                &mut inbound_tasks,
+                &mut inbound_admission,
+                &mut unused_outbound_slot,
+                &mut live,
+            )?;
+        }
         update_delivery.drive(
             state_directory,
             &update_context.admission,
@@ -468,11 +457,8 @@ async fn service_loop(
             &active,
             unix_time()?,
         )?;
-        finish_ready_sessions(
-            &mut outbound_tasks,
-            &mut inbound_admission,
-            &mut outbound_in_flight,
-            &mut LiveSessionState {
+        {
+            let mut live = LiveSessionState {
                 update: Some(&update_context),
                 local_node,
                 local_state,
@@ -485,55 +471,28 @@ async fn service_loop(
                 replacement_tasks: &mut replacement_tasks,
                 quality: &mut path_quality,
                 noncanonical_outbound: &mut noncanonical_outbound,
+                known_networks: &known_networks,
                 page_sender: &page_sender,
                 event_sender: &event_sender,
                 actor_tasks: &mut actor_tasks,
                 gossip_cursor: &mut gossip_cursor,
-            },
-        )?;
-        finish_ready_replacements(&mut LiveSessionState {
-            update: Some(&update_context),
-            local_node,
-            local_state,
-            directory,
-            config: &mut config,
-            local_contact: &mut local_contact,
-            active: &mut active,
-            draining: &mut draining,
-            replacements: &mut replacements,
-            replacement_tasks: &mut replacement_tasks,
-            quality: &mut path_quality,
-            noncanonical_outbound: &mut noncanonical_outbound,
-            page_sender: &page_sender,
-            event_sender: &event_sender,
-            actor_tasks: &mut actor_tasks,
-            gossip_cursor: &mut gossip_cursor,
-        })?;
-        rendezvous_offers.truncate(MAX_PENDING_OUTBOUND_SESSIONS.saturating_sub(outbound_tasks.len()));
-        schedule_rendezvous_offers(
-            &endpoint,
-            rendezvous_offers,
-            &network_identity,
-            &mut outbound_tasks,
-            &LiveSessionState {
-                update: Some(&update_context),
-                local_node,
-                local_state,
-                directory,
-                config: &mut config,
-                local_contact: &mut local_contact,
-                active: &mut active,
-                draining: &mut draining,
-                replacements: &mut replacements,
-                replacement_tasks: &mut replacement_tasks,
-                quality: &mut path_quality,
-                noncanonical_outbound: &mut noncanonical_outbound,
-                page_sender: &page_sender,
-                event_sender: &event_sender,
-                actor_tasks: &mut actor_tasks,
-                gossip_cursor: &mut gossip_cursor,
-            },
-        );
+            };
+            finish_ready_sessions(
+                &mut outbound_tasks,
+                &mut inbound_admission,
+                &mut outbound_in_flight,
+                &mut live,
+            )?;
+            finish_ready_replacements(&mut live)?;
+            rendezvous_offers.truncate(MAX_PENDING_OUTBOUND_SESSIONS.saturating_sub(outbound_tasks.len()));
+            schedule_rendezvous_offers(
+                &endpoint,
+                rendezvous_offers,
+                &network_identity,
+                &mut outbound_tasks,
+                &live,
+            );
+        }
         publish_gossip_if(
             directory_changed,
             &page_sender,
@@ -567,6 +526,7 @@ async fn service_loop(
                         replacement_tasks: &mut replacement_tasks,
                         quality: &mut path_quality,
                         noncanonical_outbound: &mut noncanonical_outbound,
+                        known_networks: &known_networks,
                         page_sender: &page_sender,
                         event_sender: &event_sender,
                         actor_tasks: &mut actor_tasks,
@@ -657,6 +617,7 @@ async fn service_loop(
                     replacement_tasks: &mut replacement_tasks,
                     quality: &mut path_quality,
                     noncanonical_outbound: &mut noncanonical_outbound,
+                    known_networks: &known_networks,
                     page_sender: &page_sender,
                     event_sender: &event_sender,
                     actor_tasks: &mut actor_tasks,

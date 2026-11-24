@@ -9,20 +9,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{data, transport::BoundedStdio};
+use super::{
+    data,
+    transport::{BoundedStdio, MAX_MCP_RESPONSE_BYTES},
+};
 use crate::VERSION;
 
 const TOOLS: &str = include_str!("../../assets/mcp-tools.json");
 const INITIALIZE_RESULT: &str = include_str!("../../assets/mcp-initialize-result.json");
 const DISCOVER_RESULT: &str = include_str!("../../assets/mcp-discover-result.json");
 const FIXTURE_VERSION: &str = "0.2.0-alpha.17";
-const MAX_TOOL_VALUE_BYTES: usize = 96 * 1024;
+pub(super) const MAX_TOOL_VALUE_BYTES: usize = 96 * 1024;
 const MODERN_VERSION: &str = "2026-07-28";
 const LEGACY_VERSION: &str = "2025-11-25";
 const MISSING_META: &str = "request _meta is missing or has malformed required fields: io.modelcontextprotocol/protocolVersion, io.modelcontextprotocol/clientCapabilities";
+const OVERSIZED_RESULT_MESSAGE: &str = "Supgang's result exceeds the MCP safety limit; inspect it with the local CLI";
+const OVERSIZED_RESPONSE_MESSAGE: &str = "MCP response exceeds the fixed size limit";
 
 #[derive(Debug)]
-struct RpcError {
+pub(super) struct RpcError {
     code: i32,
     message: &'static str,
     data: Option<Value>,
@@ -51,16 +56,19 @@ struct ResolveArguments {
     peer: String,
 }
 
-struct Session {
-    state_directory: PathBuf,
+struct Session<F> {
     legacy_initialized: bool,
+    call_tool: F,
 }
 
-impl Session {
-    const fn new(state_directory: PathBuf) -> Self {
+impl<F> Session<F>
+where
+    F: FnMut(Option<&Value>, bool) -> Result<String, RpcError>,
+{
+    const fn new(call_tool: F) -> Self {
         Self {
-            state_directory,
             legacy_initialized: false,
+            call_tool,
         }
     }
 
@@ -73,36 +81,53 @@ impl Session {
             return Some(error_response(None, -32600, "Invalid request", None));
         };
         if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-            return Some(error_response(object.get("id"), -32600, "Invalid request", None));
+            return Some(bound_response(
+                error_response(object.get("id"), -32600, "Invalid request", None),
+                object.get("id"),
+                None,
+            ));
         }
         let Some(method) = object.get("method").and_then(Value::as_str) else {
-            return Some(error_response(object.get("id"), -32600, "Invalid request", None));
+            return Some(bound_response(
+                error_response(object.get("id"), -32600, "Invalid request", None),
+                object.get("id"),
+                None,
+            ));
         };
         if method == "notifications/initialized" {
             return None;
         }
         let id = object.get("id")?;
         let params = object.get("params");
+        let (reply, tool_failure_mode) = self.dispatch(method, id, params);
+        Some(bound_response(reply, Some(id), tool_failure_mode))
+    }
+
+    fn dispatch(&mut self, method: &str, id: &Value, params: Option<&Value>) -> (Vec<u8>, Option<bool>) {
+        let mut tool_modern = None;
         let outcome = match method {
             "ping" => Ok("{}".to_owned()),
             "initialize" => self.initialize(params),
             _ => {
                 let modern = match self.request_mode(params) {
                     Ok(modern) => modern,
-                    Err(problem) => return Some(problem.into_response(id)),
+                    Err(problem) => return (problem.into_response(id), None),
                 };
                 match method {
                     "server/discover" if modern => Ok(template(DISCOVER_RESULT)),
                     "tools/list" => list_tools(params, modern),
-                    "tools/call" => call_tool(&self.state_directory, params, modern),
+                    "tools/call" => {
+                        tool_modern = Some(modern);
+                        (self.call_tool)(params, modern)
+                    }
                     _ => Err(RpcError::method_not_found("Method not found")),
                 }
             }
         };
-        Some(match outcome {
-            Ok(result) => success_response(id, &result),
-            Err(problem) => problem.into_response(id),
-        })
+        match outcome {
+            Ok(result) => (success_response(id, &result), tool_modern),
+            Err(problem) => (problem.into_response(id), None),
+        }
     }
 
     fn initialize(&mut self, params: Option<&Value>) -> Result<String, RpcError> {
@@ -244,7 +269,7 @@ fn parse_resolve_arguments(arguments: Option<&Value>) -> Result<String, RpcError
     Ok(parsed.peer)
 }
 
-fn structured_result<T: Serialize>(value: &T, modern: bool) -> Result<String, RpcError> {
+pub(super) fn structured_result<T: Serialize>(value: &T, modern: bool) -> Result<String, RpcError> {
     let structured = serde_json::to_value(value).map_err(|_| RpcError {
         code: -32603,
         message: "Supgang result encoding failed",
@@ -252,10 +277,7 @@ fn structured_result<T: Serialize>(value: &T, modern: bool) -> Result<String, Rp
     })?;
     let encoded = structured.to_string();
     if encoded.len() > MAX_TOOL_VALUE_BYTES {
-        return Ok(tool_failure(
-            "Supgang's result exceeds the MCP safety limit; inspect it with the local CLI",
-            modern,
-        ));
+        return Ok(tool_failure(OVERSIZED_RESULT_MESSAGE, modern));
     }
     let text = Value::String(encoded.clone());
     let prefix = if modern { "\"resultType\":\"complete\"," } else { "" };
@@ -268,6 +290,23 @@ fn tool_failure(message: &str, modern: bool) -> String {
     let text = Value::String(message.to_owned());
     let prefix = if modern { "\"resultType\":\"complete\"," } else { "" };
     format!("{{{prefix}\"content\":[{{\"type\":\"text\",\"text\":{text}}}],\"isError\":true}}")
+}
+
+pub(super) fn bound_response(reply: Vec<u8>, id: Option<&Value>, tool_failure_mode: Option<bool>) -> Vec<u8> {
+    if reply.len() <= MAX_MCP_RESPONSE_BYTES {
+        return reply;
+    }
+    if let (Some(id), Some(modern)) = (id, tool_failure_mode) {
+        let fallback = success_response(id, &tool_failure(OVERSIZED_RESULT_MESSAGE, modern));
+        if fallback.len() <= MAX_MCP_RESPONSE_BYTES {
+            return fallback;
+        }
+    }
+    let fallback = error_response(id, -32603, OVERSIZED_RESPONSE_MESSAGE, None);
+    if fallback.len() <= MAX_MCP_RESPONSE_BYTES {
+        return fallback;
+    }
+    error_response(None, -32603, OVERSIZED_RESPONSE_MESSAGE, None)
 }
 
 fn success_response(id: &Value, result: &str) -> Vec<u8> {
@@ -285,12 +324,24 @@ fn error_response(id: Option<&Value>, code: i32, message: &str, data: Option<&Va
 ///
 /// # Errors
 /// Returns a transport error when the stream cannot be safely read or written.
-pub(super) async fn serve<R, W>(state_directory: PathBuf, mut transport: BoundedStdio<R, W>) -> io::Result<()>
+pub(super) async fn serve<R, W>(state_directory: PathBuf, transport: BoundedStdio<R, W>) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut session = Session::new(state_directory);
+    serve_with(transport, move |params, modern| {
+        call_tool(&state_directory, params, modern)
+    })
+    .await
+}
+
+pub(super) async fn serve_with<R, W, F>(mut transport: BoundedStdio<R, W>, call_tool: F) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    F: FnMut(Option<&Value>, bool) -> Result<String, RpcError>,
+{
+    let mut session = Session::new(call_tool);
     while let Some(line) = transport.read_line().await? {
         if let Some(reply) = session.handle(&line) {
             transport.write_line(&reply).await?;

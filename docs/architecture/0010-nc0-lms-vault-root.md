@@ -14,9 +14,9 @@ their lowercase SHA-256. A signature is exactly 9164 bytes:
 `u32be(q) || u32be(1) || C[32] || y[265][32] || u32be(8) || path[20][32]`.
 Reject other public parameter sets. Internal parameterized code may exist only
 to check RFC test vectors. Generate a random 32-byte SEED and 16-byte I;
-encrypt both under the existing Secure Enclave protected vault agreement, with
-kind and public key in authenticated associated data. The Secure Enclave
-protects the vault agreement key; it does not itself execute LMS. Never export
+encrypt both to a new per-root Secure Enclave P-256 agreement public key whose
+private agreement requires owner presence on every use. The Secure Enclave
+protects the agreement key; it does not itself execute LMS. Never export
 SEED or I through `vault get` or `vault run`.
 
 The key is single-purpose: NC0 format-2 application packages. The signer
@@ -41,6 +41,42 @@ show progress and measure wall time in the installed acceptance run. Vault
 format v3 adds the LMS kind, its 56-byte public key, and `next_q` under
 authenticated encryption. Existing v1/v2 documents remain readable and are
 upgraded canonically on mutation without changing their entry authentication.
+
+### Presence from root creation (vault v6)
+
+Every new LMS root gets a distinct agreement key with
+`[.privateKeyUsage, .userPresence]`,
+`AfterFirstUnlockThisDeviceOnly`, and an LAContext with reuse duration zero.
+Creation uses its public half and ephemeral ECDH, so it does not request
+presence. The existing unattended vault agreement remains unchanged for
+other secrets. In v6, the LMS SEED and I exist only in the separate presence
+wrap. The ordinary vault ciphertext holds a one-byte state marker; its AAD
+binds q, public root and the digest of the complete presence wrap. The
+presence ciphertext AAD binds the root, entry name, note, time, presence
+public key and ephemeral key, but excludes q so advancing q cannot rewrap
+the seed. A changed or removed wrap cannot authenticate as the original
+state. The vault format upgrade is one-way; v1-v5 LMS entries remain readable
+for public-key and q inspection, but signing them is refused. They cannot be
+rewrapped into product roots because a prior plaintext copy cannot be ruled
+out. `lms-keygen` has no flag to omit presence.
+
+After command confirmation, `lms-sign` must complete the presence-gated
+agreement and decrypt SEED/I while holding the vault lock, before either q
+record changes. A declined or unavailable presence prompt returns without a
+signature or output file and without changing the vault q or journal q. The
+existing journal-before-vault reservation order follows a successful unwrap.
+The helper allows up to 60 seconds for the owner prompt, so the vault lock can
+be held for that entire interval. Other vault changes wait for it; they do not
+start another LMS reservation.
+The owner prompt names the LMS key, the q being reserved, and the first 16
+hex digits of the validated package SHA-256. This reason text is supplied by
+the caller, not attested by the Secure Enclave; any same-user process can
+trigger a prompt with its own text.
+`preview`, public-key reads, and journal agreement checks use only the
+ordinary vault agreement and do not prompt. The owner prompt approves use
+of the Secure Enclave private key; it does not attest that the requesting
+process is a human-owned console. A headless or agent-pty refusal is an
+installed acceptance observation, not a portable platform guarantee.
 
 An independent owner-only append-only reservation journal is bound to the
 public-key hash. Its initial durable record says `next_q=0`. Both the sealed
@@ -150,6 +186,42 @@ root from that file's SEED/I. Its public receipt uses
 known-answer signature SHA-256, `next_q=1`, and the encrypted file SHA-256.
 It never prints the decrypted record or seed. Since it is read-only, it has no
 offline routing-table guard; core dumps remain disabled during verification.
+
+## NC0 product-root KDF, SLIP-39 shares, and restore q-state rules
+
+The two NC0 product roots (`nc0-product-primary`, role `primary`; and
+`nc0-product-recovery`, role `recovery`) each have an independent random
+256-bit master secret `M` (32 bytes). Per Labs spec rev 2, RFC 8554 `SEED`
+(32 bytes) and `I` (16 bytes) are derived deterministically via HKDF-SHA256
+(RFC 5869 extract then expand):
+
+- `IKM = M` (exact length 32 bytes; any other length is refused);
+- `salt = "agenxy-nc0-root-kdf-v1"` (22 ASCII bytes);
+- `info = "NC0-Q LMS root v1|role=<ROLE>|lms=8|lmots=1|levels=1"` (53 bytes for
+  `primary`, 54 bytes for `recovery`, with no NUL and no newline);
+- `L = 48`, with `SEED = OKM[0:32]` and `I = OKM[32:48]`;
+- LM-OTS private keys use RFC 8554 Appendix A, and `pub56 = u32be(8) || u32be(1) || I || T[1]`.
+
+`supgang lms-derive-public ROLE` is the read-only standalone derivation path
+(used directly or as the fallback path alongside an external SLIP-39 combiner).
+It disables core dumps, reads the 64-character master hex on a hidden TTY
+prompt (never from argv or environment), rejects any master length other than
+32 bytes, computes `pub56`, `I`, `T[1]`, and `SHA-256(pub56)` without signing,
+and prints only public values.
+
+For any future import or restore of an escrowed or SLIP-39-split NC0 product
+root into a signing vault, the following q-state rules are mandatory (and
+implementing vault import under these rules is a precondition for the first
+product signature):
+
+- `q` is never stored in shares or restored from escrow.
+- Any import or restore requires the independent release log's highest logged
+  `q` and initializes `next_q` to the start of the next unused `2^16` block
+  (`((highest_logged_q / 65536) + 1) * 65536`), replacing any earlier `+1024`
+  advance rule.
+- Signing is always refused without the independent release log.
+- Any `q >= 2^20` (including when no unused `2^16` block remains below `2^20`)
+  is refused.
 
 ## Failure and acceptance matrix
 

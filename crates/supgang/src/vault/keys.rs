@@ -221,6 +221,7 @@ fn generate_with_policy(
             remote_creator: agent
                 .filter(|_| kind == Kind::SshEd25519)
                 .map(|creation| creation.requester),
+            presence_digest: None,
         },
         agent.as_ref().map(|agent| agent.policy),
     )?;

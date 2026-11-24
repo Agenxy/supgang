@@ -411,18 +411,24 @@ fn workspace_packages(root: &Path) -> Result<Vec<Package>, String> {
             .ok_or_else(|| "Cargo package dependencies are missing".to_owned())?
             .as_array()
             .ok_or_else(|| "Cargo package dependencies are missing".to_owned())?;
-        let local_dependencies = dependencies
-            .iter()
-            .filter(|dependency| dependency.get("path").is_some_and(Value::is_string))
-            .map(|dependency| {
-                dependency
-                    .get("name")
-                    .ok_or_else(|| "local Cargo dependency has no name".to_owned())?
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "local Cargo dependency has no name".to_owned())
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let third_party_root = root.join("third_party");
+        let mut local_dependencies = Vec::new();
+        for dependency in dependencies {
+            let Some(dep_path) = dependency.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let dep_path = Path::new(dep_path);
+            if dep_path.starts_with(&third_party_root) {
+                // Reviewed vendored crates under `third_party/` are hashed into
+                // every package key via `common` in `source_inventory`.
+                continue;
+            }
+            let dep_name = dependency
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "local Cargo dependency has no name".to_owned())?;
+            local_dependencies.push(dep_name.to_owned());
+        }
         selected.push(Package {
             name: name.to_owned(),
             directory: directory.to_owned(),
