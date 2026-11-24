@@ -38,7 +38,21 @@ You need:
 - the expected `supgang` binary SHA-256 and code-signing team. Supply sends these
   separately, for the release built from the merged ceremony commit.
 
-Allow 30 minutes. Each root takes about a minute of computation.
+Allow 30 minutes. The command itself takes about 6–8 minutes: about 2 to make
+both roots and about 4 to rebuild them from every pair of sticks.
+
+## 0. Format the sticks as APFS
+
+New sticks usually come formatted FAT or exFAT, which cannot hold owner-only
+files, and the ceremony refuses them. Format each one first, while still online
+is fine:
+
+1. Insert one stick. Open Disk Utility and choose View > Show All Devices.
+2. Select the stick's top-level device (not a volume under another disk). Check
+   its size matches the stick before going on.
+3. Click Erase. Name: `A` (then `B`, then `C`). Format: APFS. Scheme: GUID
+   Partition Map. Click Erase.
+4. Eject it and repeat for the next stick.
 
 ## 1. Go offline and reboot
 
