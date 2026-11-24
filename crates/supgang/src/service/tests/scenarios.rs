@@ -300,15 +300,36 @@ fn travel(world: &World, spec: SiteSpec) -> Result<(), Error> {
     let solis = world.fleet.computer(SOLIS)?;
     let laptop = world.fleet.computer(LAPTOP)?;
     let before = connection(laptop, solis.node)?.ok_or("not connected before travelling")?;
+    let before_history = connection_history(laptop)?;
+    let before_changes = world.fleet.interface_changes(LAPTOP)?;
     world.network.move_host(laptop.host, Some(away))?;
     let retired = eventually(STALE_PATH_RETIREMENT, || {
-        Ok(connection(laptop, solis.node)?
-            .is_none_or(|path| path != before)
-            .then_some(()))
+        if connection(laptop, solis.node)?.is_none_or(|path| path != before) {
+            return Ok(Some(()));
+        }
+        // When the home connection used Solis's global IPv6 address and the
+        // destination site reaches that same address through a pinhole, a fast
+        // retire-and-reconnect between polls reports the same remote address.
+        // Only an explicit departure retirement event proves the prior session
+        // ended (ignoring non-departure replacements such as fallback swaps).
+        let history = connection_history(laptop)?;
+        let new_events = history.strip_prefix(before_history.as_slice()).unwrap_or(&[]);
+        let departed = new_events.iter().any(|event| {
+            event.event == "ended"
+                && matches!(
+                    event.reason.as_str(),
+                    "local network left this computer" | "network route changed" | "path went silent"
+                )
+        });
+        Ok(departed.then_some(()))
     })?;
     assert!(
         retired.is_some(),
-        "the connection over the home LAN was still reported {STALE_PATH_RETIREMENT:?} after leaving"
+        "the connection over the home LAN was still reported {STALE_PATH_RETIREMENT:?} after leaving \
+         (interface_changes={}->{}, history={:?})",
+        before_changes,
+        world.fleet.interface_changes(LAPTOP)?,
+        connection_history(laptop)?,
     );
     Ok(())
 }
