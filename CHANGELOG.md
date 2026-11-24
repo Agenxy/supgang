@@ -4,9 +4,9 @@ All notable project changes are recorded here.
 
 ## Unreleased
 
-The corrective source reports version `0.2.0-alpha.21` so it cannot be mistaken for the published
-`0.1.0` build that failed physical WAN acceptance. This version advances from the alpha.20
-agent-keygen build accepted on the laptop and Solis.
+## 0.2.0 - 2026-11-24
+
+This release advances from the `0.2.0-alpha.21` corrective development builds.
 
 - Add explicit, fingerprint-pinned migration of an existing unscoped Ed25519
   signing key to an immutable agent-purpose policy. Its public key and consumer
