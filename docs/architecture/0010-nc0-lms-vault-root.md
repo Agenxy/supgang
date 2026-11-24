@@ -187,6 +187,42 @@ known-answer signature SHA-256, `next_q=1`, and the encrypted file SHA-256.
 It never prints the decrypted record or seed. Since it is read-only, it has no
 offline routing-table guard; core dumps remain disabled during verification.
 
+## NC0 product-root KDF, SLIP-39 shares, and restore q-state rules
+
+The two NC0 product roots (`nc0-product-primary`, role `primary`; and
+`nc0-product-recovery`, role `recovery`) each have an independent random
+256-bit master secret `M` (32 bytes). Per Labs spec rev 2, RFC 8554 `SEED`
+(32 bytes) and `I` (16 bytes) are derived deterministically via HKDF-SHA256
+(RFC 5869 extract then expand):
+
+- `IKM = M` (exact length 32 bytes; any other length is refused);
+- `salt = "agenxy-nc0-root-kdf-v1"` (22 ASCII bytes);
+- `info = "NC0-Q LMS root v1|role=<ROLE>|lms=8|lmots=1|levels=1"` (53 bytes for
+  `primary`, 54 bytes for `recovery`, with no NUL and no newline);
+- `L = 48`, with `SEED = OKM[0:32]` and `I = OKM[32:48]`;
+- LM-OTS private keys use RFC 8554 Appendix A, and `pub56 = u32be(8) || u32be(1) || I || T[1]`.
+
+`supgang lms-derive-public ROLE` is the read-only standalone derivation path
+(used directly or as the fallback path alongside an external SLIP-39 combiner).
+It disables core dumps, reads the 64-character master hex on a hidden TTY
+prompt (never from argv or environment), rejects any master length other than
+32 bytes, computes `pub56`, `I`, `T[1]`, and `SHA-256(pub56)` without signing,
+and prints only public values.
+
+For any future import or restore of an escrowed or SLIP-39-split NC0 product
+root into a signing vault, the following q-state rules are mandatory (and
+implementing vault import under these rules is a precondition for the first
+product signature):
+
+- `q` is never stored in shares or restored from escrow.
+- Any import or restore requires the independent release log's highest logged
+  `q` and initializes `next_q` to the start of the next unused `2^16` block
+  (`((highest_logged_q / 65536) + 1) * 65536`), replacing any earlier `+1024`
+  advance rule.
+- Signing is always refused without the independent release log.
+- Any `q >= 2^20` (including when no unused `2^16` block remains below `2^20`)
+  is refused.
+
 ## Failure and acceptance matrix
 
 | Stop point | Expected result |

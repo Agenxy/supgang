@@ -363,3 +363,21 @@ fn nc0_package_bounds_and_fields() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(package(&path), Err(VaultError::InvalidNc0Package)));
     Ok(())
 }
+
+#[test]
+fn restore_q_advances_to_next_unused_2_pow_16_block_and_refuses_exhaustion() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(RESTORE_Q_BLOCK, 65_536);
+    assert_eq!(next_restore_q(0)?, 65_536);
+    assert_eq!(next_restore_q(1)?, 65_536);
+    assert_eq!(next_restore_q(65_535)?, 65_536);
+    assert_eq!(next_restore_q(65_536)?, 131_072);
+    assert_eq!(next_restore_q(131_071)?, 131_072);
+    assert_eq!(next_restore_q(917_504)?, 983_040);
+    assert_eq!(next_restore_q(983_039)?, 983_040);
+    // Block 15 (983_040..1_048_575) has no subsequent unused 2^16 block below 2^20.
+    assert!(matches!(next_restore_q(983_040), Err(VaultError::LmsExhausted)));
+    assert!(matches!(next_restore_q(MAX_Q - 1), Err(VaultError::LmsExhausted)));
+    assert!(matches!(next_restore_q(MAX_Q), Err(VaultError::LmsExhausted)));
+    assert!(matches!(next_restore_q(u32::MAX), Err(VaultError::LmsExhausted)));
+    Ok(())
+}

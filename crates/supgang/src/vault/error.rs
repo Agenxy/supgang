@@ -94,6 +94,12 @@ pub enum VaultError {
     /// Forward-only recovery target is unsafe.
     #[error("LMS advance target must exceed both local records and the external release log")]
     LmsAdvanceRefused,
+    /// Product-root role label is not recognized.
+    #[error("NC0 root role must be 'primary' or 'recovery'")]
+    InvalidLmsRole,
+    /// Master secret length is not 32 bytes.
+    #[error("NC0 master secret must be exactly 32 bytes")]
+    InvalidLmsMasterLength,
     /// Key generation could not prove that its orphan journal was removed.
     #[error("LMS key generation could not verify or clean its orphan journal; inspect vault state before retrying")]
     LmsOrphanCleanup,

@@ -73,6 +73,12 @@ pub enum Command {
         #[arg(long = "from", value_name = "PATH")]
         from: PathBuf,
     },
+    /// Derive the NC0 LMS public key from a 256-bit master secret entered on a hidden TTY prompt.
+    LmsDerivePublic {
+        /// NC0 product root role (`primary` or `recovery`).
+        #[arg(value_name = "ROLE")]
+        role: String,
+    },
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
     ///
     /// Exit 0 on success, 75 for a transient setup failure, or 3 for refusal or misconfiguration.
