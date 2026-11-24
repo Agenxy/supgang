@@ -41,18 +41,20 @@ You need:
 Allow 30 minutes. The command itself takes about 6–8 minutes: about 2 to make
 both roots and about 4 to rebuild them from every pair of sticks.
 
-## 0. Format the sticks as APFS
+## 0. Format the sticks as exFAT
 
-New sticks usually come formatted FAT or exFAT, which cannot hold owner-only
-files, and the ceremony refuses them. Format each one first, while still online
-is fine:
+exFAT can be read on macOS, Linux and Windows, so any gang computer can recover
+from these sticks. Format each one first; doing this while still online is fine:
 
 1. Insert one stick. Open Disk Utility and choose View > Show All Devices.
 2. Select the stick's top-level device (not a volume under another disk). Check
    its size matches the stick before going on.
-3. Click Erase. Name: `A` (then `B`, then `C`). Format: APFS. Scheme: GUID
-   Partition Map. Click Erase.
+3. Click Erase. Name: `A` (then `B`, then `C`). Format: ExFAT. Scheme: Master
+   Boot Record. Click Erase.
 4. Eject it and repeat for the next stick.
+
+The ceremony test-writes each stick before it creates any key. If it refuses a
+stick, report the message. APFS is the fallback only if Supply says so.
 
 ## 1. Go offline and reboot
 
