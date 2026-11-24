@@ -133,6 +133,60 @@ rolled-back external release log, can replay q. Supgang cannot detect that.**
 Owner custody of the independent release log is part of the operational
 boundary. A hardware monotonic counter is outside this slice.
 
+## Offline product-root escrow ceremony
+
+NC0 product roots use `supgang lms-keygen --escrow-only NAME --to PATH --to
+PATH --generate-passphrase` at an owner terminal on a network-off laptop. Run
+the command separately for each root, with a different passphrase each time.
+The command rejects a peer or state-directory argument and never opens the
+vault, service, or network. Before generation, it reads the local IPv4 and
+IPv6 routing table and refuses while a default route exists. The explicit
+`--i-confirm-offline` override is for tests only and prints a warning. It
+requires two to four distinct new files. Each file is an independently
+randomized standard age v1 scrypt ciphertext with work factor `2^20`, `r=8`,
+and `p=1`; decryption accepts only work factors `2^18` through `2^22`.
+
+`--generate-passphrase` draws seven words from the embedded, hash-pinned EFF
+large wordlist using bounded unbiased rejection sampling from the OS CSPRNG.
+It shows the passphrase once on the terminal and requires the owner to type it
+back before any file is written, then requests ANSI screen and scrollback
+clearing. Terminals and capture software may retain earlier output. Without
+that flag, the owner enters a manual passphrase of at least seven words totaling
+24 bytes, or 40 bytes, then confirms it. Passphrases are at most 256 bytes, read with terminal
+echo and line editing disabled, and entered again to verify every written
+file. They are never accepted in argv or environment.
+
+Keygen draws a random SEED32, I16, and LM-OTS randomizer, computes the H20/W1
+root and its q=0 authentication path in one streaming pass, then signs
+`SHA256("supgang/nc0-lms-known-answer/v1\0" || name || public_key)` at q=0.
+That message is only a known answer; it is not an NC0 package. Supgang checks
+the signature against the new root before any write. The versioned escrow
+record contains LMS type 8, LM-OTS type 1, I, SEED, public key, name,
+`next_q=1`, q=0 marked as used for the known answer, and the signature. The
+public output schema is `supgang.nc0-lms-public-key/v1`; human and JSON
+output include the public root fingerprint, known-answer signature SHA-256,
+and the SHA-256 of each verified escrow file for the owner record.
+
+The plaintext record exists only in zeroizing process memory. The ceremony
+disables process core dumps before generating SEED/I. It creates no temporary
+file and writes only ciphertext with owner-only permissions, exclusive
+creation, file sync, and parent-directory sync. It reopens each path,
+decrypts with the separately entered passphrase, authenticates the known
+answer, and independently recomputes T[1] from that file's SEED/I. A failure
+names the path and withholds the success receipt. Ordinary OS swap or
+forensic recovery of process memory is outside this software guarantee; the
+owner's network-off, protected laptop remains part of the ceremony boundary.
+
+`supgang lms-escrow-verify NAME --from PATH` verifies an existing escrow file
+without generating a root or opening the vault, service, or network. It reads
+one hidden passphrase, authenticates the age header and payload, checks the
+record name and q=0 known answer, and independently recomputes the H20/W1
+root from that file's SEED/I. Its public receipt uses
+`supgang.nc0-lms-escrow-verify/v1` and includes the public key, fingerprint,
+known-answer signature SHA-256, `next_q=1`, and the encrypted file SHA-256.
+It never prints the decrypted record or seed. Since it is read-only, it has no
+offline routing-table guard; core dumps remain disabled during verification.
+
 ## Failure and acceptance matrix
 
 | Stop point | Expected result |

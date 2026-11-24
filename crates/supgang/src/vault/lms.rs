@@ -19,6 +19,8 @@ use crate::{
     storage::{no_follow_flag, sync_directory, validate_directory, validate_owner_file_metadata},
 };
 
+mod escrow;
+pub use escrow::{EscrowKey, EscrowPublic, generate_escrow, verify_escrow, verify_escrow_public};
 mod presence;
 pub(super) use presence::PresenceWrap;
 use presence::{open_presence, seal_presence};

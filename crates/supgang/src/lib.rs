@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub(crate) mod age_scrypt;
 pub mod agent_keygen_protocol;
 pub mod agent_sign_protocol;
 pub mod artifact;
@@ -11,6 +12,8 @@ pub mod cli;
 pub(crate) mod cli_args;
 pub(crate) mod cli_background;
 pub(crate) mod cli_control;
+pub(crate) mod cli_lms_escrow;
+pub(crate) mod cli_lms_verify;
 pub(crate) mod cli_peer;
 pub(crate) mod cli_peer_types;
 pub(crate) mod cli_profile;
@@ -23,6 +26,7 @@ pub(crate) mod cli_vault;
 pub mod contact;
 pub(crate) mod control;
 pub mod device_key;
+pub(crate) mod eff_passphrase;
 pub mod endpoint_config;
 pub mod identity;
 pub mod ids;
@@ -32,6 +36,7 @@ pub(crate) mod mcp;
 pub mod membership;
 pub mod merge;
 pub mod network;
+pub(crate) mod offline_route;
 pub mod peer_directory;
 pub(crate) mod peer_stream;
 pub mod peer_tag;
