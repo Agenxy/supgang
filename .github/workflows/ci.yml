@@ -46,23 +46,23 @@ jobs:
         run: uv python install 3.15.2
       - name: Fetch and verify the published netwatch archive
         run: |
-          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.19.1.crate"
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.20.2.crate"
           mkdir -p "$(dirname "$archive")"
           curl --fail --location --show-error --silent \
-            https://static.crates.io/crates/netwatch/netwatch-0.19.1.crate \
+            https://static.crates.io/crates/netwatch/netwatch-0.20.2.crate \
             --output "$archive"
           printf '%s  %s\n' \
-            4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976 \
+            2acf7a1ca9205d7c1fc9a1595193a8cbaa7537b4a07dca93c6ae3de7c8d0e597 \
             "$archive" | shasum -a 256 -c -
-      - name: Fetch and verify the published netlink-packet-core archive
+      - name: Fetch and verify the published portmapper archive
         run: |
-          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netlink-packet-core-0.8.2.crate"
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/portmapper-0.20.2.crate"
           mkdir -p "$(dirname "$archive")"
           curl --fail --location --show-error --silent \
-            https://static.crates.io/crates/netlink-packet-core/netlink-packet-core-0.8.2.crate \
+            https://static.crates.io/crates/portmapper/portmapper-0.20.2.crate \
             --output "$archive"
           printf '%s  %s\n' \
-            b897d7bd4f0af82e68d40d0344cf37e97f9c97ddf74a098de3e4da05e96ca395 \
+            d36ce759df600731dd2511cd2d640bd551086b2f7b68bceb9bbcfd8c7ff86053 \
             "$archive" | shasum -a 256 -c -
       - name: Restore the Cargo build cache
         # Caches are scoped by GitHub: a pull request may read main's cache but
@@ -74,6 +74,8 @@ jobs:
         env:
           SUPGANG_QUALITY_CACHE: off
         run: cargo run --locked --package supgang-quality -- all
+      - name: Verify packaged multi-target dependency graph
+        run: cargo run --locked --package supgang-quality -- packaged-deps
       - name: Build release binary
         run: cargo build --locked --workspace --release
       - name: Smoke-test command
