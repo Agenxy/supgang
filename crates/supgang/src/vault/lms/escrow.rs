@@ -116,6 +116,20 @@ pub fn verify_escrow(
     expected: &EscrowPublic,
     progress: impl FnMut(u32, u32),
 ) -> Result<(), VaultError> {
+    verify_escrow_public(plaintext, name, Some(expected), progress).map(|_| ())
+}
+
+/// Authenticate a standalone escrow file and return public data only after
+/// the known answer and the seed-derived root both verify.
+///
+/// # Errors
+/// Refuses malformed records, wrong names, changed signatures, or root mismatch.
+pub fn verify_escrow_public(
+    plaintext: &[u8],
+    name: &str,
+    expected: Option<&EscrowPublic>,
+    progress: impl FnMut(u32, u32),
+) -> Result<EscrowPublic, VaultError> {
     let mut reader = minicbor::Decoder::new(plaintext);
     if reader.array().map_err(|_| VaultError::Corrupt)? != Some(RECORD_FIELDS)
         || reader.str().map_err(|_| VaultError::Corrupt)? != SCHEMA
@@ -151,10 +165,17 @@ pub fn verify_escrow(
         return Err(VaultError::Corrupt);
     }
     let signature = reader.bytes().map_err(|_| VaultError::Corrupt)?;
+    let actual = EscrowPublic {
+        identity: identity(public),
+        signature_sha256: hex::encode(Sha256::digest(signature)),
+        next_q: 1,
+    };
     if reader.position() != plaintext.len()
-        || public != expected.identity.public_key
-        || expected.next_q != 1
-        || hex::encode(Sha256::digest(signature)) != expected.signature_sha256
+        || expected.is_some_and(|receipt| {
+            public != receipt.identity.public_key
+                || receipt.next_q != 1
+                || actual.signature_sha256 != receipt.signature_sha256
+        })
         || !lms_rfc::verify_fixed(&public, &answer_digest(name, &public), signature)
     {
         return Err(VaultError::Corrupt);
@@ -163,7 +184,7 @@ pub fn verify_escrow(
     if lms_rfc::public_key(&id, &root) != public {
         return Err(VaultError::Corrupt);
     }
-    Ok(())
+    Ok(actual)
 }
 
 #[cfg(test)]

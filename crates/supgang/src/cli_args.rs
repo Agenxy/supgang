@@ -64,6 +64,15 @@ pub enum Command {
         #[arg(long)]
         i_confirm_offline: bool,
     },
+    /// Verify an existing NC0 LMS escrow file without exposing its seed.
+    LmsEscrowVerify {
+        /// Name bound into the escrow record and known-answer signature.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Existing age v1 scrypt escrow file to verify.
+        #[arg(long = "from", value_name = "PATH")]
+        from: PathBuf,
+    },
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
     ///
     /// Exit 0 on success, 75 for a transient setup failure, or 3 for refusal or misconfiguration.

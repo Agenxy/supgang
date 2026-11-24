@@ -64,7 +64,7 @@ impl Drop for HiddenTerminal {
     }
 }
 
-fn hidden_passphrase(prompt: &str, error: &mut dyn Write) -> Result<Zeroizing<Vec<u8>>, String> {
+pub fn hidden_passphrase(prompt: &str, error: &mut dyn Write) -> Result<Zeroizing<Vec<u8>>, String> {
     write!(error, "{prompt}").map_err(|_| "could not show passphrase prompt")?;
     error.flush().map_err(|_| "could not flush passphrase prompt")?;
     let mut secret = Zeroizing::new(Vec::with_capacity(MAX_PASSPHRASE + 1));
@@ -97,17 +97,20 @@ fn manual_passphrase_is_strong(secret: &[u8]) -> bool {
     if secret.len() >= 40 {
         return true;
     }
-    secret
-        .split(u8::is_ascii_whitespace)
-        .filter(|word| !word.is_empty())
-        .take(7)
-        .count()
-        >= 7
+    secret.len() >= 24
+        && secret
+            .split(u8::is_ascii_whitespace)
+            .filter(|word| !word.is_empty())
+            .take(7)
+            .count()
+            >= 7
 }
 
 fn clear_generated_display(error: &mut dyn Write) -> Result<(), String> {
+    // Move home, clear the visible screen, then clear scrollback. ED2 can
+    // push visible lines into scrollback, so ED3 must come last.
     error
-        .write_all(b"\x1b[3J\x1b[2J\x1b[H")
+        .write_all(b"\x1b[H\x1b[2J\x1b[3J")
         .map_err(|_| "could not request terminal screen and scrollback clear")?;
     writeln!(error, "Passphrase display and scrollback clear requested.")
         .map_err(|_| "could not show terminal clear notice")?;
@@ -144,15 +147,7 @@ fn validate_destinations(paths: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-fn ceremony(
-    name: &str,
-    paths: &[PathBuf],
-    generate_passphrase: bool,
-    i_confirm_offline: bool,
-    json: bool,
-    output: &mut dyn Write,
-    error: &mut dyn Write,
-) -> Result<(), String> {
+pub fn prepare_owner_terminal() -> Result<(), String> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err("offline LMS escrow requires an interactive owner terminal".to_owned());
     }
@@ -163,7 +158,19 @@ fn ceremony(
             maximum: Some(0),
         },
     )
-    .map_err(|_| "could not disable core dumps")?;
+    .map_err(|_| "could not disable core dumps".to_owned())
+}
+
+fn ceremony(
+    name: &str,
+    paths: &[PathBuf],
+    generate_passphrase: bool,
+    i_confirm_offline: bool,
+    json: bool,
+    output: &mut dyn Write,
+    error: &mut dyn Write,
+) -> Result<(), String> {
+    prepare_owner_terminal()?;
     validate_destinations(paths)?;
     vault::validate_name(name).map_err(|problem| problem.to_string())?;
     if i_confirm_offline {
@@ -209,7 +216,7 @@ fn ceremony(
     } else {
         let entered = hidden_passphrase("Escrow passphrase (hidden): ", error)?;
         if !manual_passphrase_is_strong(&entered) {
-            return Err("passphrase must have at least seven words or 40 bytes".to_owned());
+            return Err("passphrase must have seven words totaling at least 24 bytes, or 40 bytes".to_owned());
         }
         let confirmation = hidden_passphrase("Repeat escrow passphrase (hidden): ", error)?;
         if entered.as_slice() != confirmation.as_slice() {
@@ -294,6 +301,7 @@ mod tests {
         assert!(manual_passphrase_is_strong(b"one two three four five six seven"));
         assert!(manual_passphrase_is_strong(b"1234567890123456789012345678901234567890"));
         assert!(!manual_passphrase_is_strong(b"one two three four five six"));
+        assert!(!manual_passphrase_is_strong(b"a b c d e f g"));
         assert!(!manual_passphrase_is_strong(b"123456789012345678901234567890123456789"));
     }
 

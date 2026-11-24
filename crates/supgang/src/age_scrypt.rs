@@ -75,20 +75,29 @@ fn verify_mac(file_key: &[u8; 16], header: &[u8], expected: &[u8; 32]) -> Result
 }
 
 pub fn encrypt(plaintext: &[u8], passphrase: &[u8]) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    encrypt_at_factor(plaintext, passphrase, WRITE_LOG_N)
+}
+
+#[cfg(test)]
+pub fn encrypt_test_factor18(plaintext: &[u8], passphrase: &[u8]) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    encrypt_at_factor(plaintext, passphrase, 18)
+}
+
+fn encrypt_at_factor(plaintext: &[u8], passphrase: &[u8], log_n: u8) -> Result<Zeroizing<Vec<u8>>, &'static str> {
     if plaintext.is_empty() || plaintext.len() > MAX_PLAINTEXT {
         return Err("escrow record exceeds age payload limit");
     }
     let salt = random::<16>()?;
     let file_key = random::<16>()?;
     let nonce = random::<16>()?;
-    let wrap_key = derive(passphrase, &salt, WRITE_LOG_N)?;
+    let wrap_key = derive(passphrase, &salt, log_n)?;
     let wrapped = cipher(&wrap_key)?
         .encrypt(&[0_u8; 12].into(), &file_key[..])
         .map_err(|_| "could not wrap age file key")?;
     let mut header = Vec::with_capacity(160);
     header.extend_from_slice(PREFIX);
     header.extend_from_slice(b64(salt.as_ref()).as_bytes());
-    header.extend_from_slice(format!(" {WRITE_LOG_N}\n").as_bytes());
+    header.extend_from_slice(format!(" {log_n}\n").as_bytes());
     header.extend_from_slice(b64(&wrapped).as_bytes());
     header.extend_from_slice(b"\n---");
     let tag = mac(&file_key, &header)?;
@@ -110,6 +119,11 @@ pub fn encrypt(plaintext: &[u8], passphrase: &[u8]) -> Result<Zeroizing<Vec<u8>>
 
 pub fn decrypt(input: &[u8], passphrase: &[u8]) -> Result<Zeroizing<Vec<u8>>, &'static str> {
     decrypt_with_range(input, passphrase, MIN_READ_LOG_N, MAX_READ_LOG_N)
+}
+
+#[cfg(test)]
+pub fn decrypt_cctv(input: &[u8], passphrase: &[u8]) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    decrypt_with_range(input, passphrase, 10, MAX_READ_LOG_N)
 }
 
 fn decrypt_with_range(

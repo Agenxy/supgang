@@ -17,7 +17,8 @@ jobs:
   validate:
     name: Validate release source
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The NC0 H20 escrow verifier recomputes every leaf in the source gate.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:

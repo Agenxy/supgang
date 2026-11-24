@@ -91,3 +91,8 @@ strip = "symbols"
 [profile.dev]
 overflow-checks = true
 panic = "unwind"
+
+# H20 LMS ceremony tests hash every leaf; optimize the core test binary while
+# retaining the test profile's debug assertions and explicit overflow checks.
+[profile.test.package.supgang-core]
+opt-level = 2

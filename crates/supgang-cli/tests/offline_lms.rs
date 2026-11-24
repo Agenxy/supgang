@@ -48,3 +48,22 @@ fn escrow_refuses_nonterminal_input_without_writing_files() -> Result<(), Box<dy
     assert!(!second.exists());
     Ok(())
 }
+
+#[test]
+fn escrow_verify_refuses_nonterminal_input() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = TestDirectory::new()?;
+    let file = directory.0.join("missing.age");
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args([
+            "lms-escrow-verify",
+            "test-root",
+            "--from",
+            file.to_str().ok_or("non-UTF-8 test path")?,
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("interactive owner terminal"));
+    Ok(())
+}

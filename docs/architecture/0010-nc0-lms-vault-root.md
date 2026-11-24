@@ -115,8 +115,8 @@ large wordlist using bounded unbiased rejection sampling from the OS CSPRNG.
 It shows the passphrase once on the terminal and requires the owner to type it
 back before any file is written, then requests ANSI screen and scrollback
 clearing. Terminals and capture software may retain earlier output. Without
-that flag, the owner enters a manual passphrase of at least seven words or 40
-bytes, then confirms it. Passphrases are at most 256 bytes, read with terminal
+that flag, the owner enters a manual passphrase of at least seven words totaling
+24 bytes, or 40 bytes, then confirms it. Passphrases are at most 256 bytes, read with terminal
 echo and line editing disabled, and entered again to verify every written
 file. They are never accepted in argv or environment.
 
@@ -140,6 +140,16 @@ answer, and independently recomputes T[1] from that file's SEED/I. A failure
 names the path and withholds the success receipt. Ordinary OS swap or
 forensic recovery of process memory is outside this software guarantee; the
 owner's network-off, protected laptop remains part of the ceremony boundary.
+
+`supgang lms-escrow-verify NAME --from PATH` verifies an existing escrow file
+without generating a root or opening the vault, service, or network. It reads
+one hidden passphrase, authenticates the age header and payload, checks the
+record name and q=0 known answer, and independently recomputes the H20/W1
+root from that file's SEED/I. Its public receipt uses
+`supgang.nc0-lms-escrow-verify/v1` and includes the public key, fingerprint,
+known-answer signature SHA-256, `next_q=1`, and the encrypted file SHA-256.
+It never prints the decrypted record or seed. Since it is read-only, it has no
+offline routing-table guard; core dumps remain disabled during verification.
 
 ## Failure and acceptance matrix
 
