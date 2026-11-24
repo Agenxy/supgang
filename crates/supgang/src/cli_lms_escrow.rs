@@ -279,6 +279,59 @@ fn ceremony(
     Ok(())
 }
 
+pub fn dispatch_offline(cli: &crate::cli_args::Cli, output: &mut dyn Write, error: &mut dyn Write) -> Option<ExitCode> {
+    use crate::cli_args::Command;
+    match cli.command.as_ref()? {
+        Command::LmsKeygen {
+            escrow_only,
+            to,
+            generate_passphrase,
+            i_confirm_offline,
+        } => {
+            if cli.state_dir.is_some() || cli.peer.is_some() {
+                return Some(render_error(
+                    cli.json,
+                    "offline LMS keygen takes no peer or state directory",
+                    output,
+                    error,
+                ));
+            }
+            Some(run(
+                escrow_only,
+                to,
+                *generate_passphrase,
+                *i_confirm_offline,
+                cli.json,
+                output,
+                error,
+            ))
+        }
+        Command::LmsEscrowVerify { name, from } => {
+            if cli.state_dir.is_some() || cli.peer.is_some() {
+                return Some(render_error(
+                    cli.json,
+                    "offline LMS escrow verify takes no peer or state directory",
+                    output,
+                    error,
+                ));
+            }
+            Some(crate::cli_lms_verify::run(name, from, cli.json, output, error))
+        }
+        Command::LmsDerivePublic { role } => {
+            if cli.state_dir.is_some() || cli.peer.is_some() {
+                return Some(render_error(
+                    cli.json,
+                    "offline LMS public derivation takes no peer or state directory",
+                    output,
+                    error,
+                ));
+            }
+            Some(crate::cli_lms_derive::run(role, cli.json, output, error))
+        }
+        _ => None,
+    }
+}
+
 pub fn run(
     name: &str,
     paths: &[PathBuf],

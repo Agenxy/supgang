@@ -7,6 +7,14 @@ defaults:
 on:
   pull_request:
   push:
+    branches:
+      - main
+
+# A newer push to the same pull request supersedes its older run. Runs on main
+# are never cancelled, so every commit on main keeps a complete result.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -56,6 +64,12 @@ jobs:
           printf '%s  %s\n' \
             b897d7bd4f0af82e68d40d0344cf37e97f9c97ddf74a098de3e4da05e96ca395 \
             "$archive" | shasum -a 256 -c -
+      - name: Restore the Cargo build cache
+        # Caches are scoped by GitHub: a pull request may read main's cache but
+        # main never reads a pull request's, so a branch cannot seed main.
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.runner }}
       - name: Run repository gate
         env:
           SUPGANG_QUALITY_CACHE: off
