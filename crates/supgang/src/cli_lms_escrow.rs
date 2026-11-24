@@ -65,11 +65,13 @@ impl Drop for HiddenTerminal {
 }
 
 pub fn hidden_passphrase(prompt: &str, error: &mut dyn Write) -> Result<Zeroizing<Vec<u8>>, String> {
-    write!(error, "{prompt}").map_err(|_| "could not show passphrase prompt")?;
-    error.flush().map_err(|_| "could not flush passphrase prompt")?;
     let mut secret = Zeroizing::new(Vec::with_capacity(MAX_PASSPHRASE + 1));
     let read = {
+        // Hide input before publishing the prompt: a fast response can otherwise
+        // echo or be discarded by tcsetattr(Flush) between prompt and mode change.
         let _terminal = HiddenTerminal::enter()?;
+        write!(error, "{prompt}").map_err(|_| "could not show passphrase prompt")?;
+        error.flush().map_err(|_| "could not flush passphrase prompt")?;
         let stdin = io::stdin();
         let mut byte = Zeroizing::new([0_u8; 1]);
         loop {
