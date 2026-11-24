@@ -53,6 +53,7 @@ pub mod session;
 pub mod settings;
 #[cfg(test)]
 pub(crate) mod simnet;
+pub mod slip39;
 pub mod ssh_agent;
 pub mod state;
 pub mod state_lock;
