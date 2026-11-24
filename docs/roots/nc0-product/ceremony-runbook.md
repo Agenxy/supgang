@@ -134,8 +134,9 @@ Run these against `nc0-product-primary`:
 
 ## 6. Which tool is primary
 
-The Rust tool is primary only if, by Fri 27 Nov 09:00, a GPT-family reviewer has
-reviewed it and confirmed the second-family OKM/public-key agreement. If that
+The Rust tool is primary only if, by Fri 27 Nov 09:00, an independent hands-on
+check has rerun the official SLIP-39 vectors, the two-way cross-check against
+the pinned Python 0.3.0, and the KDF known answers and must-fails. If that
 check is missed, the pinned Python CLI is primary for the ceremony
 automatically, and Supply sends its sheet. Supply confirms which tool is primary
 before you start.
