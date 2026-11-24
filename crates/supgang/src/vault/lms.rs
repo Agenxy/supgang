@@ -19,6 +19,9 @@ use crate::{
     storage::{no_follow_flag, sync_directory, validate_directory, validate_owner_file_metadata},
 };
 
+mod escrow;
+pub use escrow::{EscrowKey, EscrowPublic, generate_escrow, verify_escrow, verify_escrow_public};
+
 const MAX_Q: u32 = 1 << lms_rfc::HEIGHT;
 const JOURNAL_MAGIC: &[u8; 8] = b"SG-LMS1\0";
 const RECORD_BYTES: usize = 108;

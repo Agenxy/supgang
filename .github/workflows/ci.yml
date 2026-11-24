@@ -46,6 +46,16 @@ jobs:
           printf '%s  %s\n' \
             4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976 \
             "$archive" | shasum -a 256 -c -
+      - name: Fetch and verify the published netlink-packet-core archive
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netlink-packet-core-0.8.2.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/netlink-packet-core/netlink-packet-core-0.8.2.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            b897d7bd4f0af82e68d40d0344cf37e97f9c97ddf74a098de3e4da05e96ca395 \
+            "$archive" | shasum -a 256 -c -
       - name: Run repository gate
         env:
           SUPGANG_QUALITY_CACHE: off
@@ -66,7 +76,7 @@ jobs:
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit --version 0.22.2
       - name: Audit locked dependencies
-        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2023-0089
+        run: cargo audit --deny warnings --ignore RUSTSEC-2023-0089
 
   dependency-policy:
     name: Dependency licences and sources

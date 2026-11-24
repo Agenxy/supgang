@@ -1,4 +1,4 @@
-//! Offline verification of the single reviewed netwatch vendor patch.
+//! Offline verification of the reviewed netwatch vendor patch.
 
 use std::{
     collections::BTreeSet,
@@ -23,7 +23,7 @@ const AFTER: &str =
 pub fn check(root: &Path) -> Result<(), String> {
     let vendor = root.join("third_party/netwatch");
     let manifest = fs::read_to_string(root.join("Cargo.toml")).map_err(|error| error.to_string())?;
-    if !manifest.contains("exclude = [\"third_party/netwatch\"]")
+    if !manifest.contains("exclude = [\"third_party/netwatch\", \"third_party/netlink-packet-core\"]")
         || !manifest.contains("netwatch = { path = \"third_party/netwatch\" }")
     {
         return Err("netwatch path patch or workspace exclusion is missing".to_owned());
@@ -117,7 +117,7 @@ fn archive_path() -> Result<PathBuf, String> {
         .join(format!("netwatch-{VERSION}.crate")))
 }
 
-fn verify_hash(bytes: &[u8], expected: &str, label: &str) -> Result<(), String> {
+pub fn verify_hash(bytes: &[u8], expected: &str, label: &str) -> Result<(), String> {
     let mut actual = String::with_capacity(64);
     for byte in Sha256::digest(bytes) {
         write!(actual, "{byte:02x}").map_err(|error| error.to_string())?;
@@ -129,7 +129,7 @@ fn verify_hash(bytes: &[u8], expected: &str, label: &str) -> Result<(), String> 
     }
 }
 
-fn tar(archive: &Path, flags: &[&str], entry: Option<&str>) -> Result<Vec<u8>, String> {
+pub fn tar(archive: &Path, flags: &[&str], entry: Option<&str>) -> Result<Vec<u8>, String> {
     let mut command = Command::new("tar");
     command.args(flags).arg(archive);
     if let Some(entry) = entry {
@@ -155,7 +155,7 @@ fn patched_manifest(upstream: &[u8]) -> Result<Vec<u8>, String> {
     Ok(source.replacen(BEFORE, AFTER, 1).into_bytes())
 }
 
-fn collect(base: &Path, directory: &Path, result: &mut BTreeSet<String>) -> Result<(), String> {
+pub fn collect(base: &Path, directory: &Path, result: &mut BTreeSet<String>) -> Result<(), String> {
     for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
