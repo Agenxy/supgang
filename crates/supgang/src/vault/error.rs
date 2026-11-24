@@ -75,6 +75,10 @@ pub enum VaultError {
     /// The entry is not an LMS root.
     #[error("the named vault entry is not an LMS root")]
     NotLmsKey,
+    /// Older LMS roots remain readable but cannot sign without a per-root
+    /// Secure Enclave presence wrap created before the seed existed.
+    #[error("the LMS root lacks a presence-bound seed wrap and cannot sign; create a new root")]
+    LmsPresenceRequired,
     /// The NC0 package header, size, or contents are invalid.
     #[error("the NC0 format-2 package is invalid or changed while being read")]
     InvalidNc0Package,

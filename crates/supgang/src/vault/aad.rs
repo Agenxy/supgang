@@ -46,5 +46,9 @@ pub(super) fn associated_data(
         aad.extend_from_slice(b"\0remote-creator/v1\0");
         aad.extend_from_slice(creator.as_bytes());
     }
+    if let Some(digest) = metadata.presence_digest {
+        aad.extend_from_slice(b"\0lms-presence-wrap/v1\0");
+        aad.extend_from_slice(&digest);
+    }
     aad
 }

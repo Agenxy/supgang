@@ -31,6 +31,7 @@ mod agent_audit;
 mod agent_tests;
 mod audit;
 mod backup;
+mod enclave;
 mod error;
 mod format;
 mod keys;
@@ -47,6 +48,7 @@ mod ssh;
 
 use aad::associated_data;
 use audit::{append_audit, audit};
+pub use enclave::{Enclave, SecureEnclave};
 pub use error::VaultError;
 use format::{decode, encode};
 pub use lms::{
@@ -195,63 +197,24 @@ pub const MAX_NAME_BYTES: usize = 64;
 pub const MAX_NOTE_BYTES: usize = 200;
 
 const ENTRY_DOMAIN: &[u8] = b"supgang/vault-entry/v1\0";
-const VERSION: u8 = 5;
+const VERSION: u8 = 6;
 const LOCK_FILE_NAME: &str = "vault.lock";
 const AUDIT_LOCK_FILE_NAME: &str = "vault-audit.lock";
 const PUBLIC_BYTES: usize = 33;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 const MAX_KEY_RECORD_BYTES: usize = 4 * 1024 + 16;
-const MAX_ENTRY_BYTES: usize =
-    MAX_NAME_BYTES + MAX_NOTE_BYTES + PUBLIC_BYTES + NONCE_BYTES + MAX_SECRET_BYTES + policy::MAX_POLICY_BYTES + 184;
+const MAX_ENTRY_BYTES: usize = MAX_NAME_BYTES
+    + MAX_NOTE_BYTES
+    + PUBLIC_BYTES
+    + NONCE_BYTES
+    + MAX_SECRET_BYTES
+    + policy::MAX_POLICY_BYTES
+    + 4 * 1024
+    + 256;
 const MAX_VAULT_BYTES: usize = MAX_KEY_RECORD_BYTES + PUBLIC_BYTES + MAX_SECRETS * MAX_ENTRY_BYTES + 64;
 const MAX_AUDIT_BYTES: u64 = 256 * 1024;
 const TEMPORARY_ATTEMPTS: usize = 8;
-
-/// The key-agreement key a vault is sealed to.
-pub trait Enclave {
-    /// Creates a new key, returning its restore record and compressed public key.
-    ///
-    /// # Errors
-    /// Refuses when the platform key cannot be created.
-    fn generate(&self) -> Result<(SealedKey, [u8; PUBLIC_BYTES]), VaultError>;
-    /// The raw P-256 shared secret between the sealed key and `peer`.
-    ///
-    /// # Errors
-    /// Refuses a record of another kind and any platform failure.
-    fn agree(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError>;
-}
-
-/// This Mac's Secure Enclave, through the sibling helper.
-#[derive(Clone, Copy, Debug)]
-pub struct SecureEnclave;
-
-#[cfg(target_os = "macos")]
-impl Enclave for SecureEnclave {
-    fn generate(&self) -> Result<(SealedKey, [u8; PUBLIC_BYTES]), VaultError> {
-        let (sealed, public) = crate::device_key::secure_enclave::generate_agreement()?;
-        Ok((sealed, compressed_point(&public)?))
-    }
-    fn agree(&self, sealed: &SealedKey, peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
-        Ok(crate::device_key::secure_enclave::agree(sealed, peer)?)
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl Enclave for SecureEnclave {
-    fn generate(&self) -> Result<(SealedKey, [u8; PUBLIC_BYTES]), VaultError> {
-        Err(crate::device_key::custody::CustodyError::Unavailable(
-            crate::device_key::custody::UnavailableReason::WrongPlatform,
-        )
-        .into())
-    }
-    fn agree(&self, _sealed: &SealedKey, _peer: &[u8; PUBLIC_BYTES]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
-        Err(crate::device_key::custody::CustodyError::Unavailable(
-            crate::device_key::custody::UnavailableReason::WrongPlatform,
-        )
-        .into())
-    }
-}
 
 /// What `list` shows about one secret: never its bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -305,6 +268,7 @@ struct Entry {
     ciphertext: Vec<u8>,
     policy: Option<Vec<u8>>,
     remote_creator: Option<crate::ids::NodeId>,
+    lms_presence: Option<lms::PresenceWrap>,
 }
 
 impl Entry {
@@ -313,7 +277,11 @@ impl Entry {
             name: self.name.clone(),
             note: self.note.clone(),
             stored_at: self.stored_at,
-            bytes: self.ciphertext.len().saturating_sub(TAG_BYTES),
+            bytes: if self.kind == Kind::LmsSha256H20W1 && self.lms_presence.is_some() {
+                48
+            } else {
+                self.ciphertext.len().saturating_sub(TAG_BYTES)
+            },
             kind: self.kind.label(),
             fingerprint: self
                 .lms_public
@@ -329,6 +297,7 @@ impl Entry {
     }
 }
 
+#[derive(Clone)]
 struct Document {
     version: u8,
     key: SealedKey,
@@ -511,6 +480,7 @@ fn seal(
             lms_public: None,
             lms_next_q: None,
             remote_creator: None,
+            presence_digest: None,
         },
         None,
     )
@@ -523,6 +493,7 @@ struct SealMetadata {
     lms_public: Option<[u8; lms_rfc::PUBLIC_LEN]>,
     lms_next_q: Option<u32>,
     remote_creator: Option<crate::ids::NodeId>,
+    presence_digest: Option<[u8; 32]>,
 }
 
 fn seal_entry(
@@ -571,6 +542,7 @@ fn seal_entry(
         ciphertext,
         policy: policy.map(<[u8]>::to_vec),
         remote_creator: metadata.remote_creator,
+        lms_presence: None,
     })
 }
 
@@ -600,6 +572,7 @@ fn open(shared: &[u8; 32], public: &[u8; PUBLIC_BYTES], entry: &Entry) -> Result
             lms_public: entry.lms_public,
             lms_next_q: entry.lms_next_q,
             remote_creator: entry.remote_creator,
+            presence_digest: entry.lms_presence.as_ref().map(lms::PresenceWrap::digest),
         },
         entry.policy.as_deref(),
     );

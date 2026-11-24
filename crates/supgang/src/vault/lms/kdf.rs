@@ -14,6 +14,10 @@ use crate::vault::{VaultError, lms_rfc};
 pub const MASTER_LEN: usize = 32;
 /// HKDF output length: 32-byte RFC 8554 SEED followed by 16-byte I.
 pub const OKM_LEN: usize = 48;
+/// Restore/import block size for LMS `q`: any restore advances to the next unused `2^16` block.
+pub const RESTORE_Q_BLOCK: u32 = 1 << 16;
+
+const MAX_Q: u32 = 1 << lms_rfc::HEIGHT;
 
 const KDF_SALT: &[u8] = b"agenxy-nc0-root-kdf-v1";
 const PRIMARY_INFO: &[u8] = b"NC0-Q LMS root v1|role=primary|lms=8|lmots=1|levels=1";
@@ -130,6 +134,26 @@ pub fn derive_public(master: &[u8], role: RootRole, progress: impl FnMut(u32, u3
         progress,
     )?;
     Ok(identity(lms_rfc::public_key(derived.id(), &root)))
+}
+
+/// Compute the first unused `2^16`-aligned `q` block strictly above `highest_logged_q`.
+///
+/// Any import or restore of an escrowed LMS root must never restore a prior `q`;
+/// it requires the independent release log's highest logged `q` and advances to
+/// the start of the next unused `2^16` block, refusing once `q >= 2^20`.
+///
+/// # Errors
+/// Returns [`VaultError::LmsExhausted`] if no unused `2^16` block remains below `2^20`.
+pub const fn next_restore_q(highest_logged_q: u32) -> Result<u32, VaultError> {
+    if highest_logged_q >= MAX_Q {
+        return Err(VaultError::LmsExhausted);
+    }
+    let next_block = (highest_logged_q / RESTORE_Q_BLOCK) + 1;
+    let next_q = next_block.saturating_mul(RESTORE_Q_BLOCK);
+    if next_q >= MAX_Q {
+        return Err(VaultError::LmsExhausted);
+    }
+    Ok(next_q)
 }
 
 #[cfg(test)]
