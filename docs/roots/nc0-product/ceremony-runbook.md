@@ -84,14 +84,18 @@ supgang lms-share-ceremony --medium-a /Volumes/A --medium-b /Volumes/B --medium-
 - It prints passphrase A **once**, as seven words. Write them on the
   `PASSPHRASE A` sheet, then type them back at the hidden prompt. The screen
   then clears. Passphrases B and C follow the same way, each on its own sheet.
-- The command then rebuilds both roots from every pair of media, asking for the
-  passphrases again. Type each one from its sheet.
+- The command then writes the six files, asks for each passphrase again, and
+  rebuilds both roots from every pair of media. Type each passphrase from its
+  sheet. A mistyped entry is checked at once and asked again, up to three
+  times.
 - It finishes by printing, for each root, the public key, fingerprint,
   known-answer SHA-256 and `next_q`, plus a SHA-256 for each of the six files.
   Leave this on screen for step 7.
 
-If any step fails, stop. Do not retry on the same sticks. Report the exact
-message.
+If any step fails, stop and report the exact message. Never rerun the ceremony
+on sticks that already hold share files. If the files were written but a later
+check failed, the message says so: run step 5a for each pair instead, and
+report the result.
 
 ## 5. B+C recovery drill and negative checks
 
@@ -101,11 +105,11 @@ This drill rebuilds each root from stick B and stick C alone, the same pair
 that recovers the roots if Site 1 is ever lost. It never signs.
 
 ```bash
-supgang lms-share-verify nc0-product-primary --share /Volumes/B/nc0-product-primary.share.age --share /Volumes/C/nc0-product-primary.share.age
+supgang lms-share-verify primary --share /Volumes/B/nc0-product-primary.share.age --share /Volumes/C/nc0-product-primary.share.age
 ```
 
 ```bash
-supgang lms-share-verify nc0-product-recovery --share /Volumes/B/nc0-product-recovery.share.age --share /Volumes/C/nc0-product-recovery.share.age
+supgang lms-share-verify recovery --share /Volumes/B/nc0-product-recovery.share.age --share /Volumes/C/nc0-product-recovery.share.age
 ```
 
 Type passphrases B and C from their sheets. Each command must succeed and print
@@ -127,7 +131,7 @@ Run these against `nc0-product-primary`:
    ```
 
    ```bash
-   supgang lms-share-verify nc0-product-primary --share ~/Desktop/flipped.age --share /Volumes/C/nc0-product-primary.share.age
+   supgang lms-share-verify primary --share ~/Desktop/flipped.age --share /Volumes/C/nc0-product-primary.share.age
    ```
 
    Then delete the copy with `rm -P ~/Desktop/flipped.age`.
