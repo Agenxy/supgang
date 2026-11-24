@@ -83,7 +83,7 @@ fn removable_media_writer_and_reader_handle_exfat_modes_and_refuse_faults() -> R
 }
 
 #[test]
-fn partial_write_failure_cleans_all_created_and_partial_share_files() -> Result<(), Box<dyn std::error::Error>> {
+fn partial_write_failure_cleans_all_created_share_files() -> Result<(), Box<dyn std::error::Error>> {
     let dir_a = tempfile::tempdir()?;
     let dir_b = tempfile::tempdir()?;
     let dir_c = tempfile::tempdir()?;
@@ -111,9 +111,6 @@ fn partial_write_failure_cleans_all_created_and_partial_share_files() -> Result<
         |path: &Path, bytes: &[u8], maximum: usize| {
             writes += 1;
             if writes == 4 {
-                // Simulate a partial write leaving truncated bytes on disk before failing.
-                fs::write(path, b"partial-write-before-io-error")
-                    .map_err(|io_err| format!("setup failed: {io_err}"))?;
                 return Err(format!("{}: simulated I/O failure on share #4", path.display()));
             }
             media::write_share_file(path, bytes, maximum)
@@ -123,7 +120,7 @@ fn partial_write_failure_cleans_all_created_and_partial_share_files() -> Result<
     .ok_or("expected failure on share #4")?;
 
     assert!(err.contains("simulated I/O failure on share #4"));
-    assert!(err.contains("no share files remain"));
+    assert!(err.contains("no share files created by this run remain"));
     assert!(err.contains(PRIMARY_SHARE_FILE));
     assert!(err.contains(RECOVERY_SHARE_FILE));
 
@@ -137,6 +134,63 @@ fn partial_write_failure_cleans_all_created_and_partial_share_files() -> Result<
             dir.display()
         );
     }
+    Ok(())
+}
+
+#[test]
+fn rollback_preserves_preexisting_target_planted_after_preflight_and_removes_earlier_files()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir_a = tempfile::tempdir()?;
+    let dir_b = tempfile::tempdir()?;
+    let dir_c = tempfile::tempdir()?;
+    let media_dirs = media::preflight_media(dir_a.path(), dir_b.path(), dir_c.path(), false)?;
+
+    // Plant a pre-existing file at the 6th destination after preflight succeeds.
+    let planted = dir_c.path().join(RECOVERY_SHARE_FILE);
+    let sentinel = b"pre-existing-owner-file-do-not-delete";
+    fs::write(&planted, sentinel)?;
+
+    let primary_shares = slip39::split_2_of_3(&[0x55_u8; MASTER_LEN])?;
+    let recovery_shares = slip39::split_2_of_3(&[0x66_u8; MASTER_LEN])?;
+    let passphrases = [
+        Zeroizing::new(b"alpha bravo charlie delta echo foxtrot golf".to_vec()),
+        Zeroizing::new(b"hotel india juliet kilo lima mike november".to_vec()),
+        Zeroizing::new(b"oscar papa quebec romeo sierra tango uniform".to_vec()),
+    ];
+
+    let err = write_encrypted_shares(
+        &media_dirs,
+        &primary_shares,
+        &recovery_shares,
+        &passphrases,
+        age_scrypt::encrypt_test_factor18,
+    )
+    .err()
+    .ok_or("expected AlreadyExists refusal on planted file")?;
+
+    assert!(err.contains("already exists"), "unexpected error: {err}");
+    assert!(
+        err.contains("no share files created by this run remain"),
+        "unexpected error: {err}"
+    );
+    // The planted file must not be deleted and must not be listed in cleaned-up files.
+    assert_eq!(fs::read(&planted)?, sentinel);
+    let cleaned_section = err
+        .split("cleaned up share file(s) created by this run: [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .ok_or("missing cleaned-up list in error")?;
+    assert!(
+        !cleaned_section.contains(&planted.display().to_string()),
+        "planted file was falsely listed as cleaned up: {cleaned_section}"
+    );
+
+    // Every earlier file created by this run (5 files) must have been removed.
+    assert!(!dir_a.path().join(PRIMARY_SHARE_FILE).exists());
+    assert!(!dir_a.path().join(RECOVERY_SHARE_FILE).exists());
+    assert!(!dir_b.path().join(PRIMARY_SHARE_FILE).exists());
+    assert!(!dir_b.path().join(RECOVERY_SHARE_FILE).exists());
+    assert!(!dir_c.path().join(PRIMARY_SHARE_FILE).exists());
     Ok(())
 }
 

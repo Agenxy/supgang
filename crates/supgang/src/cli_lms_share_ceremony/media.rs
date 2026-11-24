@@ -308,28 +308,14 @@ pub(super) fn preflight_media(
     Ok([medium_a.to_path_buf(), medium_b.to_path_buf(), medium_c.to_path_buf()])
 }
 
-/// Removes all share files written so far (plus a failing partial target if present),
-/// syncs every medium directory, and formats a clear operator error message.
-pub(super) fn rollback_partial_shares(
-    media: &[PathBuf; 3],
-    created: &[PathBuf],
-    failing_target: Option<&Path>,
-    cause: &str,
-) -> String {
-    let mut removed = Vec::with_capacity(created.len() + 1);
+/// Removes only share files created by this run, syncs every medium directory,
+/// and formats a clear operator error message.
+///
+/// Any pre-existing file at a failing destination is never touched; `write_share_file`
+/// is responsible for cleaning up its own partial file when `O_EXCL` creation succeeded.
+pub(super) fn rollback_partial_shares(media: &[PathBuf; 3], created: &[PathBuf], cause: &str) -> String {
+    let mut removed = Vec::with_capacity(created.len());
     let mut failed_removals = Vec::new();
-
-    if let Some(target) = failing_target
-        && fs::symlink_metadata(target).is_ok()
-    {
-        match fs::remove_file(target) {
-            Ok(()) => {
-                remove_appledouble(target);
-                removed.push(target.display().to_string());
-            }
-            Err(error) => failed_removals.push(format!("{} ({error})", target.display())),
-        }
-    }
 
     for path in created {
         match fs::remove_file(path) {
@@ -359,11 +345,11 @@ pub(super) fn rollback_partial_shares(
 
     if failed_removals.is_empty() && sync_errors.is_empty() {
         format!(
-            "{cause}; cleaned up share file(s): [{removed_summary}]; no share files remain, so the ceremony can be repeated on fresh media"
+            "{cause}; cleaned up share file(s) created by this run: [{removed_summary}]; no share files created by this run remain, so the ceremony can be repeated on fresh media"
         )
     } else {
         format!(
-            "{cause}; removed share file(s): [{removed_summary}]; cleanup warnings: failed removals [{}], sync errors [{}]; inspect media before repeating",
+            "{cause}; removed share file(s) created by this run: [{removed_summary}]; cleanup warnings: failed removals [{}], sync errors [{}]; inspect media before repeating",
             failed_removals.join(", "),
             sync_errors.join(", ")
         )

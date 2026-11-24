@@ -154,17 +154,12 @@ where
             Ok(ct) => ct,
             Err(cause) => {
                 primary_text.zeroize();
-                return Err(media::rollback_partial_shares(media_dirs, &created, None, cause));
+                return Err(media::rollback_partial_shares(media_dirs, &created, cause));
             }
         };
         primary_text.zeroize();
         if let Err(cause) = writer(&primary_path, &primary_ct, age_scrypt::MAX_FILE) {
-            return Err(media::rollback_partial_shares(
-                media_dirs,
-                &created,
-                Some(&primary_path),
-                &cause,
-            ));
+            return Err(media::rollback_partial_shares(media_dirs, &created, &cause));
         }
         created.push(primary_path.clone());
 
@@ -174,17 +169,12 @@ where
             Ok(ct) => ct,
             Err(cause) => {
                 recovery_text.zeroize();
-                return Err(media::rollback_partial_shares(media_dirs, &created, None, cause));
+                return Err(media::rollback_partial_shares(media_dirs, &created, cause));
             }
         };
         recovery_text.zeroize();
         if let Err(cause) = writer(&recovery_path, &recovery_ct, age_scrypt::MAX_FILE) {
-            return Err(media::rollback_partial_shares(
-                media_dirs,
-                &created,
-                Some(&recovery_path),
-                &cause,
-            ));
+            return Err(media::rollback_partial_shares(media_dirs, &created, &cause));
         }
         created.push(recovery_path.clone());
 
