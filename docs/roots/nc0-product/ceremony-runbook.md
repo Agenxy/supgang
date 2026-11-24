@@ -93,21 +93,34 @@ supgang lms-share-ceremony --medium-a /Volumes/A --medium-b /Volumes/B --medium-
 If any step fails, stop. Do not retry on the same sticks. Report the exact
 message.
 
-## 5. Must-fail checks
+## 5. B+C recovery drill and negative checks
 
-Each check uses only stick B and stick C. The same pair recovers the roots if
-Site 1 is ever lost.
+### 5a. Recovery drill: must SUCCEED
+
+This drill rebuilds each root from stick B and stick C alone, the same pair
+that recovers the roots if Site 1 is ever lost. It never signs.
 
 ```bash
 supgang lms-share-verify nc0-product-primary --share /Volumes/B/nc0-product-primary.share.age --share /Volumes/C/nc0-product-primary.share.age
 ```
 
-1. Type a deliberately wrong passphrase for B. The command must fail.
-2. Run it again with the correct passphrases. It must succeed and print the
-   same primary fingerprint as step 4.
-3. Run it with the same file given twice (`--share` B, `--share` B). It must
-   fail, because one share is below the threshold.
-4. Make a copy with one byte changed, then verify using the copy. It must fail:
+```bash
+supgang lms-share-verify nc0-product-recovery --share /Volumes/B/nc0-product-recovery.share.age --share /Volumes/C/nc0-product-recovery.share.age
+```
+
+Type passphrases B and C from their sheets. Each command must succeed and print
+the same public key and fingerprint as step 4 for that root.
+
+### 5b. Negative checks: each must FAIL
+
+Run these against `nc0-product-primary`:
+
+1. Repeat the 5a primary command, but type a deliberately wrong passphrase for
+   B. It must fail.
+2. **Single share.** Give the same file twice (`--share` B, `--share` B). One
+   share is below the threshold, so it must fail to rebuild.
+3. **Altered file.** Make a copy with one byte changed, then verify using the
+   copy. It must fail:
 
    ```bash
    cp /Volumes/B/nc0-product-primary.share.age ~/Desktop/flipped.age && printf 'X' | dd of="$HOME/Desktop/flipped.age" bs=1 seek=400 conv=notrunc
@@ -119,14 +132,13 @@ supgang lms-share-verify nc0-product-primary --share /Volumes/B/nc0-product-prim
 
    Then delete the copy with `rm -P ~/Desktop/flipped.age`.
 
-Repeat step 2 for `nc0-product-recovery`, with B and C. It must print the same
-recovery fingerprint as step 4.
+## 6. Which tool is primary
 
-## 6. Second-family check of the public keys
-
-This runs only if Supply asks for it, using the fallback tool Supply provides.
-Otherwise skip it. The ceremony's own rebuild and the KAT in the merged PR are
-the standard checks.
+The Rust tool is primary only if, by Fri 27 Nov 09:00, a GPT-family reviewer has
+reviewed it and confirmed the second-family OKM/public-key agreement. If that
+check is missed, the pinned Python CLI is primary for the ceremony
+automatically, and Supply sends its sheet. Supply confirms which tool is primary
+before you start.
 
 ## 7. Photograph the public values
 
