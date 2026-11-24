@@ -22,6 +22,7 @@ pub(super) struct RendezvousOfferEvent {
 
 const REQUEST_INTAKE_INTERVAL: Duration = Duration::from_secs(1);
 const OFFER_INTAKE_INTERVAL: Duration = Duration::from_millis(250);
+const RELEASE_INTAKE_INTERVAL: Duration = Duration::from_secs(5);
 const FRAME_INTAKE_INTERVAL: Duration = Duration::from_millis(50);
 const INTENT_LIFETIME: Duration = Duration::from_secs(30);
 const MAX_PENDING_INTENTS: usize = 16;
@@ -89,55 +90,74 @@ impl RendezvousIntents {
     }
 }
 
-/// Listens only for unreliable traversal frames on one authenticated session.
+/// Listens for unreliable traversal and advisory release frames on one authenticated session.
 ///
-/// Invalid, future-version, or excess datagrams are ignored. They cannot alter
-/// durable state, and closing a valid session would make version skew a denial
-/// primitive. The QUIC receive buffer and event queue provide hard memory bounds.
+/// Invalid, oversized, future-version, or excess datagrams are ignored before or
+/// during decoding. They cannot alter durable state, and closing a valid session
+/// would make version skew a denial primitive. The QUIC receive buffer and event
+/// queue provide hard memory bounds.
 pub(super) async fn listener(connection: Connection, peer: NodeId, events: tokio::sync::mpsc::Sender<PeerEvent>) {
     let connection_id = connection.stable_id();
     let mut next_request = tokio::time::Instant::now();
     let mut next_offer = tokio::time::Instant::now();
+    let mut next_release = tokio::time::Instant::now();
     let mut next_frame = tokio::time::Instant::now();
     loop {
-        let received = rendezvous::receive(&connection).await;
+        let received = connection.read_datagram().await;
         let now = tokio::time::Instant::now();
         if now < next_frame {
             tokio::time::sleep_until(next_frame).await;
         }
         next_frame = tokio::time::Instant::now() + FRAME_INTAKE_INTERVAL;
-        let Ok(message) = received else {
+        let Ok(frame) = received else {
             if connection.close_reason().is_some() {
                 return;
             }
             continue;
         };
+        if frame.is_empty() || frame.len() > rendezvous::MAX_RENDEZVOUS_FRAME_BYTES {
+            continue;
+        }
         let now = tokio::time::Instant::now();
-        let event = match message {
-            RendezvousMessage::Request { rendezvous_id, target } if now >= next_request => {
-                next_request = now + REQUEST_INTAKE_INTERVAL;
-                PeerEvent::RendezvousRequest {
-                    peer,
-                    connection_id,
-                    rendezvous_id,
-                    target,
+        let event = if let Ok(message) = rendezvous::decode(&frame) {
+            match message {
+                RendezvousMessage::Request { rendezvous_id, target } if now >= next_request => {
+                    next_request = now + REQUEST_INTAKE_INTERVAL;
+                    PeerEvent::RendezvousRequest {
+                        peer,
+                        connection_id,
+                        rendezvous_id,
+                        target,
+                    }
                 }
-            }
-            RendezvousMessage::Offer {
-                rendezvous_id,
-                target,
-                address,
-            } if now >= next_offer => {
-                next_offer = now + OFFER_INTAKE_INTERVAL;
-                PeerEvent::RendezvousOffer {
-                    peer,
-                    connection_id,
+                RendezvousMessage::Offer {
                     rendezvous_id,
                     target,
                     address,
+                } if now >= next_offer => {
+                    next_offer = now + OFFER_INTAKE_INTERVAL;
+                    PeerEvent::RendezvousOffer {
+                        peer,
+                        connection_id,
+                        rendezvous_id,
+                        target,
+                        address,
+                    }
                 }
+                RendezvousMessage::Request { .. } | RendezvousMessage::Offer { .. } => continue,
             }
-            RendezvousMessage::Request { .. } | RendezvousMessage::Offer { .. } => continue,
+        } else if frame.len() <= crate::release::MAX_RELEASE_FRAME_BYTES
+            && now >= next_release
+            && let Ok(identity) = crate::release::decode_frame(&frame)
+        {
+            next_release = now + RELEASE_INTAKE_INTERVAL;
+            PeerEvent::ReleaseIdentity {
+                peer,
+                connection_id,
+                identity,
+            }
+        } else {
+            continue;
         };
         if events.try_send(event).is_err() && events.is_closed() {
             return;

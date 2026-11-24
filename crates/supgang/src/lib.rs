@@ -45,6 +45,7 @@ pub(crate) mod platform_service;
 pub mod profile;
 pub mod reachability;
 pub mod record;
+pub mod release;
 pub mod rendezvous;
 pub mod revocation;
 pub mod router_mapping;
@@ -71,3 +72,7 @@ pub mod wire;
 
 /// Current product and wire-protocol version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Source commit embedded at build time (40 lowercase hex characters or `"unknown"`).
+pub const SOURCE_COMMIT: &str = env!("SUPGANG_SOURCE_COMMIT");
+/// Human-facing version and short commit displayed by `supgang --version`.
+pub const VERSION_DISPLAY: &str = env!("SUPGANG_VERSION_DISPLAY");

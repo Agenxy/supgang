@@ -16,6 +16,7 @@ pub(super) struct McpStatusOutput {
     schema: &'static str,
     status: &'static str,
     version: &'static str,
+    commit: String,
     name: String,
     hive_id: String,
     node_id: String,
@@ -27,6 +28,7 @@ pub(super) struct McpStatusOutput {
     internet_reachability: Option<String>,
     member_count: usize,
     event_count: usize,
+    update_notice: Option<crate::release::UpdateNotice>,
 }
 
 pub(super) fn fleet_data(state_directory: &Path) -> Result<cli_peer::PeersOutput, String> {
@@ -56,6 +58,7 @@ pub(super) fn status_data(state_directory: &Path) -> Result<McpStatusOutput, Str
         schema: "supgang.mcp.status/v2",
         status: "ok",
         version: VERSION,
+        commit: crate::SOURCE_COMMIT.to_owned(),
         name: name.to_string(),
         hive_id: local.identity().hive_id.to_string(),
         node_id: node_id.to_string(),
@@ -67,14 +70,21 @@ pub(super) fn status_data(state_directory: &Path) -> Result<McpStatusOutput, Str
         internet_reachability: None,
         member_count: local.member_count(),
         event_count: local.event_count(),
+        update_notice: None,
     })
 }
 
 fn running_status(value: ControlStatus) -> McpStatusOutput {
+    let commit = if value.commit.is_empty() {
+        crate::release::UNKNOWN_COMMIT.to_owned()
+    } else {
+        value.commit
+    };
     McpStatusOutput {
         schema: "supgang.mcp.status/v2",
         status: "ok",
         version: VERSION,
+        commit,
         name: value.name,
         hive_id: value.hive_id,
         node_id: value.node_id,
@@ -86,6 +96,7 @@ fn running_status(value: ControlStatus) -> McpStatusOutput {
         internet_reachability: Some(value.internet_reachability),
         member_count: value.member_count,
         event_count: value.event_count,
+        update_notice: value.update_notice,
     }
 }
 

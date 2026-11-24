@@ -58,3 +58,15 @@ async fn parent_gone(parent: Option<rustix::process::Pid>) {
         }
     }
 }
+
+#[cfg(test)]
+pub fn data_status_for_test(state_directory: &std::path::Path) -> Result<serde_json::Value, String> {
+    let value = data::status_data(state_directory)?;
+    serde_json::to_value(value).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+pub fn data_fleet_for_test(state_directory: &std::path::Path) -> Result<serde_json::Value, String> {
+    let value = data::fleet_data(state_directory)?;
+    serde_json::to_value(value).map_err(|error| error.to_string())
+}

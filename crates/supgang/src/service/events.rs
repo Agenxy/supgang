@@ -36,6 +36,11 @@ pub(super) enum PeerEvent {
         target: NodeId,
         address: SocketAddr,
     },
+    ReleaseIdentity {
+        peer: NodeId,
+        connection_id: usize,
+        identity: crate::release::ReleaseIdentity,
+    },
     Closed {
         peer: NodeId,
         connection_id: usize,
@@ -58,6 +63,9 @@ impl PeerEvent {
                 peer, connection_id, ..
             }
             | Self::RendezvousOffer {
+                peer, connection_id, ..
+            }
+            | Self::ReleaseIdentity {
                 peer, connection_id, ..
             } => Some((*peer, *connection_id)),
             Self::Closed { .. } => None,

@@ -27,6 +27,9 @@ pub struct PeerRow {
     /// Services the computer advertises in its signed record, at its addresses.
     #[serde(default)]
     pub services: Vec<ServiceRow>,
+    /// Release identity reported on the live authenticated session (or compiled locally).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<crate::release::ReleaseInfo>,
 }
 
 /// The actual socket used by an authenticated connection at the time of the read.
@@ -101,6 +104,9 @@ pub struct PeersOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub this_computer: Option<PeerRow>,
     pub peers: Vec<PeerRow>,
+    /// Advisory release awareness from live authenticated gang peers.
+    #[serde(default)]
+    pub update_notice: Option<crate::release::UpdateNotice>,
 }
 
 /// One explicitly requested address candidate.

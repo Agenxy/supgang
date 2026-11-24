@@ -29,6 +29,7 @@ fn row(name: &str, byte: u8) -> PeerRow {
         candidate_count: 0,
         addresses: Vec::new(),
         services: Vec::new(),
+        release: None,
     }
 }
 
