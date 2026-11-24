@@ -173,6 +173,17 @@ pub(super) fn run(
         )),
         _ => None,
     };
+    let (live_running_release, update_notice) = match &status_response {
+        Ok(Some(control::ControlReply::Status { value })) => {
+            let commit = if value.commit.is_empty() {
+                crate::release::UNKNOWN_COMMIT.to_owned()
+            } else {
+                value.commit.clone()
+            };
+            (Some((value.version.clone(), commit)), value.update_notice.clone())
+        }
+        _ => (None, None),
+    };
     let (state_ok, state_check) = match status_response {
         Ok(Some(control::ControlReply::Status { value })) => (
             true,
@@ -241,6 +252,10 @@ pub(super) fn run(
     };
     checks.push(state_check);
     checks.push(reachability_check(live_reachability.as_ref()));
+    checks.push(release_awareness_check(
+        live_running_release.as_ref(),
+        update_notice.as_ref(),
+    ));
     if let Some(peer) = peer {
         checks.push(peer_endpoint_check(state_directory, peer));
     }
@@ -259,10 +274,12 @@ pub(super) fn run(
         schema: "supgang.doctor/v1",
         status: if failed { "error" } else { "warning" },
         version: VERSION,
+        commit: crate::SOURCE_COMMIT,
         strict_mode: true,
         public_dependencies: 0,
         checks,
         custody: CustodyOutput::current(identity_result.is_ok()),
+        update_notice,
     };
     let rendered = if json {
         render_json(&result, output, error)
@@ -278,8 +295,48 @@ pub(super) fn run(
     }
 }
 
+fn release_awareness_check(
+    live_running_release: Option<&(String, String)>,
+    update_notice: Option<&crate::release::UpdateNotice>,
+) -> DoctorCheck {
+    if let Some(notice) = update_notice {
+        return DoctorCheck {
+            id: "release-awareness",
+            status: if notice.kind == "update-available" {
+                "warning"
+            } else {
+                "ok"
+            },
+            detail: notice.summary.clone(),
+        };
+    }
+    let detail = match live_running_release {
+        Some((version, commit)) => format!(
+            "running {version} ({}); no connected gang peer reports a newer release",
+            crate::release::short_commit(commit)
+        ),
+        None => format!(
+            "binary {}; start `supgang run` to compare releases with connected peers",
+            crate::VERSION_DISPLAY
+        ),
+    };
+    DoctorCheck {
+        id: "release-awareness",
+        status: "ok",
+        detail,
+    }
+}
+
 fn render_doctor_human(result: &DoctorOutput, output: &mut dyn Write) -> ExitCode {
-    if writeln!(output, "Supgang doctor: {}", result.status).is_err() {
+    if writeln!(output, "Supgang doctor: {}", result.status).is_err()
+        || writeln!(
+            output,
+            "Version: {} ({})",
+            result.version,
+            crate::release::short_commit(result.commit)
+        )
+        .is_err()
+    {
         return ExitCode::from(EXIT_FAILURE);
     }
     for check in &result.checks {

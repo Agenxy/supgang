@@ -17,6 +17,8 @@ pub(in crate::service) struct PeerEventState<'a> {
     pub(in crate::service) rendezvous_offers: &'a mut Vec<rendezvous::RendezvousOfferEvent>,
     pub(in crate::service) rendezvous_intents: &'a mut rendezvous::RendezvousIntents,
     pub(in crate::service) sync_budget: &'a mut SyncMutationBudget,
+    pub(in crate::service) local_release: &'a crate::release::ReleaseIdentity,
+    pub(in crate::service) release_log: &'a mut crate::release::ReleaseNoticeLog,
 }
 
 pub(in crate::service) fn process_peer_events(
@@ -34,6 +36,8 @@ pub(in crate::service) fn process_peer_events(
         rendezvous_offers,
         rendezvous_intents,
         sync_budget,
+        local_release,
+        release_log,
     } = state;
     let mut directory_changed = false;
     while let Ok(event) = receiver.try_recv() {
@@ -172,6 +176,21 @@ pub(in crate::service) fn process_peer_events(
                         address,
                     });
                 }
+            }
+            PeerEvent::ReleaseIdentity {
+                peer,
+                connection_id,
+                identity,
+            } => {
+                crate::service::release_awareness::record_peer_release(
+                    active,
+                    directory,
+                    local_release,
+                    release_log,
+                    peer,
+                    connection_id,
+                    identity,
+                );
             }
             PeerEvent::Closed { peer, connection_id } => {
                 if is_current_connection(active, peer, connection_id) {

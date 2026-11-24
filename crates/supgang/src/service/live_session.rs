@@ -326,6 +326,7 @@ impl LiveSessionState<'_> {
                 interval: self.config.retry_interval,
                 max_active_peers: self.config.max_active_peers,
                 update: self.update.cloned(),
+                local_release: self.config.release_identity.clone(),
             },
         );
         let admitted = self

@@ -14,7 +14,7 @@ use quinn::Endpoint;
 use thiserror::Error;
 
 use crate::{
-    candidate::{EndpointCandidate, MAX_CANDIDATES},
+    candidate::EndpointCandidate,
     control::{self, ControlListener},
     ids::NodeId,
     peer_directory::{PeerDirectory, PeerDirectoryError},
@@ -44,6 +44,7 @@ pub(crate) mod liveness;
 mod local_control;
 mod path_quality;
 mod peer_actor;
+mod release_awareness;
 mod rendezvous;
 mod replacement_proof;
 mod retry_schedule;
@@ -131,6 +132,7 @@ pub struct ServiceConfig {
     pub automatic_router_mapping: bool,
     /// Maximum authenticated neighbors retained by this process.
     pub max_active_peers: usize,
+    pub(crate) release_identity: crate::release::ReleaseIdentity,
 }
 
 /// A fatal service initialization or authoritative-state failure.
@@ -200,7 +202,7 @@ pub fn run_with_ready(
     config: ServiceConfig,
     ready: impl FnOnce() -> io::Result<()>,
 ) -> Result<(), ServiceError> {
-    validate_config(&config)?;
+    config.validate()?;
     let mut local_state = state::open(state_directory.as_ref())?;
     let policy =
         crate::tunnel_policy::load(state_directory.as_ref()).map_err(|_| ServiceError::InvalidConfiguration)?;
@@ -240,20 +242,6 @@ pub fn run_with_ready(
         )
         .await
     })
-}
-
-fn validate_config(config: &ServiceConfig) -> Result<(), ServiceError> {
-    if config.listen.port() == 0
-        || config.candidates.is_empty()
-        || config.candidates.len() > MAX_CANDIDATES
-        || config.retry_interval < Duration::from_secs(1)
-        || !(1..=MAX_ANCHOR_PEERS).contains(&config.max_active_peers)
-        || !(MIN_ADDRESS_HISTORY..=MAX_ADDRESS_HISTORY).contains(&config.address_history)
-        || !(Duration::from_hours(1)..=Duration::from_hours(168)).contains(&config.record_lifetime)
-    {
-        return Err(ServiceError::InvalidConfiguration);
-    }
-    Ok(())
 }
 
 async fn service_loop(
@@ -331,6 +319,7 @@ async fn service_loop(
     let mut silence = silence::SilenceWatch::default();
     let mut path_quality = path_quality::PathQualityWatch::default();
     let mut history = history::ConnectionHistory::default();
+    let mut release_log = crate::release::ReleaseNoticeLog::new();
     loop {
         if restart_requested || stop_if_requested(&mut shutdown, &endpoint).await {
             break;
@@ -418,6 +407,8 @@ async fn service_loop(
                 rendezvous_offers: &mut rendezvous_offers,
                 rendezvous_intents: &mut rendezvous_intents,
                 sync_budget: &mut sync_mutation_budget,
+                local_release: &config.release_identity,
+                release_log: &mut release_log,
             },
         )?;
         reap_ready_tasks(&mut actor_tasks)?;

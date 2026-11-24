@@ -115,7 +115,14 @@ impl ServiceConfig {
             automatic_interface_refresh: false,
             automatic_router_mapping: false,
             max_active_peers: MAX_ACTIVE_PEERS,
+            release_identity: crate::release::ReleaseIdentity::local(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_release_identity(mut self, identity: crate::release::ReleaseIdentity) -> Self {
+        self.release_identity = identity;
+        self
     }
 
     /// Replaces retry and record lifetimes after enforcing release bounds.
@@ -172,5 +179,19 @@ impl ServiceConfig {
     pub const fn with_anchor_mode(mut self, enabled: bool) -> Self {
         self.max_active_peers = if enabled { MAX_ANCHOR_PEERS } else { MAX_ACTIVE_PEERS };
         self
+    }
+
+    pub(super) fn validate(&self) -> Result<(), ServiceError> {
+        if self.listen.port() == 0
+            || self.candidates.is_empty()
+            || self.candidates.len() > MAX_CANDIDATES
+            || self.retry_interval < Duration::from_secs(1)
+            || !(1..=MAX_ANCHOR_PEERS).contains(&self.max_active_peers)
+            || !(MIN_ADDRESS_HISTORY..=MAX_ADDRESS_HISTORY).contains(&self.address_history)
+            || !(Duration::from_hours(1)..=Duration::from_hours(168)).contains(&self.record_lifetime)
+        {
+            return Err(ServiceError::InvalidConfiguration);
+        }
+        Ok(())
     }
 }

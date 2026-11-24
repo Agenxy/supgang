@@ -24,8 +24,11 @@ pub struct Observation {
     pub manager_enablement: Option<String>,
     pub lingering: Option<bool>,
     pub client_version: &'static str,
+    pub client_commit: &'static str,
     pub running_version: Option<String>,
+    pub running_commit: Option<String>,
     pub version_note: Option<&'static str>,
+    pub update_notice: Option<crate::release::UpdateNotice>,
     pub control_error: Option<&'static str>,
     pub definition_path: Option<String>,
     pub installed_program: Option<String>,
@@ -44,8 +47,11 @@ impl Observation {
             manager_enablement: None,
             lingering: None,
             client_version: crate::VERSION,
+            client_commit: crate::SOURCE_COMMIT,
             running_version: None,
+            running_commit: None,
             version_note: None,
+            update_notice: None,
             control_error: None,
             definition_path: None,
             installed_program: None,
@@ -300,6 +306,8 @@ fn observe_control(
             }
             report.observation.version_note = version_note(&value.version);
             report.observation.running_version = Some(value.version);
+            report.observation.running_commit = (!value.commit.is_empty()).then_some(value.commit);
+            report.observation.update_notice = value.update_notice;
         }
         Ok(None) => {}
         Ok(Some(_)) | Err(control::ControlError::InvalidResponse) => {

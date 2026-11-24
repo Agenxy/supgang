@@ -40,6 +40,7 @@ pub(super) struct PeerActorRegistry<'a> {
     pub(super) interval: Duration,
     pub(super) max_active_peers: usize,
     pub(super) update: Option<PeerUpdateContext>,
+    pub(super) local_release: crate::release::ReleaseIdentity,
 }
 
 struct PeerActorContext {
@@ -57,6 +58,7 @@ struct PeerActorContext {
     /// connection history can say.
     ended: Arc<std::sync::OnceLock<&'static [u8]>>,
     deferred: VecDeque<DeferredStream>,
+    local_release: crate::release::ReleaseIdentity,
 }
 
 #[derive(Clone)]
@@ -149,6 +151,7 @@ pub(super) fn register_connection(
         draining,
         ended,
         deferred,
+        local_release: registry.local_release.clone(),
     }));
 }
 
@@ -180,6 +183,7 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
         mut draining,
         ended: _,
         mut deferred,
+        local_release: _,
     } = context;
     let connection_id = connection.stable_id();
     let mut tunnels = tokio::task::JoinSet::new();
@@ -337,10 +341,12 @@ async fn supervise_connection(context: PeerActorContext) {
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(u64::MAX, |duration| duration.as_secs());
     let ended = Arc::clone(&context.ended);
+    let local_release = context.local_release.clone();
     let reason: &'static [u8] = tokio::select! {
         reason = peer_actor(context) => reason,
         () = revocation_listener(connection.clone(), peer, events.clone()) => b"revocation stream ended",
         () = rendezvous::listener(connection.clone(), peer, events.clone()) => b"rendezvous stream ended",
+        () = super::release_awareness::announce_loop(connection.clone(), local_release) => b"release gossip ended",
         () = authorization.wait_until_invalid(now) => b"session authorization lapsed",
     };
     let _first = ended.set(reason);
@@ -519,6 +525,7 @@ mod tests {
                     interval: Duration::from_secs(30),
                     max_active_peers: 8,
                     update: None,
+                    local_release: crate::release::ReleaseIdentity::local(),
                 },
             );
             register_connection(
@@ -538,6 +545,7 @@ mod tests {
                     interval: Duration::from_secs(30),
                     max_active_peers: 8,
                     update: None,
+                    local_release: crate::release::ReleaseIdentity::local(),
                 },
             );
 
@@ -611,6 +619,7 @@ mod tests {
                 draining: drain_receiver,
                 ended: std::sync::Arc::new(std::sync::OnceLock::new()),
                 deferred: VecDeque::new(),
+                local_release: crate::release::ReleaseIdentity::local(),
             }));
 
             let (mut malformed, _receive) = client_connection.open_bi().await?;
