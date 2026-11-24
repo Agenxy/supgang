@@ -79,6 +79,30 @@ pub enum Command {
         #[arg(value_name = "ROLE")]
         role: String,
     },
+    /// Generate both NC0 LMS product roots, split each 2-of-3 via SLIP-39 into three age-encrypted media, and verify all pairs.
+    LmsShareCeremony {
+        /// Destination directory for Medium A share files.
+        #[arg(long = "medium-a", value_name = "DIR")]
+        medium_a: PathBuf,
+        /// Destination directory for Medium B share files.
+        #[arg(long = "medium-b", value_name = "DIR")]
+        medium_b: PathBuf,
+        /// Destination directory for Medium C share files.
+        #[arg(long = "medium-c", value_name = "DIR")]
+        medium_c: PathBuf,
+        /// Test-only override when a default route is present.
+        #[arg(long)]
+        i_confirm_offline: bool,
+    },
+    /// Recombine two age-encrypted SLIP-39 share files read-only and verify the derived NC0 LMS public key.
+    LmsShareVerify {
+        /// NC0 product root role (`primary` or `recovery`).
+        #[arg(value_name = "ROLE")]
+        role: String,
+        /// Age-encrypted SLIP-39 share file; repeat exactly twice from two distinct media.
+        #[arg(long = "share", value_name = "FILE", required = true)]
+        share: Vec<PathBuf>,
+    },
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
     ///
     /// Exit 0 on success, 75 for a transient setup failure, or 3 for refusal or misconfiguration.

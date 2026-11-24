@@ -125,7 +125,13 @@ where
 
     match cli.command {
         Some(Command::Capabilities) => unreachable!("capabilities returns before state lookup"),
-        Some(Command::LmsKeygen { .. } | Command::LmsEscrowVerify { .. } | Command::LmsDerivePublic { .. }) => {
+        Some(
+            Command::LmsKeygen { .. }
+            | Command::LmsEscrowVerify { .. }
+            | Command::LmsDerivePublic { .. }
+            | Command::LmsShareCeremony { .. }
+            | Command::LmsShareVerify { .. },
+        ) => {
             unreachable!("offline LMS commands return before state lookup")
         }
         Some(Command::Connect { peer, service }) => {

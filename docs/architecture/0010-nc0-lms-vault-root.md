@@ -209,6 +209,33 @@ prompt (never from argv or environment), rejects any master length other than
 32 bytes, computes `pub56`, `I`, `T[1]`, and `SHA-256(pub56)` without signing,
 and prints only public values.
 
+`supgang lms-share-ceremony --medium-a DIR --medium-b DIR --medium-c DIR`
+performs the offline two-root SLIP-39 2-of-3 share ceremony (with optional
+`--json` and test-only `--i-confirm-offline`). It enforces the TTY,
+`RLIMIT_CORE = 0`, distinct-directory, new-file, and offline routing-table
+guards; draws two independent 256-bit masters from the OS CSPRNG; derives both
+roots (`nc0-product-primary`, `nc0-product-recovery`), computes both H20/W1
+public keys, and burns `q = 0` on a verified known-answer signature for each
+root; splits each master 2-of-3 via SLIP-39 (single group, threshold 2 of 3,
+empty SLIP-39 passphrase); wipes both masters; generates one 7-word EFF
+passphrase per medium (A, B, C), displaying each once, requiring hidden typed
+confirmation, and clearing the terminal (`ESC[H ESC[2J ESC[3J`); writes six
+age v1 scrypt (`2^20`) files (`nc0-product-primary.share.age` and
+`nc0-product-recovery.share.age` on each medium) with `O_EXCL`, `0600`, and
+file plus directory `fsync`; prompts for each medium's passphrase again and,
+for every pair of media (`A+B`, `A+C`, `B+C`) and both roots, decrypts,
+combines, re-derives, and recomputes `T[1]` without signing, requiring
+identical public keys; and outputs only public data (`public_key`,
+`lms_identifier`, `root_t1`, `fingerprint`, `known_answer_signature_sha256`,
+`next_q`, and the SHA-256 of every verified share file).
+
+`supgang lms-share-verify ROLE --share FILE --share FILE` performs read-only
+recombination and public-key verification of two distinct age-encrypted share
+files for `ROLE` (`primary` or `recovery`). It disables core dumps, prompts
+hidden for both passphrases, decrypts and combines the SLIP-39 shares, derives
+and recomputes `T[1]` without signing, and emits public data plus both file
+SHA-256 digests (`supgang.nc0-lms-share-verify/v1`).
+
 For any future import or restore of an escrowed or SLIP-39-split NC0 product
 root into a signing vault, the following q-state rules are mandatory (and
 implementing vault import under these rules is a precondition for the first

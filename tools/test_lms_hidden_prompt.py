@@ -135,6 +135,91 @@ class LmsHiddenPromptTest(unittest.TestCase):
             os.close(master_fd)
             os.close(slave_fd)
 
+    def test_share_verify_hides_passphrase_prompts(self):
+        binary = Path(os.environ.get("SUPGANG_TEST_BIN", ROOT / "target" / "debug" / "supgang"))
+        self.assertTrue(binary.is_file(), "the workspace test stage must build supgang first")
+        with tempfile.TemporaryDirectory(prefix="supgang-lms-share-prompt-") as directory:
+            first = Path(directory) / "a.share.age"
+            second = Path(directory) / "b.share.age"
+            for path in (first, second):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(b"test-only-malformed-share-age-file")
+
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
+                [
+                    str(binary),
+                    "--json",
+                    "lms-share-verify",
+                    "primary",
+                    "--share",
+                    str(first),
+                    "--share",
+                    str(second),
+                ],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            output = bytearray()
+            try:
+                deadline = time.monotonic() + 15
+                prompt1 = b"Passphrase for share 1 ("
+                while prompt1 not in output and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            chunk = os.read(master_fd, 4096)
+                            self.assertLessEqual(len(output) + len(chunk), 16_384, "share verify output exceeded bound")
+                            output.extend(chunk)
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                    if process.poll() is not None:
+                        break
+                self.assertIn(prompt1, output, "share-verify did not reach first hidden prompt")
+                modes = termios.tcgetattr(slave_fd)[3]
+                self.assertFalse(modes & termios.ECHO, "prompt appeared while echo was enabled")
+                self.assertFalse(modes & termios.ICANON, "prompt appeared while canonical input was enabled")
+                os.write(master_fd, TEST_ONLY_PASSPHRASE + b"\n")
+
+                prompt2 = b"Passphrase for share 2 ("
+                while prompt2 not in output and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            chunk = os.read(master_fd, 4096)
+                            self.assertLessEqual(len(output) + len(chunk), 16_384, "share verify output exceeded bound")
+                            output.extend(chunk)
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                    if process.poll() is not None:
+                        break
+                self.assertIn(prompt2, output, "share-verify did not reach second hidden prompt")
+                os.write(master_fd, TEST_ONLY_PASSPHRASE + b"\n")
+
+                while process.poll() is None and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            chunk = os.read(master_fd, 4096)
+                            self.assertLessEqual(len(output) + len(chunk), 16_384, "share verify output exceeded bound")
+                            output.extend(chunk)
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                self.assertEqual(process.poll(), 3, "share-verify did not refuse malformed test files")
+                self.assertNotIn(TEST_ONLY_PASSPHRASE, output, "hidden passphrase was echoed")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                os.close(master_fd)
+                os.close(slave_fd)
+
 
 if __name__ == "__main__":
     unittest.main()
