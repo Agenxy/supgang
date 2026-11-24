@@ -15,3 +15,7 @@ homepage.workspace = true
 
 [dependencies]
 libc.workspace = true
+
+# Intentionally does not inherit workspace.lints, which sets rust.unsafe_code = "forbid";
+# this crate is the small reviewed platform ACL FFI boundary.
+[lints]

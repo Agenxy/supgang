@@ -10,7 +10,7 @@ netlink-packet-core = { path = "third_party/netlink-packet-core" }
 [workspace.package]
 version = "0.2.0-alpha.21"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 authors = ["Agenxy contributors"]
 license = "Apache-2.0"
 repository = "https://github.com/Agenxy/supgang"
