@@ -3,16 +3,25 @@
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use supgang_core as _;
 
 struct TestDirectory(PathBuf);
 
+/// Tests in this binary share one process ID, and macOS clocks resolve only
+/// microseconds, so the counter keeps concurrent directories distinct.
+static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
 impl TestDirectory {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!("supgang-lms-nonterminal-{}-{nonce}", std::process::id()));
+        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "supgang-lms-nonterminal-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }

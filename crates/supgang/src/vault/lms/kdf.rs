@@ -229,49 +229,27 @@ mod tests {
     }
 
     #[test]
-    fn kat_primary_okm_t1_and_pub56_sha256() -> Result<(), Box<dyn std::error::Error>> {
-        let master = test_master();
-
+    fn kat_primary_okm() -> Result<(), Box<dyn std::error::Error>> {
         // Labs spec rev 2 KAT for TEST master 000102..1f (second-family check).
-        let primary_okm = derive_okm(&master, RootRole::Primary)?;
+        // The H20 public key and fingerprint KAT is crates/supgang-cli/tests/lms_kdf_kat.rs,
+        // in its own test binary so its long treehash never shares CPU with timing tests.
+        let okm = derive_okm(&test_master(), RootRole::Primary)?;
         assert_eq!(
-            hex::encode(primary_okm.as_ref()),
+            hex::encode(okm.as_ref()),
             "46489c0c98db7f1e9ea6397f9f7be802bb06b28582991073a12fee790ab3ea16e9042da9345063a411cffea9be4b6e0b"
-        );
-        let primary_public = derive_public(&master, RootRole::Primary, |_, _| {})?;
-        assert_eq!(primary_public.public_key.get(..8), Some(&[0, 0, 0, 8, 0, 0, 0, 1][..]));
-        assert_eq!(primary_public.public_key.get(8..24), primary_okm.get(32..48));
-        assert_eq!(
-            hex::encode(primary_public.public_key.get(24..56).ok_or("short pub56")?),
-            "b8547249f0f57763fbe1db67565b1d65c387ba95e5b902f1ae32e74dd453d57e"
-        );
-        assert_eq!(
-            primary_public.fingerprint,
-            "e150742e94bff4a7ae2c6b41e8367c19162127e166a76cc3e4985984cd202932"
         );
         Ok(())
     }
 
     #[test]
-    fn kat_recovery_okm_t1_and_pub56_sha256() -> Result<(), Box<dyn std::error::Error>> {
-        let master = test_master();
-
+    fn kat_recovery_okm() -> Result<(), Box<dyn std::error::Error>> {
         // Labs spec rev 2 KAT for TEST master 000102..1f (second-family check).
-        let recovery_okm = derive_okm(&master, RootRole::Recovery)?;
+        // The H20 public key and fingerprint KAT is crates/supgang-cli/tests/lms_kdf_kat.rs,
+        // in its own test binary so its long treehash never shares CPU with timing tests.
+        let okm = derive_okm(&test_master(), RootRole::Recovery)?;
         assert_eq!(
-            hex::encode(recovery_okm.as_ref()),
+            hex::encode(okm.as_ref()),
             "748c9808af52a1c99b2397f74c7cf6456f85e2b20f3e82b5e96d7348dc25901657f644285f666d1cca75c9726a84d5d4"
-        );
-        let recovery_public = derive_public(&master, RootRole::Recovery, |_, _| {})?;
-        assert_eq!(recovery_public.public_key.get(..8), Some(&[0, 0, 0, 8, 0, 0, 0, 1][..]));
-        assert_eq!(recovery_public.public_key.get(8..24), recovery_okm.get(32..48));
-        assert_eq!(
-            hex::encode(recovery_public.public_key.get(24..56).ok_or("short pub56")?),
-            "a67c41713d9e1ca9f2ff8b21ee788d96bda1f03234d72141af3e92ddedb9b465"
-        );
-        assert_eq!(
-            recovery_public.fingerprint,
-            "dda58b9612c73e99e50f64285587817f8ee2e445000534782188029d2859d3ab"
         );
         Ok(())
     }
