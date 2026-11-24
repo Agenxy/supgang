@@ -60,11 +60,13 @@ fn network_change_drains_obsolete_handshakes_in_every_lane() -> Result<(), Box<d
         let mut active = BTreeMap::new();
         let mut noncanonical = BTreeSet::new();
         let mut in_flight = true;
+        let mut known_networks = Vec::new();
         super::reset_network_recovery(
             &mut active,
             &mut noncanonical,
             [&mut tasks, &mut inbound, &mut priority],
             &mut in_flight,
+            &mut known_networks,
         )
         .await;
         assert!(!in_flight);
@@ -404,6 +406,7 @@ fn duplicate_stale_and_capacity_rejections_precede_durable_exchange_effects() ->
             replacement_tasks: &mut replacement_tasks,
             quality: &mut quality,
             noncanonical_outbound: &mut noncanonical_outbound,
+            known_networks: &[],
             page_sender: &page_sender,
             event_sender: &event_sender,
             actor_tasks: &mut actor_tasks,
@@ -435,6 +438,7 @@ fn duplicate_stale_and_capacity_rejections_precede_durable_exchange_effects() ->
             replacement_tasks: &mut replacement_tasks,
             quality: &mut quality,
             noncanonical_outbound: &mut noncanonical_outbound,
+            known_networks: &[],
             page_sender: &page_sender,
             event_sender: &event_sender,
             actor_tasks: &mut actor_tasks,
@@ -462,6 +466,7 @@ fn duplicate_stale_and_capacity_rejections_precede_durable_exchange_effects() ->
             replacement_tasks: &mut replacement_tasks,
             quality: &mut quality,
             noncanonical_outbound: &mut noncanonical_outbound,
+            known_networks: &[],
             page_sender: &page_sender,
             event_sender: &event_sender,
             actor_tasks: &mut actor_tasks,

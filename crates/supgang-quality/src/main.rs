@@ -205,6 +205,13 @@ fn policy(root: &Path) -> Result<(), String> {
         "addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e",
         "EFF large wordlist",
     )?;
+    let slip39_words = fs::read(root.join("crates/supgang/src/slip39_wordlist.txt"))
+        .map_err(|error| format!("SLIP-39 wordlist: {error}"))?;
+    vendored_netwatch::verify_hash(
+        &slip39_words,
+        "bcc4555340332d169718aed8bf31dd9d5248cb7da6e5d355140ef4f1e601eec3",
+        "SLIP-39 wordlist",
+    )?;
     for required in [
         "AGENTS.md",
         "CHANGELOG.md",

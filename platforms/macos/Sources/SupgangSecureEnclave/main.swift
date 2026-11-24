@@ -71,9 +71,9 @@ private enum Refusal: Error {
     case refused(Int32)
 }
 
-private func context() -> LAContext {
+private func context(reason: String = "Approve Supgang device-key signing") -> LAContext {
     let context = LAContext()
-    context.localizedReason = "Approve Supgang device-key signing"
+    context.localizedReason = reason
     context.touchIDAuthenticationAllowableReuseDuration = 0
     return context
 }
@@ -100,11 +100,12 @@ private func generate(presence: Bool) throws -> String {
 
 /// The vault's key-agreement key: unattended, so agents can read granted
 /// secrets without a prompt, and bound to this device's Secure Enclave.
-private func generateAgreement() throws -> String {
+private func generateAgreement(presence: Bool) throws -> String {
     guard SecureEnclave.isAvailable else { throw Refusal.noHardware }
     var error: Unmanaged<CFError>?
+    let flags: SecAccessControlCreateFlags = presence ? [.privateKeyUsage, .userPresence] : [.privateKeyUsage]
     guard let access = SecAccessControlCreateWithFlags(
-        nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, [.privateKeyUsage], &error
+        nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, flags, &error
     ) else {
         let code = error.map { CFErrorGetCode($0.takeRetainedValue()) } ?? -1
         throw Refusal.refused(Int32(clamping: code))
@@ -116,10 +117,12 @@ private func generateAgreement() throws -> String {
 
 /// Raw P-256 x-coordinate shared secret with one compressed peer key. The
 /// caller derives every key from it; nothing here is stored.
-private func agree(blob: Data, peer: Data) throws -> String {
+private func agree(blob: Data, peer: Data, reason: String?) throws -> String {
     guard peer.count == 33 else { throw Refusal.protocolError }
     guard SecureEnclave.isAvailable else { throw Refusal.noHardware }
-    let key = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob, authenticationContext: context())
+    let key = try SecureEnclave.P256.KeyAgreement.PrivateKey(
+        dataRepresentation: blob, authenticationContext: context(reason: reason ?? "Approve Supgang vault agreement")
+    )
     let other = try P256.KeyAgreement.PublicKey(compressedRepresentation: peer)
     let secret = try key.sharedSecretFromKeyAgreement(with: other)
     return "agree \(secret.withUnsafeBytes { CustodyWire.hex($0) })"
@@ -131,7 +134,8 @@ private func run(_ fields: [Substring]) throws -> String {
     }
     if fields == ["generate", "--presence"] { return try generate(presence: true) }
     if fields == ["generate", "--no-presence"] { return try generate(presence: false) }
-    if fields == ["generate-agreement"] { return try generateAgreement() }
+    if fields == ["generate-agreement"] { return try generateAgreement(presence: false) }
+    if fields == ["generate-agreement", "--presence"] { return try generateAgreement(presence: true) }
     if fields.count == 2, fields[0] == "exclude-backup" {
         let raw = try CustodyWire.decode(fields[1], maximum: 4096)
         guard let path = String(data: raw, encoding: .utf8), path.hasPrefix("/") else {
@@ -147,7 +151,19 @@ private func run(_ fields: [Substring]) throws -> String {
     }
     if fields.count == 4, fields[0] == "agree", fields[1] == "--sealed" {
         return try agree(
-            blob: CustodyWire.decode(fields[2], maximum: 4096), peer: CustodyWire.decode(fields[3], maximum: 33)
+            blob: CustodyWire.decode(fields[2], maximum: 4096), peer: CustodyWire.decode(fields[3], maximum: 33),
+            reason: nil
+        )
+    }
+    if fields.count == 7, fields[0] == "agree", fields[1] == "--presence", fields[2] == "--sealed",
+       fields[5] == "--reason" {
+        let reasonBytes = try CustodyWire.decode(fields[6], maximum: 128)
+        guard !reasonBytes.isEmpty,
+              reasonBytes.allSatisfy({ 0x20...0x7e ~= $0 }),
+              let reason = String(data: reasonBytes, encoding: .utf8) else { throw Refusal.protocolError }
+        return try agree(
+            blob: CustodyWire.decode(fields[3], maximum: 4096), peer: CustodyWire.decode(fields[4], maximum: 33),
+            reason: reason
         )
     }
     guard fields.count == 3 || fields.count == 4, fields[1] == "--sealed" else {

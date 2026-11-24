@@ -76,7 +76,6 @@ struct JoinOutput {
 }
 
 /// Parses the process arguments and writes output to the process streams.
-#[must_use]
 pub fn run_from_env() -> ExitCode {
     // Do not hold global stream locks: the MCP subcommand owns stdio for its
     // asynchronous JSON-RPC transport.
@@ -88,7 +87,6 @@ pub fn run_from_env() -> ExitCode {
 /// Executes the CLI against caller-provided streams.
 ///
 /// This entry point keeps tests and embedders independent from global output.
-#[must_use]
 pub fn run<I, T>(arguments: I, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode
 where
     I: IntoIterator<Item = T>,
@@ -111,41 +109,8 @@ where
     if matches!(cli.command, Some(Command::Capabilities)) {
         return capabilities(cli.json, output, error);
     }
-    if let Some(Command::LmsKeygen {
-        ref escrow_only,
-        ref to,
-        generate_passphrase,
-        i_confirm_offline,
-    }) = cli.command
-    {
-        if cli.state_dir.is_some() || cli.peer.is_some() {
-            return render_error(
-                cli.json,
-                "offline LMS keygen takes no peer or state directory",
-                output,
-                error,
-            );
-        }
-        return crate::cli_lms_escrow::run(
-            escrow_only,
-            to,
-            generate_passphrase,
-            i_confirm_offline,
-            cli.json,
-            output,
-            error,
-        );
-    }
-    if let Some(Command::LmsEscrowVerify { ref name, ref from }) = cli.command {
-        if cli.state_dir.is_some() || cli.peer.is_some() {
-            return render_error(
-                cli.json,
-                "offline LMS escrow verify takes no peer or state directory",
-                output,
-                error,
-            );
-        }
-        return crate::cli_lms_verify::run(name, from, cli.json, output, error);
+    if let Some(code) = crate::cli_lms_escrow::dispatch_offline(&cli, output, error) {
+        return code;
     }
     let state_directory = match cli.state_dir.map_or_else(storage::default_state_directory, Ok) {
         Ok(path) => path,
@@ -158,8 +123,9 @@ where
 
     match cli.command {
         Some(Command::Capabilities) => unreachable!("capabilities returns before state lookup"),
-        Some(Command::LmsKeygen { .. }) => unreachable!("offline LMS keygen returns before state lookup"),
-        Some(Command::LmsEscrowVerify { .. }) => unreachable!("offline LMS verify returns before state lookup"),
+        Some(Command::LmsKeygen { .. } | Command::LmsEscrowVerify { .. } | Command::LmsDerivePublic { .. }) => {
+            unreachable!("offline LMS commands return before state lookup")
+        }
         Some(Command::Connect { peer, service }) => {
             crate::cli_tunnel::connect(&state_directory, &peer, &service, cli.json, error)
         }

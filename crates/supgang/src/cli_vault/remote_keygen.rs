@@ -158,7 +158,8 @@ mod tests {
         assert_eq!(public.remote_creator, None);
         let mut output = Vec::new();
         let mut error = Vec::new();
-        show_ssh_public("q42-kvm-admin", &public, false, &mut output, &mut error)?;
+        let code = show_ssh_public("q42-kvm-admin", &public, false, &mut output, &mut error)?;
+        assert_eq!(code, std::process::ExitCode::SUCCESS);
         assert_eq!(String::from_utf8(output)?, format!("{}\n", public.line));
         assert_eq!(String::from_utf8(error)?, format!("{}\n", public.fingerprint));
         Ok(())

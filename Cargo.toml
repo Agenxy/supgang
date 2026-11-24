@@ -6,7 +6,7 @@ resolver = "3"
 [workspace.package]
 version = "0.2.0-alpha.21"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 authors = ["Agenxy contributors"]
 license = "Apache-2.0"
 repository = "https://github.com/Agenxy/supgang"
@@ -88,7 +88,22 @@ strip = "symbols"
 overflow-checks = true
 panic = "unwind"
 
-# H20 LMS ceremony tests hash every leaf; optimize the core test binary while
-# retaining the test profile's debug assertions and explicit overflow checks.
+# H20 LMS ceremony tests hash every leaf; optimize the core test binary and its
+# SHA-256 primitives while retaining debug assertions and overflow checks.
 [profile.test.package.supgang-core]
+opt-level = 2
+
+[profile.test.package."sha2:0.11.0"]
+opt-level = 2
+
+[profile.test.package."digest:0.11.3"]
+opt-level = 2
+
+[profile.test.package."block-buffer:0.12.1"]
+opt-level = 2
+
+[profile.test.package.scrypt]
+opt-level = 2
+
+[profile.test.package.salsa20]
 opt-level = 2
