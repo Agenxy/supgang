@@ -111,6 +111,9 @@ pub struct ControlStatus {
     /// Version compiled into the running executable.
     #[serde(default)]
     pub version: String,
+    /// Source commit compiled into the running executable (40 hex or `"unknown"`).
+    #[serde(default)]
+    pub commit: String,
     /// Operating-system process serving this response.
     #[serde(default)]
     pub process_id: u32,
@@ -152,6 +155,9 @@ pub struct ControlStatus {
     /// The most recent connections made and ended, oldest first; bounded.
     #[serde(default)]
     pub recent_connections: Vec<ConnectionEvent>,
+    /// Advisory release awareness from live authenticated peers; never triggers an update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_notice: Option<crate::release::UpdateNotice>,
 }
 
 /// One connection made or ended. It names the path's kind, never its address.

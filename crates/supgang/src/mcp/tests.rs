@@ -366,6 +366,134 @@ async fn unsupported_protocol_and_oversized_input_fail_closed() -> Result<(), Bo
     Ok(())
 }
 
+#[tokio::test]
+async fn quote_dense_near_cap_tool_reply_returns_bounded_error_and_keeps_session_open() -> Result<(), Box<dyn Error>> {
+    assert_eq!(super::transport::MAX_MCP_REQUEST_BYTES, 16 * 1024);
+    assert_eq!(protocol::MAX_TOOL_VALUE_BYTES, 96 * 1024);
+    assert_eq!(super::transport::MAX_MCP_RESPONSE_BYTES, 256 * 1024);
+
+    let payload = json!({"value": "\"".repeat(49_000)});
+    let encoded_len = payload.to_string().len();
+    assert!(
+        encoded_len <= protocol::MAX_TOOL_VALUE_BYTES,
+        "encoded_len={encoded_len}"
+    );
+    assert!(
+        encoded_len > protocol::MAX_TOOL_VALUE_BYTES - 4 * 1024,
+        "encoded_len={encoded_len}"
+    );
+    let raw_structured = protocol::structured_result(&payload, true).map_err(|error| format!("{error:?}"))?;
+    assert!(
+        raw_structured.len() > super::transport::MAX_MCP_RESPONSE_BYTES,
+        "raw_structured.len()={}",
+        raw_structured.len()
+    );
+
+    let modern_requests = [
+        request_2026(1, "tools/call", &json!({"name": "fleet", "arguments": {}})),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}),
+        request_2026(3, "tools/list", &json!({})),
+    ];
+    let modern_payload = payload.clone();
+    let modern_responses = exchange_with_tool_caller(&modern_requests, move |_params, modern| {
+        protocol::structured_result(&modern_payload, modern)
+    })
+    .await?;
+    let modern_call = response_with_id(&modern_responses, 1)?;
+    assert_eq!(modern_call.pointer("/result/isError"), Some(&json!(true)));
+    assert_eq!(modern_call.pointer("/result/resultType"), Some(&json!("complete")));
+    assert!(modern_call.pointer("/result/structuredContent").is_none());
+    assert!(
+        modern_call
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("safety limit"))
+    );
+    assert_eq!(response_with_id(&modern_responses, 2)?.get("result"), Some(&json!({})));
+    assert_tool_contract(response_with_id(&modern_responses, 3)?)?;
+
+    let legacy_requests = [
+        initialize_request("2025-11-25"),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "fleet", "arguments": {}}}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}),
+        json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}}),
+    ];
+    let legacy_responses = exchange_with_tool_caller(&legacy_requests, move |_params, modern| {
+        protocol::structured_result(&payload, modern)
+    })
+    .await?;
+    let legacy_call = response_with_id(&legacy_responses, 2)?;
+    assert_eq!(legacy_call.pointer("/result/isError"), Some(&json!(true)));
+    assert!(legacy_call.pointer("/result/resultType").is_none());
+    assert!(legacy_call.pointer("/result/structuredContent").is_none());
+    assert_eq!(response_with_id(&legacy_responses, 3)?.get("result"), Some(&json!({})));
+    assert_tool_contract(response_with_id(&legacy_responses, 4)?)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn response_pushed_over_cap_by_request_id_stays_bounded_and_open() -> Result<(), Box<dyn Error>> {
+    // Choose a quote-dense value whose structured_result alone stays just under 256 KiB,
+    // then pair it with a large valid request id (< 16 KiB request cap) so only the full
+    // JSON-RPC envelope exceeds MAX_MCP_RESPONSE_BYTES.
+    let payload = json!({"value": "\"".repeat(42_500)});
+    let encoded_len = payload.to_string().len();
+    assert!(
+        encoded_len <= protocol::MAX_TOOL_VALUE_BYTES,
+        "encoded_len={encoded_len}"
+    );
+    let raw_structured = protocol::structured_result(&payload, true).map_err(|error| format!("{error:?}"))?;
+    assert!(
+        raw_structured.len() <= super::transport::MAX_MCP_RESPONSE_BYTES,
+        "raw_structured.len()={}",
+        raw_structured.len()
+    );
+    let large_id = "r".repeat(12 * 1024);
+    assert!(
+        raw_structured.len() + large_id.len() > super::transport::MAX_MCP_RESPONSE_BYTES,
+        "combined envelope must exceed transport cap"
+    );
+
+    let mut call = request_2026(1, "tools/call", &json!({"name": "fleet", "arguments": {}}));
+    call.as_object_mut()
+        .ok_or("request must be an object")?
+        .insert("id".to_owned(), Value::String(large_id.clone()));
+    let requests = [call, json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})];
+    let responses = exchange_with_tool_caller(&requests, move |_params, modern| {
+        protocol::structured_result(&payload, modern)
+    })
+    .await?;
+
+    let first = responses
+        .iter()
+        .find(|response| response.get("id").and_then(Value::as_str) == Some(large_id.as_str()))
+        .ok_or("missing bounded reply for large request id")?;
+    assert_eq!(first.pointer("/result/isError"), Some(&json!(true)));
+    assert!(first.pointer("/result/structuredContent").is_none());
+    assert_eq!(response_with_id(&responses, 2)?.get("result"), Some(&json!({})));
+    Ok(())
+}
+
+#[test]
+fn oversized_non_tool_response_falls_back_to_bounded_internal_error() -> Result<(), Box<dyn Error>> {
+    let oversized = vec![b'x'; super::transport::MAX_MCP_RESPONSE_BYTES + 1];
+    let normal_id = json!(7);
+    let reply = protocol::bound_response(oversized.clone(), Some(&normal_id), None);
+    assert!(reply.len() <= super::transport::MAX_MCP_RESPONSE_BYTES);
+    let parsed: Value = serde_json::from_slice(&reply)?;
+    assert_eq!(parsed.get("id"), Some(&normal_id));
+    assert_eq!(parsed.pointer("/error/code"), Some(&json!(-32603)));
+
+    let huge_id = Value::String("i".repeat(super::transport::MAX_MCP_RESPONSE_BYTES));
+    let stripped = protocol::bound_response(oversized, Some(&huge_id), Some(true));
+    assert!(stripped.len() <= super::transport::MAX_MCP_RESPONSE_BYTES);
+    let parsed_stripped: Value = serde_json::from_slice(&stripped)?;
+    assert!(parsed_stripped.get("id").is_none());
+    assert_eq!(parsed_stripped.pointer("/error/code"), Some(&json!(-32603)));
+    Ok(())
+}
+
 fn initialize_request(version: &str) -> Value {
     json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -475,4 +603,45 @@ async fn exchange_bytes(
         service_result?;
     }
     Ok(output)
+}
+
+async fn exchange_with_tool_caller<F>(requests: &[Value], call_tool: F) -> Result<Vec<Value>, Box<dyn Error>>
+where
+    F: FnMut(Option<&Value>, bool) -> Result<String, protocol::RpcError> + Send + 'static,
+{
+    let mut input = Vec::new();
+    for request in requests {
+        serde_json::to_writer(&mut input, request)?;
+        input.push(b'\n');
+    }
+    let capacity = super::transport::MAX_MCP_RESPONSE_BYTES * 4;
+    let (client, server) = tokio::io::duplex(capacity);
+    let (mut client_read, mut client_write) = tokio::io::split(client);
+    let (server_read, server_write) = tokio::io::split(server);
+    let server_task = tokio::spawn(async move {
+        protocol::serve_with(BoundedStdio::new(server_read, server_write), call_tool)
+            .await
+            .map_err(|error| error.to_string())
+    });
+
+    client_write.write_all(&input).await?;
+    client_write.shutdown().await?;
+    let mut output = Vec::new();
+    let (read_result, server_result) = tokio::time::timeout(TEST_TIMEOUT, async {
+        tokio::join!(client_read.read_to_end(&mut output), server_task)
+    })
+    .await?;
+    let _bytes_read = read_result?;
+    server_result??;
+    let text = std::str::from_utf8(&output)?;
+    let mut responses = Vec::new();
+    for line in text.lines() {
+        assert!(
+            line.len() <= super::transport::MAX_MCP_RESPONSE_BYTES,
+            "wire response line exceeded cap: {}",
+            line.len()
+        );
+        responses.push(serde_json::from_str(line)?);
+    }
+    Ok(responses)
 }

@@ -45,6 +45,7 @@ pub(super) struct LiveSessionState<'a> {
     pub(super) replacement_tasks: &'a mut tokio::task::JoinSet<ReplacementResult>,
     pub(super) quality: &'a mut super::path_quality::PathQualityWatch,
     pub(super) noncanonical_outbound: &'a mut BTreeSet<NodeId>,
+    pub(super) known_networks: &'a [network::InterfaceNetwork],
     pub(super) page_sender: &'a tokio::sync::watch::Sender<SyncPage>,
     pub(super) event_sender: &'a tokio::sync::mpsc::Sender<PeerEvent>,
     pub(super) actor_tasks: &'a mut tokio::task::JoinSet<()>,
@@ -320,12 +321,14 @@ impl LiveSessionState<'_> {
                 local: self.local_node,
                 active: self.active,
                 noncanonical_outbound: self.noncanonical_outbound,
+                known_networks: self.known_networks,
                 pages: self.page_sender,
                 events: self.event_sender,
                 tasks: self.actor_tasks,
                 interval: self.config.retry_interval,
                 max_active_peers: self.config.max_active_peers,
                 update: self.update.cloned(),
+                local_release: self.config.release_identity.clone(),
             },
         );
         let admitted = self
@@ -562,6 +565,7 @@ pub(super) async fn reset_network_recovery(
     noncanonical: &mut BTreeSet<NodeId>,
     pending: [&mut tokio::task::JoinSet<SessionTaskResult>; 3],
     outbound_in_flight: &mut bool,
+    known_networks: &mut Vec<network::InterfaceNetwork>,
 ) {
     // In-flight attempts captured the old local contact and route selection.
     // Drain cancellation results before the ordinary join loop can see them.
@@ -572,6 +576,7 @@ pub(super) async fn reset_network_recovery(
     if let Ok(networks) = network::interface_networks() {
         super::active::retire_unroutable(active, &networks);
         noncanonical.retain(|peer| active.contains_key(peer));
+        *known_networks = networks;
     }
 }
 

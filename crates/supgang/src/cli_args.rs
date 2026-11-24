@@ -14,7 +14,7 @@ use crate::{
 #[derive(Debug, Parser)]
 #[command(
     name = "supgang",
-    version,
+    version = crate::VERSION_DISPLAY,
     about = "Finds the current address of your own computers",
     disable_help_subcommand = true,
     subcommand_precedence_over_arg = true
@@ -72,6 +72,12 @@ pub enum Command {
         /// Existing age v1 scrypt escrow file to verify.
         #[arg(long = "from", value_name = "PATH")]
         from: PathBuf,
+    },
+    /// Derive the NC0 LMS public key from a 256-bit master secret entered on a hidden TTY prompt.
+    LmsDerivePublic {
+        /// NC0 product root role (`primary` or `recovery`).
+        #[arg(value_name = "ROLE")]
+        role: String,
     },
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
     ///
@@ -481,7 +487,7 @@ pub enum VaultCommand {
     PublicKey { name: String },
     /// Show an SSH key's OpenSSH public line and fingerprint.
     SshPublicKey { name: String },
-    /// Create a non-exportable NC0 LMS root; this takes time and needs an owner terminal.
+    /// Create a vault NC0 LMS root; this takes time and needs an owner terminal.
     LmsKeygen {
         /// Lowercase vault entry name.
         name: String,

@@ -1,3 +1,7 @@
+#[cfg(unix)]
+use std::os::fd::{AsFd, BorrowedFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsSocket, BorrowedSocket};
 use std::{
     future::Future,
     io,
@@ -28,6 +32,117 @@ pub struct UdpSocket {
 /// UDP socket read/write buffer size (7MB). The value of 7MB is chosen as it
 /// is the max supported by a default configuration of macOS. Some platforms will silently clamp the value.
 const SOCKET_BUFFER_SIZE: usize = 7 << 20;
+
+/// Opts the socket in to receiving on restricted interfaces.
+///
+/// Apple delivers traffic arriving on restricted interfaces, AWDL (`awdl0`)
+/// among them, only to sockets that set `SO_RECV_ANYIF`. Without it a peer
+/// dialing our `fe80::…%awdl0` address never reaches us, even though the link
+/// itself works.
+#[cfg(target_vendor = "apple")]
+fn set_recv_anyif(socket: &socket2::Socket) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    /// From `<sys/socket.h>`; not exported by `libc`.
+    const SO_RECV_ANYIF: libc::c_int = 0x1104;
+    let one: libc::c_int = 1;
+    // SAFETY: the fd is open for the lifetime of `socket`, and `optval` points
+    // to a `c_int` of the length passed.
+    let rc = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            SO_RECV_ANYIF,
+            (&one as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[allow(
+    rustdoc::broken_intra_doc_links,
+    reason = "AsFd and AsSocket are only conditionally imported based on the target"
+)]
+/// A socket that is about to be bound, handed to the hook set with
+/// [`BindOptions::configure_socket`].
+///
+/// It implements [`AsFd`] on unix and [`AsSocket`] on Windows, which is what
+/// socket wrappers take, so the hook can set options with the socket crate of
+/// its choice: `socket2::SockRef::from(&socket)`, or plain `libc::setsockopt`
+/// on the raw fd.
+#[derive(Debug)]
+pub struct SocketRef<'a>(&'a socket2::Socket);
+
+#[cfg(unix)]
+impl AsFd for SocketRef<'_> {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+#[cfg(windows)]
+impl AsSocket for SocketRef<'_> {
+    fn as_socket(&self) -> BorrowedSocket<'_> {
+        self.0.as_socket()
+    }
+}
+
+/// The hook set with [`BindOptions::configure_socket`].
+type Configurator = Arc<dyn Fn(SocketRef<'_>, IpFamily) -> io::Result<()> + Send + Sync>;
+
+/// Options to bind a [`UdpSocket`] with.
+///
+/// Used by [`UdpSocket::bind_with`]. The default options match what the other
+/// `bind_*` constructors use.
+#[derive(derive_more::Debug, Default, Clone)]
+pub struct BindOptions {
+    #[debug(skip)]
+    configure: Option<Configurator>,
+}
+
+impl BindOptions {
+    /// Creates the default options.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets a hook to run on the socket just before it is bound.
+    ///
+    /// This is the escape hatch for socket options this crate does not model
+    /// itself, like `SO_MARK` on Linux or `IP_BOUND_IF` on Apple platforms. The
+    /// hook runs on every bind, including the rebinds [`UdpSocket`] does to
+    /// recover from network changes, since each of those creates a new socket.
+    /// That also lets the hook pick up state that changed in between, like the
+    /// interface the default route now points at.
+    ///
+    /// An error from the hook fails the bind, rather than leaving a socket that
+    /// silently missed its configuration.
+    ///
+    /// ```no_run
+    /// use std::net::{Ipv4Addr, SocketAddr};
+    ///
+    /// use netwatch::{BindOptions, UdpSocket};
+    ///
+    /// let opts = BindOptions::new().configure_socket(|socket, _family| {
+    ///     socket2::SockRef::from(&socket).set_recv_buffer_size(1 << 20)
+    /// });
+    /// let socket = UdpSocket::bind_with(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)), opts)?;
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    pub fn configure_socket(
+        mut self,
+        configure: impl Fn(SocketRef<'_>, IpFamily) -> io::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.configure = Some(Arc::new(configure));
+        self
+    }
+}
+
 impl UdpSocket {
     /// Bind only Ipv4 on any interface.
     pub fn bind_v4(port: u16) -> io::Result<Self> {
@@ -52,18 +167,30 @@ impl UdpSocket {
     /// Bind to the given port only on localhost.
     pub fn bind_local(network: IpFamily, port: u16) -> io::Result<Self> {
         let addr = SocketAddr::new(network.local_addr(), port);
-        Self::bind_raw(addr)
+        Self::bind_with(addr, BindOptions::default())
     }
 
     /// Bind to the given port and listen on all interfaces.
     pub fn bind(network: IpFamily, port: u16) -> io::Result<Self> {
         let addr = SocketAddr::new(network.unspecified_addr(), port);
-        Self::bind_raw(addr)
+        Self::bind_with(addr, BindOptions::default())
     }
 
     /// Bind to any provided [`SocketAddr`].
     pub fn bind_full(addr: impl Into<SocketAddr>) -> io::Result<Self> {
-        Self::bind_raw(addr)
+        Self::bind_with(addr, BindOptions::default())
+    }
+
+    /// Bind to any provided [`SocketAddr`], using the given [`BindOptions`].
+    pub fn bind_with(addr: impl Into<SocketAddr>, opts: BindOptions) -> io::Result<Self> {
+        let socket = SocketState::bind(addr.into(), opts.configure)?;
+
+        Ok(UdpSocket {
+            socket: RwLock::new(socket),
+            recv_waker: AtomicWaker::default(),
+            send_waker: AtomicWaker::default(),
+            is_broken: AtomicBool::new(false),
+        })
     }
 
     /// Is the socket broken and needs a rebind?
@@ -94,17 +221,6 @@ impl UdpSocket {
         self.wake_all();
 
         Ok(())
-    }
-
-    fn bind_raw(addr: impl Into<SocketAddr>) -> io::Result<Self> {
-        let socket = SocketState::bind(addr.into())?;
-
-        Ok(UdpSocket {
-            socket: RwLock::new(socket),
-            recv_waker: AtomicWaker::default(),
-            send_waker: AtomicWaker::default(),
-            is_broken: AtomicBool::new(false),
-        })
     }
 
     /// Receives a single datagram message on the socket from the remote address
@@ -344,6 +460,8 @@ impl UdpSocket {
             };
             let (socket, state) = guard.try_get_connected()?;
 
+            // TODO: `send` is deprecated, but `try_send` surfaces all I/O errors, which noq treats as fatal.
+            #[allow(deprecated)]
             let res = socket.try_io(Interest::WRITABLE, || state.send(socket.into(), transmit));
 
             match res {
@@ -374,6 +492,8 @@ impl UdpSocket {
                     return Poll::Pending;
                 }
                 Poll::Ready(Ok(())) => {
+                    // TODO: `send` is deprecated, but `try_send` surfaces all I/O errors, which noq treats as fatal.
+                    #[allow(deprecated)]
                     let res =
                         socket.try_io(Interest::WRITABLE, || state.send(socket.into(), transmit));
                     if let Err(err) = res {
@@ -518,6 +638,7 @@ const WSAENETRESET: i32 = 10052;
 /// We treat `ConnectionReset` as transient on every platform, not only Windows:
 /// ECONNRESET is undefined in QUIC and can be injected by an attacker, so
 /// it must never tear down the receive path.
+#[allow(clippy::needless_bool)]
 fn is_transient_read_error(error: &io::Error) -> bool {
     if error.kind() == io::ErrorKind::ConnectionReset {
         return true;
@@ -729,17 +850,23 @@ impl Future for SendToFut<'_, '_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 enum SocketState {
     Connected {
         socket: tokio::net::UdpSocket,
         state: noq_udp::UdpSocketState,
         /// The addr we are binding to.
         addr: SocketAddr,
+        /// The hook to rerun when rebinding, if any.
+        #[debug(skip)]
+        configure: Option<Configurator>,
     },
     Closed {
         /// The addr to rebind to when recovering.
         addr: SocketAddr,
+        /// The hook to rerun when rebinding, if any.
+        #[debug(skip)]
+        configure: Option<Configurator>,
         last_max_gso_segments: NonZeroUsize,
         last_gro_segments: NonZeroUsize,
         last_may_fragment: bool,
@@ -753,6 +880,7 @@ impl SocketState {
                 socket,
                 state,
                 addr: _,
+                configure: _,
             } => Ok((socket, state)),
             Self::Closed { .. } => {
                 warn!("socket closed");
@@ -761,7 +889,7 @@ impl SocketState {
         }
     }
 
-    fn bind(addr: SocketAddr) -> io::Result<Self> {
+    fn bind(addr: SocketAddr, configure: Option<Configurator>) -> io::Result<Self> {
         let network = IpFamily::from(addr.ip());
         let socket = socket2::Socket::new(
             network.into(),
@@ -784,6 +912,17 @@ impl SocketState {
         if network == IpFamily::V6 {
             // Avoid dualstack
             socket.set_only_v6(true)?;
+        }
+        #[cfg(target_vendor = "apple")]
+        if let Err(err) = set_recv_anyif(&socket) {
+            debug!("failed to set SO_RECV_ANYIF: {:?}", err);
+        }
+
+        // Let the caller configure the socket before it is bound. An error here
+        // fails the bind: a socket that silently missed its configuration would
+        // send traffic where the caller did not want it.
+        if let Some(configure) = &configure {
+            configure(SocketRef(&socket), network)?;
         }
 
         // Binding must happen before calling noq, otherwise `local_addr`
@@ -814,13 +953,18 @@ impl SocketState {
             socket,
             state: socket_state,
             addr: local_addr,
+            configure,
         })
     }
 
     fn rebind(&mut self) -> io::Result<()> {
-        let addr = match self {
-            Self::Connected { addr, .. } => *addr,
-            Self::Closed { addr, .. } => *addr,
+        let (addr, configure) = match self {
+            Self::Connected {
+                addr, configure, ..
+            }
+            | Self::Closed {
+                addr, configure, ..
+            } => (*addr, configure.clone()),
         };
         debug!("rebinding {}", addr);
 
@@ -829,13 +973,14 @@ impl SocketState {
         if let Self::Connected { state, .. } = self {
             *self = SocketState::Closed {
                 addr,
+                configure: configure.clone(),
                 last_max_gso_segments: state.max_gso_segments(),
                 last_gro_segments: state.gro_segments(),
                 last_may_fragment: state.may_fragment(),
             };
         }
 
-        match Self::bind(addr) {
+        match Self::bind(addr, configure) {
             Ok(new_state) => {
                 *self = new_state;
                 Ok(())
@@ -854,9 +999,15 @@ impl SocketState {
 
     fn close(&mut self) -> Option<(tokio::net::UdpSocket, noq_udp::UdpSocketState)> {
         match self {
-            Self::Connected { state, addr, .. } => {
+            Self::Connected {
+                state,
+                addr,
+                configure,
+                ..
+            } => {
                 let s = SocketState::Closed {
                     addr: *addr,
+                    configure: configure.clone(),
                     last_max_gso_segments: state.max_gso_segments(),
                     last_gro_segments: state.gro_segments(),
                     last_may_fragment: state.may_fragment(),
@@ -983,6 +1134,8 @@ impl UdpSender {
             result?;
 
             let (socket, state) = guard.try_get_connected()?;
+            // TODO: `send` is deprecated, but `try_send` surfaces all I/O errors, which noq treats as fatal.
+            #[allow(deprecated)]
             let result = socket.try_io(Interest::WRITABLE, || state.send(socket.into(), transmit));
 
             match result {
@@ -998,6 +1151,8 @@ impl UdpSender {
     }
 
     /// Best effort sending
+    // TODO: `send` is deprecated, but `try_send` surfaces all I/O errors, which noq treats as fatal.
+    #[allow(deprecated)]
     pub fn try_send(&self, transmit: &noq_udp::Transmit) -> io::Result<()> {
         self.socket.maybe_rebind()?;
 
@@ -1040,6 +1195,8 @@ impl Future for SendFutNoq<'_, '_> {
                     return Poll::Pending;
                 }
                 Poll::Ready(Ok(())) => {
+                    // TODO: `send` is deprecated, but `try_send` surfaces all I/O errors, which noq treats as fatal.
+                    #[allow(deprecated)]
                     let res = socket.try_io(Interest::WRITABLE, || {
                         state.send(socket.into(), self.transmit)
                     });
@@ -1068,6 +1225,13 @@ impl Future for SendFutNoq<'_, '_> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_vendor = "apple")]
+    use std::net::Ipv6Addr;
+    use std::{
+        net::Ipv4Addr,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
     use testresult::TestResult;
 
     use super::*;
@@ -1125,6 +1289,75 @@ mod tests {
         }
 
         handle_a.await.ok();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_configure_socket_runs_on_every_bind() -> TestResult {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let opts = BindOptions::new().configure_socket(move |socket, family| {
+            assert_eq!(family, IpFamily::V4);
+            // The hook gets a real socket, before it is bound.
+            socket2::SockRef::from(&socket).set_reuse_address(true)?;
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+
+        let socket = UdpSocket::bind_with(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), opts)?;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "hook did not run on bind");
+
+        socket.rebind()?;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "hook did not run again on rebind"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_configure_socket_error_fails_the_bind() -> TestResult {
+        let opts =
+            BindOptions::new().configure_socket(|_socket, _family| Err(io::Error::other("nope")));
+
+        assert!(
+            UdpSocket::bind_with(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), opts).is_err(),
+            "a failing hook must fail the bind"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[tokio::test]
+    async fn test_bind_sets_recv_anyif() -> TestResult {
+        use std::os::fd::AsRawFd;
+
+        // The hook runs after netwatch's own options, so it sees what bind set.
+        let opts = BindOptions::new().configure_socket(|socket, _family| {
+            let mut value: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            // SAFETY: `value` and `len` are valid for writes of the sizes given.
+            let rc = unsafe {
+                libc::getsockopt(
+                    socket.as_fd().as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    0x1104,
+                    (&mut value as *mut libc::c_int).cast(),
+                    &mut len,
+                )
+            };
+            if rc != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            assert_eq!(value, 1, "SO_RECV_ANYIF not set");
+            Ok(())
+        });
+        UdpSocket::bind_with(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)), opts.clone())?;
+        UdpSocket::bind_with(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)), opts)?;
 
         Ok(())
     }

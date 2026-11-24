@@ -12,8 +12,9 @@
 [package]
 edition = "2024"
 rust-version = "1.91"
-name = "netwatch"
-version = "0.19.1"
+name = "supgang-netwatch"
+version = "0.20.2"
+publish = ["crates-io"]
 authors = ["n0 team"]
 build = "build.rs"
 autolib = false
@@ -38,6 +39,20 @@ rustdoc-args = [
     "iroh_docsrs",
 ]
 
+[package.metadata.cargo_check_external_types]
+allowed_external_types = [
+    "ipnet::ipnet::Ipv4Net",
+    "ipnet::ipnet::Ipv6Net",
+    "n0_error::error::StackError",
+    "n0_error::meta::Meta",
+    "n0_watcher::Direct",
+    "noq_udp::RecvMeta",
+    "noq_udp::Transmit",
+    "tokio::sync::mpsc::error::SendError",
+    "tokio::sync::oneshot::error::RecvError",
+    "tokio::time::instant::Instant",
+]
+
 [lib]
 name = "netwatch"
 path = "src/lib.rs"
@@ -56,6 +71,16 @@ version = "1.1.2"
 [dependencies.bytes]
 version = "1.7"
 
+[dependencies.derive_more]
+version = "2.1"
+features = [
+    "debug",
+    "display",
+]
+
+[dependencies.ipnet]
+version = "2"
+
 [dependencies.n0-error]
 version = "1.0.0"
 
@@ -67,9 +92,6 @@ version = "1.0.0"
 
 [dependencies.pin-project-lite]
 version = "0.2.16"
-
-[dependencies.time]
-version = "0.3.44"
 
 [dependencies.tokio]
 version = "1"
@@ -95,11 +117,7 @@ version = "0.3"
 features = ["env-filter"]
 
 [build-dependencies.cfg_aliases]
-version = "0.2.1"
-
-[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.derive_more]
-version = "2.1"
-features = ["display"]
+version = "0.2.2"
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.js-sys]
 version = "0.3.83"
@@ -118,25 +136,22 @@ version = "0.3"
 version = "2.1.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies.netlink-packet-core]
-version = "0.8.1"
+version = "0.9.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies.netlink-packet-route]
-version = "0.31.0"
+version = "0.33.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies.netlink-proto]
-version = "0.12.0"
+version = "0.13.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies.netlink-sys]
-version = "0.8.7"
+version = "0.9.0"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-core-foundation]
 version = "0.3.2"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc2-system-configuration]
 version = "0.3.2"
-
-[target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies.ipnet]
-version = "2"
 
 [target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies.libc]
 version = "0.2.139"
@@ -169,7 +184,7 @@ features = [
 ]
 
 [target.'cfg(not(any(target_os = "espidf", all(target_family = "wasm", target_os = "unknown"))))'.dependencies.netdev]
-version = "0.45.0"
+version = "0.47.0"
 
 [target.'cfg(not(any(target_os = "espidf", all(target_family = "wasm", target_os = "unknown"))))'.dependencies.tokio]
 version = "1"
@@ -177,10 +192,6 @@ features = [
     "fs",
     "io-std",
 ]
-
-[target.'cfg(target_os = "android")'.dependencies.derive_more]
-version = "2.0.1"
-features = ["display"]
 
 [target.'cfg(target_os = "android")'.dependencies.tokio]
 version = "1"
@@ -190,11 +201,7 @@ features = ["process"]
 version = "1.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies.patchbay]
-version = "0.6"
-
-[target.'cfg(target_os = "windows")'.dependencies.derive_more]
-version = "2.1"
-features = ["debug"]
+version = "0.7"
 
 [target.'cfg(target_os = "windows")'.dependencies.serde]
 version = "1"
@@ -217,7 +224,7 @@ version = "0.18"
 default-features = false
 
 [lints.clippy]
-unused-async = "warn"
+unused_async = "warn"
 
 [lints.rust]
 missing_debug_implementations = "warn"
