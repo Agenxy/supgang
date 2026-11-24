@@ -49,7 +49,10 @@ use aad::associated_data;
 use audit::{append_audit, audit};
 pub use error::VaultError;
 use format::{decode, encode};
-pub use lms::{EscrowKey, EscrowPublic, generate_escrow, verify_escrow, verify_escrow_public};
+pub use lms::{
+    EscrowKey, EscrowPublic, MASTER_LEN, OKM_LEN, RESTORE_Q_BLOCK, RootRole, derive_public as derive_lms_public,
+    generate_escrow, next_restore_q as lms_next_restore_q, verify_escrow, verify_escrow_public,
+};
 pub use lms::{
     LmsPublic, LmsSigned, Nc0Package, ReleaseLog, SignPreview, advance as lms_advance, keygen as lms_keygen,
     package as lms_package, preview as lms_preview, public_key as lms_public_key, sign as lms_sign,

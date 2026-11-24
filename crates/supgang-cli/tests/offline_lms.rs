@@ -67,3 +67,29 @@ fn escrow_verify_refuses_nonterminal_input() -> Result<(), Box<dyn std::error::E
     assert!(String::from_utf8(output.stderr)?.contains("interactive owner terminal"));
     Ok(())
 }
+
+#[test]
+fn derive_public_refuses_nonterminal_input_and_state_dir() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args(["lms-derive-public", "primary"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("interactive owner terminal"));
+
+    let directory = TestDirectory::new()?;
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args([
+            "--state-dir",
+            directory.0.to_str().ok_or("non-UTF-8 test path")?,
+            "lms-derive-public",
+            "recovery",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("takes no peer or state directory"));
+    Ok(())
+}
