@@ -76,7 +76,6 @@ struct JoinOutput {
 }
 
 /// Parses the process arguments and writes output to the process streams.
-#[must_use]
 pub fn run_from_env() -> ExitCode {
     // Do not hold global stream locks: the MCP subcommand owns stdio for its
     // asynchronous JSON-RPC transport.
@@ -88,7 +87,6 @@ pub fn run_from_env() -> ExitCode {
 /// Executes the CLI against caller-provided streams.
 ///
 /// This entry point keeps tests and embedders independent from global output.
-#[must_use]
 pub fn run<I, T>(arguments: I, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode
 where
     I: IntoIterator<Item = T>,
