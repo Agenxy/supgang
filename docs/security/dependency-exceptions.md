@@ -23,13 +23,17 @@ and keep all protocol handling in the existing `supgang` process.
 
 ## Reviewed local-router mapping dependencies
 
-`portmapper` 0.19.1 is pinned with default features disabled. Supgang enables only its PCP and
-NAT-PMP clients to maintain one UDP lease and react to gateway changes. UPnP is disabled at the
-adapter boundary because unauthenticated SSDP can provide an attacker-selected HTTP description
-location. The runtime network boundary is therefore the current default gateway; there is no hosted
-endpoint, account, telemetry export, or public address lookup. Returned addresses pass Supgang's
-scope checks, signed mapping changes are rate-limited, and the result remains unverified until an
-authenticated peer independently reports the public socket.
+`supgang-portmapper` 0.20.2 (vendored from upstream `portmapper` 0.20.2) is pinned with default
+features disabled and depends directly on `supgang-netwatch` 0.20.2 (vendored from upstream
+`netwatch` 0.20.2 with its unused Windows `chrono` dependency removed and `wmi` default features
+disabled). Publishing these two copies under Supgang-owned names removes `[patch.crates-io]` so
+published crates resolve cleanly without `chrono` across every supported target. Supgang enables
+only PCP and NAT-PMP clients to maintain one UDP lease and react to gateway changes. UPnP is
+disabled at the adapter boundary because unauthenticated SSDP can provide an attacker-selected HTTP
+description location. The runtime network boundary is therefore the current default gateway; there
+is no hosted endpoint, account, telemetry export, or public address lookup. Returned addresses pass
+Supgang's scope checks, signed mapping changes are rate-limited, and the result remains unverified
+until an authenticated peer independently reports the public socket.
 
 The dependency is isolated behind `router_mapping.rs`. Its unconditional dependency graph still
 contains HTTP and XML handling for the disabled UPnP implementation, platform interface discovery,
@@ -39,23 +43,17 @@ and maintaining PCP and NAT-PMP lease state inside Supgang would create a separa
 Metrics features are disabled, and no tracing subscriber is installed by Supgang.
 
 `spez` 0.1.2 uses the permissive BSD-2-Clause licence, which is allowed for the dependency graph.
-The disabled transitive UPnP implementation in `igd-next` brings in exactly `attohttpc` 0.30.1 under
-MPL-2.0. MPL-2.0 is allowed only for that exact crate through a cargo-deny package exception; it is
-not accepted globally. Supgang does not modify `attohttpc`. A distributed binary must retain the
-applicable MPL notice and make that covered source available. Removing the dormant UPnP graph is a
-dependency-minimization target. The release lockfile software bill of materials and retained
-third-party notices remain a release gate.
+Moving to `portmapper` 0.20.2 and `igd-next` 0.18.0 (`default-features = false`) removed the
+former MPL-2.0 `attohttpc` dependency and its `deny.toml` exception.
 
-### RustSec RUSTSEC-2024-0436
+### RustSec RUSTSEC-2024-0436 (resolved)
 
-Linux route monitoring brings in `netlink-packet-core` 0.8.2. Its published
-manifest uses archived `paste` 1.0.15. Supgang now vendors the exact published
-crate with a single dependency change to compatible, maintained `pastey` 0.2.3.
-The gate checks the published archive hash, every archived file, and the two
-manifest representations of that one dependency change. The source lockfile no
-longer contains `paste`, and CI no longer ignores RUSTSEC-2024-0436. Packaged
-crates do not carry the workspace path patch; a public release still needs an
-upstream or distribution fix and a fresh packaged-dependency audit.
+`supgang-netwatch` 0.20.2 and the updated Linux route-monitoring crates (`netdev` 0.47.0,
+`netlink-packet-route` 0.33.0, `netlink-proto` 0.13.0) depend on `netlink-packet-core` 0.9.0,
+which has no `paste` dependency. Both `third_party/netlink-packet-core` and `[patch.crates-io]`
+have been removed. The packaged multi-target dependency rehearsal gate (`supgang-quality --
+packaged-deps`) enforces that `chrono`, `paste`, upstream `netwatch`, upstream `portmapper`, and
+`netlink-packet-core <0.9` cannot re-enter packaged crates on any supported target.
 
 ### RustSec RUSTSEC-2023-0089
 
