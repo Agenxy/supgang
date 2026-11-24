@@ -29,6 +29,8 @@ pub const RECOVERY_SHARE_FILE: &str = "nc0-product-recovery.share.age";
 const MEDIA_LABELS: [&str; 3] = ["A", "B", "C"];
 const VERIFY_PAIRS: [(usize, usize, &str); 3] = [(0, 1, "A+B"), (0, 2, "A+C"), (1, 2, "B+C")];
 const ROLES: [RootRole; 2] = [RootRole::Primary, RootRole::Recovery];
+const MAX_VERIFY_ATTEMPTS: usize = 3;
+const VERIFY_ABORT_MESSAGE: &str = "files are written; verify them with lms-share-verify; do not rerun on these media";
 
 #[derive(Serialize)]
 struct CeremonyOutput<'a> {
@@ -189,6 +191,53 @@ fn read_all_files(paths: &[[PathBuf; 2]; 3]) -> Result<(MediaBlobs, Vec<ShareFil
     }
     let blobs: [[Zeroizing<Vec<u8>>; 2]; 3] = blobs.try_into().map_err(|_| "internal blob count error".to_owned())?;
     Ok((blobs, receipts))
+}
+
+fn prompt_verified_medium_passphrase<F>(
+    label: &str,
+    primary_blob: &[u8],
+    decrypt: DecryptFn,
+    mut prompt_fn: F,
+    error: &mut dyn Write,
+) -> Result<Zeroizing<Vec<u8>>, String>
+where
+    F: FnMut(&str, &mut dyn Write) -> Result<Zeroizing<Vec<u8>>, String>,
+{
+    let prompt = format!("Re-enter Medium {label} passphrase to verify (hidden): ");
+    for attempt in 1..=MAX_VERIFY_ATTEMPTS {
+        let candidate = prompt_fn(&prompt, error).map_err(|err| format!("{err}; {VERIFY_ABORT_MESSAGE}"))?;
+        if decrypt(primary_blob, &candidate).is_ok() {
+            return Ok(candidate);
+        }
+        drop(candidate);
+        if attempt < MAX_VERIFY_ATTEMPTS {
+            let remaining = MAX_VERIFY_ATTEMPTS - attempt;
+            let _ = writeln!(
+                error,
+                "Medium {label} passphrase did not decrypt its primary share; try again ({remaining} attempt(s) left)."
+            );
+        }
+    }
+    Err(format!(
+        "Medium {label} passphrase failed {MAX_VERIFY_ATTEMPTS} times; {VERIFY_ABORT_MESSAGE}"
+    ))
+}
+
+/// Exercise the production medium verification retry prompt against one encrypted file.
+pub fn run_verify_prompt_probe(label: &str, path: &Path, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
+    let result = (|| -> Result<(), String> {
+        prepare_owner_terminal()?;
+        let blob = Zeroizing::new(
+            artifact::read(path, age_scrypt::MAX_FILE).map_err(|problem| format!("{}: {problem}", path.display()))?,
+        );
+        let verified = prompt_verified_medium_passphrase(label, &blob, age_scrypt::decrypt, hidden_passphrase, error)?;
+        drop(verified);
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(problem) => render_error(false, &problem, output, error),
+    }
 }
 
 fn decrypt_mnemonic(ciphertext: &[u8], passphrase: &[u8], decrypt: DecryptFn) -> Result<Zeroizing<String>, String> {
@@ -395,12 +444,25 @@ fn ceremony(
     drop(recovery_shares);
     drop(passphrases);
 
-    let verify_a = hidden_passphrase("Re-enter Medium A passphrase to verify (hidden): ", error)?;
-    let verify_b = hidden_passphrase("Re-enter Medium B passphrase to verify (hidden): ", error)?;
-    let verify_c = hidden_passphrase("Re-enter Medium C passphrase to verify (hidden): ", error)?;
+    let (blobs, file_receipts) = read_all_files(&paths).map_err(|err| format!("{err}; {VERIFY_ABORT_MESSAGE}"))?;
+    let primary_a = blobs
+        .first()
+        .and_then(|pair| pair.first())
+        .ok_or_else(|| format!("missing Medium A primary blob; {VERIFY_ABORT_MESSAGE}"))?;
+    let primary_b = blobs
+        .get(1)
+        .and_then(|pair| pair.first())
+        .ok_or_else(|| format!("missing Medium B primary blob; {VERIFY_ABORT_MESSAGE}"))?;
+    let primary_c = blobs
+        .get(2)
+        .and_then(|pair| pair.first())
+        .ok_or_else(|| format!("missing Medium C primary blob; {VERIFY_ABORT_MESSAGE}"))?;
+
+    let verify_a = prompt_verified_medium_passphrase("A", primary_a, age_scrypt::decrypt, hidden_passphrase, error)?;
+    let verify_b = prompt_verified_medium_passphrase("B", primary_b, age_scrypt::decrypt, hidden_passphrase, error)?;
+    let verify_c = prompt_verified_medium_passphrase("C", primary_c, age_scrypt::decrypt, hidden_passphrase, error)?;
     let verify_passphrases = [verify_a, verify_b, verify_c];
 
-    let (blobs, file_receipts) = read_all_files(&paths)?;
     let verify_started = Instant::now();
     verify_all_pairs(
         &blobs,
@@ -416,7 +478,8 @@ fn ceremony(
             .map_err(|problem| problem.to_string())
         },
         error,
-    )?;
+    )
+    .map_err(|err| format!("{err}; {VERIFY_ABORT_MESSAGE}"))?;
     drop(verify_passphrases);
     writeln!(
         error,
@@ -562,6 +625,54 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_passphrase_retry_allows_up_to_three_attempts_then_reports_post_write_guidance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let good = b"alpha bravo charlie delta echo foxtrot golf";
+        let blob = age_scrypt::encrypt_test_factor18(b"test-only share text\n", good)?;
+
+        // One wrong entry followed by the right entry succeeds on attempt 2.
+        let mut attempts = [b"wrong-one".as_slice(), good.as_slice()].into_iter();
+        let mut stderr = Vec::new();
+        let recovered = prompt_verified_medium_passphrase(
+            "A",
+            &blob,
+            age_scrypt::decrypt,
+            |_, _| Ok(Zeroizing::new(attempts.next().ok_or("exhausted")?.to_vec())),
+            &mut stderr,
+        )?;
+        assert_eq!(recovered.as_slice(), good);
+        assert!(String::from_utf8(stderr)?.contains("try again (2 attempt(s) left)"));
+
+        // Two wrong entries followed by the right entry succeeds on attempt 3.
+        let mut attempts = [b"wrong-1".as_slice(), b"wrong-2".as_slice(), good.as_slice()].into_iter();
+        let mut stderr = Vec::new();
+        let recovered = prompt_verified_medium_passphrase(
+            "B",
+            &blob,
+            age_scrypt::decrypt,
+            |_, _| Ok(Zeroizing::new(attempts.next().ok_or("exhausted")?.to_vec())),
+            &mut stderr,
+        )?;
+        assert_eq!(recovered.as_slice(), good);
+        assert!(String::from_utf8(stderr)?.contains("try again (1 attempt(s) left)"));
+
+        // Three wrong entries aborts with exact post-write guidance.
+        let mut attempts = [b"w1".as_slice(), b"w2".as_slice(), b"w3".as_slice()].into_iter();
+        let mut stderr = Vec::new();
+        let err = prompt_verified_medium_passphrase(
+            "C",
+            &blob,
+            age_scrypt::decrypt,
+            |_, _| Ok(Zeroizing::new(attempts.next().ok_or("exhausted")?.to_vec())),
+            &mut stderr,
+        )
+        .err()
+        .ok_or("expected 3rd failure to abort")?;
+        assert!(err.contains(VERIFY_ABORT_MESSAGE));
         Ok(())
     }
 }

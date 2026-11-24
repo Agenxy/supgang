@@ -220,6 +220,137 @@ class LmsHiddenPromptTest(unittest.TestCase):
                 os.close(master_fd)
                 os.close(slave_fd)
 
+    def test_ceremony_verify_reentry_retries_wrong_passphrase_then_accepts_or_aborts(self):
+        probe = Path(
+            os.environ.get(
+                "SUPGANG_VERIFY_PROMPT_PROBE",
+                ROOT / "target" / "debug" / "examples" / "lms_share_verify_prompt",
+            )
+        )
+        self.assertTrue(probe.is_file(), "the workspace test stage must build lms_share_verify_prompt first")
+        fixture_hex = (
+            ROOT / "crates" / "supgang" / "tests" / "fixtures" / "age-reference-scrypt-v1.hex"
+        ).read_text(encoding="utf-8").strip()
+        fixture_bytes = bytes.fromhex(fixture_hex)
+        good_pass = b"test-only-age-reference-passphrase-2026"
+        wrong_pass = b"test-only-wrong-passphrase-attempt"
+        prompt = b"Re-enter Medium A passphrase to verify (hidden): "
+
+        with tempfile.TemporaryDirectory(prefix="supgang-lms-retry-prompt-") as directory:
+            share_file = Path(directory) / "nc0-product-primary.share.age"
+            fd = os.open(share_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(fixture_bytes)
+
+            # Case 1: one wrong entry followed by the correct entry succeeds.
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
+                [str(probe), "A", str(share_file)],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            output = bytearray()
+            try:
+                deadline = time.monotonic() + 60
+                while output.count(prompt) < 1 and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            output.extend(os.read(master_fd, 4096))
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                    if process.poll() is not None:
+                        break
+                self.assertEqual(output.count(prompt), 1, "first verify prompt did not appear")
+                modes = termios.tcgetattr(slave_fd)[3]
+                self.assertFalse(modes & termios.ECHO, "first prompt appeared with echo enabled")
+                self.assertFalse(modes & termios.ICANON, "first prompt appeared with canonical mode enabled")
+                os.write(master_fd, wrong_pass + b"\n")
+
+                while output.count(prompt) < 2 and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            output.extend(os.read(master_fd, 4096))
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                    if process.poll() is not None:
+                        break
+                self.assertEqual(output.count(prompt), 2, "second verify prompt did not appear after wrong entry")
+                self.assertIn(b"try again (2 attempt(s) left)", output)
+                modes = termios.tcgetattr(slave_fd)[3]
+                self.assertFalse(modes & termios.ECHO, "second prompt appeared with echo enabled")
+                os.write(master_fd, good_pass + b"\n")
+
+                while process.poll() is None and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            output.extend(os.read(master_fd, 4096))
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                self.assertEqual(process.poll(), 0, "correct passphrase on 2nd attempt did not succeed")
+                self.assertNotIn(wrong_pass, output, "wrong passphrase was echoed")
+                self.assertNotIn(good_pass, output, "good passphrase was echoed")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                os.close(master_fd)
+                os.close(slave_fd)
+
+            # Case 2: three wrong entries aborts with exact post-write guidance.
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
+                [str(probe), "A", str(share_file)],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            output = bytearray()
+            try:
+                deadline = time.monotonic() + 60
+                for attempt in range(1, 4):
+                    while output.count(prompt) < attempt and time.monotonic() < deadline:
+                        readable, _, _ = select.select([master_fd], [], [], 0.2)
+                        if readable:
+                            try:
+                                output.extend(os.read(master_fd, 4096))
+                            except OSError as error:
+                                if error.errno != errno.EIO:
+                                    raise
+                        if process.poll() is not None:
+                            break
+                    self.assertEqual(output.count(prompt), attempt, f"prompt {attempt} did not appear")
+                    os.write(master_fd, wrong_pass + b"\n")
+
+                while process.poll() is None and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            output.extend(os.read(master_fd, 4096))
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                self.assertEqual(process.poll(), 3, "3rd wrong passphrase did not abort")
+                self.assertIn(
+                    b"files are written; verify them with lms-share-verify; do not rerun on these media",
+                    output,
+                )
+                self.assertNotIn(wrong_pass, output, "wrong passphrase was echoed")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                os.close(master_fd)
+                os.close(slave_fd)
+
 
 if __name__ == "__main__":
     unittest.main()

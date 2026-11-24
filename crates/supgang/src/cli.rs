@@ -628,5 +628,15 @@ pub(crate) fn render_error(json: bool, message: &str, output: &mut dyn Write, er
     }
 }
 
+/// Test-only entry point exercising the share-ceremony medium verification
+/// prompt retry loop over a real terminal without running H20/W1 keygen.
+#[doc(hidden)]
+#[must_use]
+pub fn run_lms_share_verify_prompt_probe(label: &str, path: &std::path::Path) -> ExitCode {
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    crate::cli_lms_share_ceremony::run_verify_prompt_probe(label, path, &mut stdout, &mut stderr)
+}
+
 #[cfg(test)]
 mod tests;
