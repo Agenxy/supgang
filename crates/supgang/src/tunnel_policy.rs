@@ -34,6 +34,10 @@ pub struct TunnelLimitsSummary {
     pub idle_seconds: u64,
     /// The running admission ceiling, absent when the service is stopped.
     pub active_total: Option<usize>,
+    /// Active tunnels held across all peers, absent when the service is stopped
+    /// or reported by an older service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tunnels: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -45,6 +49,14 @@ pub struct ExposureSnapshot {
 
 impl ExposureSnapshot {
     pub fn from_policy(policy: &TunnelPolicy, active_total: Option<usize>) -> Self {
+        Self::from_policy_with_usage(policy, active_total, None)
+    }
+
+    pub fn from_policy_with_usage(
+        policy: &TunnelPolicy,
+        active_total: Option<usize>,
+        active_tunnels: Option<usize>,
+    ) -> Self {
         let mut exposures: Vec<_> = policy
             .exposures
             .iter()
@@ -61,6 +73,7 @@ impl ExposureSnapshot {
                 total: policy.total,
                 idle_seconds: policy.idle_seconds,
                 active_total,
+                active_tunnels,
             },
         }
     }

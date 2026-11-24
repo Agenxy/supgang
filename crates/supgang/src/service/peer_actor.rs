@@ -189,6 +189,7 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
     } = context;
     let connection_id = connection.stable_id();
     let mut tunnels = tokio::task::JoinSet::new();
+    let mut tunnel_refusals = tokio::task::JoinSet::new();
     let mut sign_tasks = tokio::task::JoinSet::new();
     let mut sync_failures = 0_u32;
     loop {
@@ -238,10 +239,15 @@ async fn peer_actor(context: PeerActorContext) -> &'static [u8] {
                         let Some(runtime) = update.as_ref().and_then(|context| context.tunnels.clone()) else {
                             continue;
                         };
-                        if tunnel_admission.is_closed() || tunnels.len() >= runtime.policy.borrow().per_peer { continue; }
-                        tunnels.spawn(super::tunnel::incoming(
-                            send, receive, runtime, authorization.clone(), tunnel_admission.clone(),
-                        ));
+                        super::tunnel::dispatch_incoming(
+                            send,
+                            receive,
+                            runtime,
+                            authorization.clone(),
+                            &tunnel_admission,
+                            &mut tunnels,
+                            &mut tunnel_refusals,
+                        );
                         continue;
                     }
                     StreamKind::AgentSign => {

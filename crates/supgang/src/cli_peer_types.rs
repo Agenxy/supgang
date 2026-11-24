@@ -43,6 +43,14 @@ pub struct PeerConnection {
     /// from a transport problem. Absent from older services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathStatistics>,
+    /// Active tunnels (inbound and outbound) held on this connection.
+    /// Absent from older services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tunnels: Option<usize>,
+    /// Effective per-peer tunnel limit enforced on this connection.
+    /// Absent from older services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_limit: Option<usize>,
 }
 
 /// One QUIC path's congestion and loss state at the time of the read.

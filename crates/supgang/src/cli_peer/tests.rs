@@ -102,16 +102,15 @@ fn connection_diagnostics_are_optional_and_separate_from_advertised_addresses() 
         received_datagrams: 2,
         sent_datagrams: 3,
         path: None,
+        active_tunnels: Some(1),
+        tunnel_limit: Some(4),
     });
     let restored: PeerRow = serde_json::from_value(serde_json::to_value(&peer)?)?;
     assert!(restored.addresses.is_empty());
-    assert_eq!(
-        restored
-            .connection
-            .ok_or("missing transport diagnostics")?
-            .received_datagrams,
-        2
-    );
+    let restored_connection = restored.connection.ok_or("missing transport diagnostics")?;
+    assert_eq!(restored_connection.received_datagrams, 2);
+    assert_eq!(restored_connection.active_tunnels, Some(1));
+    assert_eq!(restored_connection.tunnel_limit, Some(4));
     Ok(())
 }
 

@@ -375,7 +375,7 @@ fn render_computer(
     if computer.connected == Some(true)
         && let Some(connection) = &computer.connection
     {
-        writeln!(output, "  using  {} (current connection)", connection.remote_address)?;
+        write_connection_line(connection, output)?;
     } else if shown.is_empty() {
         if computer.addresses.is_empty() {
             writeln!(output, "  no current address")?;
@@ -426,11 +426,26 @@ fn peer_status_label(computer: &cli_peer::PeerRow) -> &str {
     }
 }
 
+fn write_connection_line(
+    connection: &crate::cli_peer_types::PeerConnection,
+    output: &mut dyn Write,
+) -> std::io::Result<()> {
+    if let (Some(active), Some(limit)) = (connection.active_tunnels, connection.tunnel_limit) {
+        writeln!(
+            output,
+            "  using  {} (current connection), {active}/{limit} tunnels",
+            connection.remote_address
+        )
+    } else {
+        writeln!(output, "  using  {} (current connection)", connection.remote_address)
+    }
+}
+
 fn render_all_addresses(computer: &cli_peer::PeerRow, output: &mut dyn Write) -> std::io::Result<()> {
     if computer.connected == Some(true)
         && let Some(connection) = &computer.connection
     {
-        writeln!(output, "  using  {} (current connection)", connection.remote_address)?;
+        write_connection_line(connection, output)?;
     }
     if computer.addresses.is_empty() {
         writeln!(output, "  no signed addresses")?;
