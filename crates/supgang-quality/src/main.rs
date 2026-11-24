@@ -17,6 +17,7 @@ mod acceptance;
 mod drift;
 mod gate_cache;
 mod installation;
+mod package_verify;
 mod vendored_netlink;
 mod vendored_netwatch;
 
