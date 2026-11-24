@@ -38,28 +38,30 @@ jobs:
         run: uv python install 3.15.2
       - name: Fetch and verify the published netwatch archive
         run: |
-          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.19.1.crate"
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.20.2.crate"
           mkdir -p "$(dirname "$archive")"
           curl --fail --location --show-error --silent \
-            https://static.crates.io/crates/netwatch/netwatch-0.19.1.crate \
+            https://static.crates.io/crates/netwatch/netwatch-0.20.2.crate \
             --output "$archive"
           printf '%s  %s\n' \
-            4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976 \
+            2acf7a1ca9205d7c1fc9a1595193a8cbaa7537b4a07dca93c6ae3de7c8d0e597 \
             "$archive" | shasum -a 256 -c -
-      - name: Fetch and verify the published netlink-packet-core archive
+      - name: Fetch and verify the published portmapper archive
         run: |
-          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netlink-packet-core-0.8.2.crate"
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/portmapper-0.20.2.crate"
           mkdir -p "$(dirname "$archive")"
           curl --fail --location --show-error --silent \
-            https://static.crates.io/crates/netlink-packet-core/netlink-packet-core-0.8.2.crate \
+            https://static.crates.io/crates/portmapper/portmapper-0.20.2.crate \
             --output "$archive"
           printf '%s  %s\n' \
-            b897d7bd4f0af82e68d40d0344cf37e97f9c97ddf74a098de3e4da05e96ca395 \
+            d36ce759df600731dd2511cd2d640bd551086b2f7b68bceb9bbcfd8c7ff86053 \
             "$archive" | shasum -a 256 -c -
       - name: Run repository gate
         env:
           SUPGANG_QUALITY_CACHE: off
         run: cargo run --locked --package supgang-quality -- all
+      - name: Verify packaged multi-target dependency graph
+        run: cargo run --locked --package supgang-quality -- packaged-deps
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit --version 0.22.2
       - name: Audit locked dependencies
@@ -69,6 +71,50 @@ jobs:
         with:
           rust-version: "1.99.1"
           command: check licenses sources
+
+  publish-netwatch:
+    name: Publish supgang-netwatch
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Request short-lived crates.io token
+        id: crates-io-auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish netwatch crate
+        run: cargo publish --manifest-path third_party/netwatch/Cargo.toml
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+
+  publish-portmapper:
+    name: Publish supgang-portmapper
+    needs: publish-netwatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Request short-lived crates.io token
+        id: crates-io-auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish portmapper crate
+        run: cargo publish --manifest-path third_party/portmapper/Cargo.toml
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
 
   publish-acl:
     name: Publish supgang-acl
@@ -94,7 +140,9 @@ jobs:
 
   publish-core:
     name: Publish supgang-core
-    needs: publish-acl
+    needs:
+      - publish-acl
+      - publish-portmapper
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release
