@@ -34,7 +34,9 @@ supgang/custody/v1 generate --no-presence
 supgang/custody/v1 public --sealed <blob-hex>
 supgang/custody/v1 sign --sealed <blob-hex> <32-byte-digest-hex>
 supgang/custody/v1 generate-agreement
+supgang/custody/v1 generate-agreement --presence
 supgang/custody/v1 agree --sealed <blob-hex> <33-byte-compressed-peer-key-hex>
+supgang/custody/v1 agree --presence --sealed <blob-hex> <33-byte-compressed-peer-key-hex> --reason <utf8-reason-hex>
 ```
 
 Success responses start with `supgang/custody/v1 ok` followed by:
@@ -54,6 +56,10 @@ Native error descriptions never cross the pipe. Rust also distinguishes
 missing executable, process refusal, malformed response, busy and timeout.
 The helper's protocol response uses a successful process exit even for
 typed errors; a failing process status is a separate helper refusal.
+The presence reason is at most 128 printable ASCII bytes after hex decoding.
+Rust sends the LMS key name, q, and first 16 hex digits of the package SHA-256
+so the owner can recognize the intended operation. Any process of the same
+OS user can supply that text; the helper does not treat it as authorization.
 
 Hex is lowercase and even-length. Public keys are 33-byte compressed SEC1;
 signatures are 64-byte raw `r || s`. Rust, exclusively, normalizes `s` to the

@@ -12,6 +12,7 @@ pub mod cli;
 pub(crate) mod cli_args;
 pub(crate) mod cli_background;
 pub(crate) mod cli_control;
+pub(crate) mod cli_lms_derive;
 pub(crate) mod cli_lms_escrow;
 pub(crate) mod cli_lms_verify;
 pub(crate) mod cli_peer;
