@@ -1,45 +1,61 @@
-# NC0 product-root escrow ceremony: owner runbook
+# NC0 product-root share ceremony: owner runbook
 
-This runbook generates the two NC0 product LMS roots, `nc0-product-primary` and
-`nc0-product-recovery`, on the owner's laptop while it is offline. The command
-contract is in [ADR 0010](../../architecture/0010-nc0-lms-vault-root.md#offline-product-root-escrow-ceremony).
+This runbook creates the two NC0 product LMS roots, `nc0-product-primary` and
+`nc0-product-recovery`, on the owner's laptop while it is offline. The design is
+in [ADR 0010](../../architecture/0010-nc0-lms-vault-root.md).
 
-The roots are held in **escrow only**. Each root exists solely as
-passphrase-encrypted age files plus the passphrase on paper. No device holds
-it in a vault, and nothing about it is non-exportable. Anyone holding one
-escrow file together with that root's passphrase can sign as that root.
+## What the ceremony makes
+
+Each root comes from its own random 256-bit master secret. The command splits
+each master into three SLIP-39 shares, any two of which rebuild it. It then
+encrypts the shares onto three media, A, B and C:
+
+| Medium | Holds | Unlocked by |
+|---|---|---|
+| A | stick A: one share of each root (2 files) | passphrase sheet A |
+| B | stick B: one share of each root (2 files) | passphrase sheet B |
+| C | stick C, then cloud copies: one share of each root (2 files) | passphrase sheet C |
+
+That's three passphrases and six files. A share counts only when its file and
+its passphrase sheet are together. One share alone reveals nothing about the
+root, and any two shares rebuild it.
+
+No device keeps the masters. The command erases them from memory, then rebuilds
+each root from every pair of media (A+B, A+C, B+C) and checks that the public
+key is identical every time. The rebuild never signs.
 
 Only the owner runs this ceremony, and only at the laptop's own keyboard. No
-agent, remote session, or screen-sharing tool may be connected.
+agent, remote session or screen-sharing tool may be connected.
 
 ## Before you start
 
 You need:
 
-- 4 new USB sticks, labelled `P1`, `P2`, `R1`, `R2`;
-- 2 sheets of paper labelled `PRIMARY PASSPHRASE` and `RECOVERY PASSPHRASE`, and a pen;
+- 3 new USB sticks, labelled `A`, `B` and `C`;
+- 3 sheets of paper, labelled `PASSPHRASE A`, `PASSPHRASE B` and `PASSPHRASE C`,
+  and a pen;
 - a phone camera, used only for photographing **public** values in step 7;
-- the expected `supgang` binary SHA-256 and code-signing team, which Supply sends
-  you separately for the release built from the merged ceremony commit.
+- the expected `supgang` binary SHA-256 and code-signing team. Supply sends these
+  separately, for the release built from the merged ceremony commit.
 
-Allow 20 minutes. Each root takes about 40 seconds of computation.
+Allow 30 minutes. Each root takes about a minute of computation.
 
 ## 1. Go offline and reboot
 
 1. Unplug Ethernet. Turn Wi-Fi off from the menu bar, and turn Bluetooth off.
-2. Restart the laptop. Log in.
+2. Restart the laptop and log in.
 3. Do not turn Wi-Fi back on until step 9.
 
 ## 2. Make sure no agent is running
 
-Open Terminal. Run:
+Open Terminal and run:
 
 ```bash
-ps -axo pid,comm | grep -iE 'claude|codex|node|dibs|supgang' | grep -v grep
+ps -axo pid,comm | grep -iE 'claude|codex|antigravity|gemini|node|dibs|supgang' | grep -v grep
 ```
 
-The output must be empty. If it is not, quit the listed applications and run it
-again. Also quit any screen-recording, clipboard-history, or remote-desktop tool.
+The output must be empty. If it isn't, quit the listed applications and run it
+again. Also quit any screen-recording, clipboard-history or remote-desktop tool.
 
 ## 3. Verify the binary
 
@@ -52,61 +68,65 @@ codesign --verify --strict --verbose=2 "$(command -v supgang)"
 ```
 
 The hash must match the value Supply sent, character for character, and
-`codesign` must report the expected team. If either one differs, stop and
-report it. Do not continue.
+`codesign` must report the expected team. If either differs, stop and report
+it. Do not continue.
 
-## 4. Generate the primary root
+## 4. Run the ceremony
 
-Insert sticks `P1` and `P2`. Each one appears under `/Volumes/`. Run:
-
-```bash
-supgang lms-keygen --escrow-only nc0-product-primary --to /Volumes/P1/nc0-product-primary.age --to /Volumes/P2/nc0-product-primary.age --generate-passphrase
-```
-
-- If it reports that a default route is present, the network is still on. Return
-  to step 1. Never use `--i-confirm-offline`, which exists only for tests.
-- It prints seven words **once**. Write them on the `PRIMARY PASSPHRASE`
-  sheet, then type them back at the hidden prompt. The screen then clears.
-- At the final prompt, type the passphrase from the paper again. This
-  re-reads and verifies both files.
-- Leave the terminal output on screen for step 7.
-
-## 5. Generate the recovery root
-
-Eject `P1` and `P2`. Insert `R1` and `R2`. Run:
+Insert sticks `A`, `B` and `C`. Each one appears under `/Volumes/`. Run:
 
 ```bash
-supgang lms-keygen --escrow-only nc0-product-recovery --to /Volumes/R1/nc0-product-recovery.age --to /Volumes/R2/nc0-product-recovery.age --generate-passphrase
+supgang lms-share-ceremony --medium-a /Volumes/A --medium-b /Volumes/B --medium-c /Volumes/C
 ```
 
-Write the new seven words on the `RECOVERY PASSPHRASE` sheet. The two roots
-must never share a passphrase.
+- If it reports that a default route is present, the network is still on.
+  Return to step 1. Never use `--i-confirm-offline`, which exists only for tests.
+- It prints passphrase A **once**, as seven words. Write them on the
+  `PASSPHRASE A` sheet, then type them back at the hidden prompt. The screen
+  then clears. Passphrases B and C follow the same way, each on its own sheet.
+- The command then rebuilds both roots from every pair of media, asking for the
+  passphrases again. Type each one from its sheet.
+- It finishes by printing, for each root, the public key, fingerprint,
+  known-answer SHA-256 and `next_q`, plus a SHA-256 for each of the six files.
+  Leave this on screen for step 7.
 
-## 6. Must-fail checks
+If any step fails, stop. Do not retry on the same sticks. Report the exact
+message.
 
-For one primary file and one recovery file, confirm that verification rejects
-bad input:
+## 5. Must-fail checks
+
+Each check uses only stick B and stick C. The same pair recovers the roots if
+Site 1 is ever lost.
 
 ```bash
-supgang lms-escrow-verify nc0-product-primary --from /Volumes/P1/nc0-product-primary.age
+supgang lms-share-verify nc0-product-primary --share /Volumes/B/nc0-product-primary.share.age --share /Volumes/C/nc0-product-primary.share.age
 ```
 
-1. Enter a deliberately wrong passphrase. The command must fail.
-2. Enter the correct passphrase. It must succeed and print the same fingerprint
-   as step 4.
-3. Make a copy with one byte changed, then verify the copy. It must fail:
+1. Type a deliberately wrong passphrase for B. The command must fail.
+2. Run it again with the correct passphrases. It must succeed and print the
+   same primary fingerprint as step 4.
+3. Run it with the same file given twice (`--share` B, `--share` B). It must
+   fail, because one share is below the threshold.
+4. Make a copy with one byte changed, then verify using the copy. It must fail:
 
    ```bash
-   cp /Volumes/P1/nc0-product-primary.age ~/Desktop/flipped.age && printf 'X' | dd of="$HOME/Desktop/flipped.age" bs=1 seek=400 conv=notrunc
+   cp /Volumes/B/nc0-product-primary.share.age ~/Desktop/flipped.age && printf 'X' | dd of="$HOME/Desktop/flipped.age" bs=1 seek=400 conv=notrunc
    ```
 
    ```bash
-   supgang lms-escrow-verify nc0-product-primary --from ~/Desktop/flipped.age
+   supgang lms-share-verify nc0-product-primary --share ~/Desktop/flipped.age --share /Volumes/C/nc0-product-primary.share.age
    ```
 
    Then delete the copy with `rm -P ~/Desktop/flipped.age`.
 
-Repeat 1 and 2 with `nc0-product-recovery` on `R1`.
+Repeat step 2 for `nc0-product-recovery`, with B and C. It must print the same
+recovery fingerprint as step 4.
+
+## 6. Second-family check of the public keys
+
+This runs only if Supply asks for it, using the fallback tool Supply provides.
+Otherwise skip it. The ceremony's own rebuild and the KAT in the merged PR are
+the standard checks.
 
 ## 7. Photograph the public values
 
@@ -114,32 +134,84 @@ For each root, photograph the terminal lines that show:
 
 - the public key (hex);
 - the fingerprint;
-- the known-answer signature SHA-256;
-- `Next q: 1`;
-- each `Escrow file SHA-256` line.
+- the known-answer SHA-256;
+- `next_q`;
+- every file SHA-256 line.
 
-These values are public. **Never photograph the passphrase sheets.**
+These values are public. **Never photograph a passphrase sheet.**
 
 ## 8. Close and reboot
 
-Close the Terminal window, eject every stick, and restart the laptop. The
-reboot discards any terminal scrollback or memory that might still hold a
-passphrase.
+Close the Terminal window, eject every stick and restart the laptop. The reboot
+discards any terminal scrollback or memory that might still hold a passphrase.
 
-## 9. Cloud copies
+## 9. Cloud copies of medium C
 
-After the reboot, turn the network back on. Copy `nc0-product-primary.age` from
-`P1` and `nc0-product-recovery.age` from `R1` into a folder in iCloud Drive,
-then copy the same two files into Proton Drive. Copy the files exactly; do not
-open, rename, or compress them.
+After the reboot, turn the network back on. Insert stick `C`. Copy both
+`.share.age` files from it into a folder in iCloud Drive, then copy the same two
+files into Proton Drive. Copy them exactly; do not open, rename or compress
+them.
+
+Check that each cloud copy's SHA-256 matches the step 7 photograph:
+
+```bash
+shasum -a 256 ~/Library/Mobile\ Documents/com~apple~CloudDocs/<folder>/*.share.age
+```
+
+Once both cloud copies match, erase stick `C` with Disk Utility. Erase it, never
+store it. Paper C is the only physical part of medium C. Without the sheet, a
+cloud copy is useless to anyone.
 
 ## 10. Custody
 
-- Store `P1` and `P2` in two different places, and `R1` and `R2` likewise.
-- Store each passphrase sheet apart from every stick of its own root.
-- Store the two passphrase sheets apart from each other.
-- Never type, photograph, message, or store a passphrase on any device.
+| Place | Holds |
+|---|---|
+| Site 1 | stick A and sheet A |
+| Site 2 | stick B and sheet B |
+| P | sheet C |
+| Cloud (iCloud and Proton) | the two C files |
+
+Never type, photograph, message or store a passphrase on any device.
+
+### What this layout survives
+
+Run `tools/custody_table.py` to regenerate this table:
+
+| Places | Theft: usable shares | Loss: shares left |
+|---|---|---|
+| Site 1 | 1 (A) | 2 (B, C) |
+| Site 2 | 1 (B) | 2 (A, C) |
+| P | 0 | 2 (A, B) |
+| Cloud | 0 | 2 (A, B) |
+| Site 1 + Site 2 | 2 (A, B) | 1 (C) |
+| Site 1 + P | 1 (A) | 1 (B) |
+| Site 1 + Cloud | 1 (A) | 1 (B) |
+| Site 2 + P | 1 (B) | 1 (A) |
+| Site 2 + Cloud | 1 (B) | 1 (A) |
+| P + Cloud | 1 (C) | 2 (A, B) |
+| Site 1 + Site 2 + P | 2 (A, B) | 0 |
+| Site 1 + Site 2 + Cloud | 2 (A, B) | 0 |
+| Site 1 + P + Cloud | 2 (A, C) | 1 (B) |
+| Site 2 + P + Cloud | 2 (B, C) | 1 (A) |
+| Site 1 + Site 2 + P + Cloud | 3 (A, B, C) | 0 |
+
+The roots survive any ONE place lost or stolen. Losing any two places other
+than P + Cloud is fatal, which is inherent to 2-of-3. If one place is lost,
+re-run the share ceremony from the two surviving media, promptly, before a
+second loss.
 
 Send the step 7 photographs to the lead through Supply. The lead checks them
-against the hashes the cloud copies produce, then files the public record in
-this directory.
+against the hashes of the cloud copies, then files the public record in this
+directory.
+
+## Signing is a separate step
+
+This ceremony never signs anything except each root's q=0 known-answer
+signature. Before the first product signature, the signer must meet the
+following, as set out in ADR 0010:
+
+- signing is refused without a signing log held in at least two copies;
+- after any restore, signing resumes at the next unused 2^16 block above the
+  highest logged q;
+- q is never restored from a share;
+- q at or above 2^20 is refused.
