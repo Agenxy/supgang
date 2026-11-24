@@ -102,6 +102,9 @@ pub enum Command {
         /// Age-encrypted SLIP-39 share file; repeat exactly twice from two distinct media.
         #[arg(long = "share", value_name = "FILE", required = true)]
         share: Vec<PathBuf>,
+        /// Expected lowercase 64-character SHA-256 fingerprint of the derived 56-byte public key.
+        #[arg(long = "expect-fingerprint", value_name = "HEX")]
+        expect_fingerprint: Option<String>,
     },
     /// Carry stdin/stdout bytes to a target-approved loopback service on a live peer.
     ///

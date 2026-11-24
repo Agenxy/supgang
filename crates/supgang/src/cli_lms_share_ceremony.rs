@@ -1,9 +1,11 @@
 //! Owner-present, network-free NC0 SLIP-39 2-of-3 product-root share ceremony.
 
+pub mod media;
+#[cfg(test)]
+mod tests;
+
 use std::{
-    collections::HashSet,
-    fs,
-    io::{self, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::ExitCode,
     time::Instant,
@@ -14,7 +16,7 @@ use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    age_scrypt, artifact,
+    age_scrypt,
     cli::render_error,
     cli_lms_escrow::{clear_generated_display, hidden_passphrase, prepare_owner_terminal},
     eff_passphrase, offline_route, slip39,
@@ -29,6 +31,7 @@ pub const RECOVERY_SHARE_FILE: &str = "nc0-product-recovery.share.age";
 const MEDIA_LABELS: [&str; 3] = ["A", "B", "C"];
 const VERIFY_PAIRS: [(usize, usize, &str); 3] = [(0, 1, "A+B"), (0, 2, "A+C"), (1, 2, "B+C")];
 const ROLES: [RootRole; 2] = [RootRole::Primary, RootRole::Recovery];
+const MAX_CONFIRM_ATTEMPTS: usize = 3;
 const MAX_VERIFY_ATTEMPTS: usize = 3;
 const VERIFY_ABORT_MESSAGE: &str = "files are written; verify them with lms-share-verify; do not rerun on these media";
 
@@ -72,89 +75,139 @@ const fn share_file_name(role: RootRole) -> &'static str {
     }
 }
 
-fn validate_media_dirs(medium_a: &Path, medium_b: &Path, medium_c: &Path) -> Result<[PathBuf; 3], String> {
-    let inputs = [medium_a, medium_b, medium_c];
-    let mut seen = HashSet::with_capacity(3);
-    for (dir, label) in inputs.iter().zip(MEDIA_LABELS) {
-        let meta =
-            fs::metadata(dir).map_err(|_| format!("medium {label} ({}): directory unavailable", dir.display()))?;
-        if !meta.is_dir() {
-            return Err(format!("medium {label} ({}): not a directory", dir.display()));
+fn confirm_medium_passphrase_with<F>(
+    label: &str,
+    generated: Zeroizing<Vec<u8>>,
+    mut prompt_fn: F,
+    error: &mut dyn Write,
+) -> Result<Zeroizing<Vec<u8>>, String>
+where
+    F: FnMut(&str, &mut dyn Write) -> Result<Zeroizing<Vec<u8>>, String>,
+{
+    let prompt = format!("Type the Medium {label} passphrase back (hidden): ");
+    for attempt in 1..=MAX_CONFIRM_ATTEMPTS {
+        if attempt == 1 {
+            write!(
+                error,
+                "Medium {label} generated seven-word EFF passphrase (shown once): "
+            )
+            .map_err(|_| "could not show generated passphrase")?;
+        } else {
+            write!(
+                error,
+                "Medium {label} seven-word EFF passphrase (re-displayed, attempt {attempt} of {MAX_CONFIRM_ATTEMPTS}): "
+            )
+            .map_err(|_| "could not show generated passphrase")?;
         }
-        let canonical =
-            fs::canonicalize(dir).map_err(|_| format!("medium {label} ({}): cannot canonicalize", dir.display()))?;
-        if !seen.insert(canonical) {
-            return Err(format!(
-                "medium {label} ({}): duplicate medium directory",
-                dir.display()
-            ));
+        error
+            .write_all(&generated)
+            .map_err(|_| "could not show generated passphrase")?;
+        writeln!(error).map_err(|_| "could not finish generated passphrase display")?;
+        let typed = prompt_fn(&prompt, error);
+        clear_generated_display(error)?;
+        let typed = typed?;
+        if generated.as_slice() == typed.as_slice() {
+            return Ok(generated);
         }
-        for role in ROLES {
-            let target = dir.join(share_file_name(role));
-            match fs::symlink_metadata(&target) {
-                Ok(_) => return Err(format!("{}: already exists", target.display())),
-                Err(problem) if problem.kind() == io::ErrorKind::NotFound => {}
-                Err(_) => return Err(format!("{}: cannot inspect destination", target.display())),
-            }
+        drop(typed);
+        if attempt < MAX_CONFIRM_ATTEMPTS {
+            let remaining = MAX_CONFIRM_ATTEMPTS - attempt;
+            writeln!(
+                error,
+                "Medium {label} typed passphrase differs; re-displaying the same passphrase ({remaining} attempt(s) left)."
+            )
+            .map_err(|_| "could not show passphrase retry notice")?;
         }
     }
-    Ok([medium_a.to_path_buf(), medium_b.to_path_buf(), medium_c.to_path_buf()])
+    Err(format!(
+        "Medium {label} typed passphrase failed {MAX_CONFIRM_ATTEMPTS} times; no share files were written"
+    ))
 }
 
 fn confirm_medium_passphrase(label: &str, error: &mut dyn Write) -> Result<Zeroizing<Vec<u8>>, String> {
     let generated = eff_passphrase::generate().map_err(str::to_owned)?;
-    write!(
-        error,
-        "Medium {label} generated seven-word EFF passphrase (shown once): "
-    )
-    .map_err(|_| "could not show generated passphrase")?;
-    error
-        .write_all(&generated)
-        .map_err(|_| "could not show generated passphrase")?;
-    writeln!(error).map_err(|_| "could not finish generated passphrase display")?;
-    let prompt = format!("Type the Medium {label} passphrase back (hidden): ");
-    let typed = hidden_passphrase(&prompt, error);
-    clear_generated_display(error)?;
-    let typed = typed?;
-    if generated.as_slice() != typed.as_slice() {
-        return Err(format!(
-            "Medium {label} typed passphrase differs; no share files were written"
-        ));
-    }
-    Ok(generated)
+    confirm_medium_passphrase_with(label, generated, hidden_passphrase, error)
 }
 
-fn write_encrypted_shares(
-    media: &[PathBuf; 3],
+fn write_encrypted_shares_with<W>(
+    media_dirs: &[PathBuf; 3],
     primary_shares: &[Zeroizing<String>; 3],
     recovery_shares: &[Zeroizing<String>; 3],
     passphrases: &[Zeroizing<Vec<u8>>; 3],
     encrypt: EncryptFn,
-) -> Result<[[PathBuf; 2]; 3], String> {
+    mut writer: W,
+) -> Result<[[PathBuf; 2]; 3], String>
+where
+    W: FnMut(&Path, &[u8], usize) -> Result<(), String>,
+{
     let mut paths: Vec<[PathBuf; 2]> = Vec::with_capacity(3);
+    let mut created: Vec<PathBuf> = Vec::with_capacity(6);
     for medium_idx in 0..3 {
-        let dir = media.get(medium_idx).ok_or("missing medium directory")?;
+        let dir = media_dirs.get(medium_idx).ok_or("missing medium directory")?;
         let passphrase = passphrases.get(medium_idx).ok_or("missing medium passphrase")?;
         let primary_share = primary_shares.get(medium_idx).ok_or("missing primary share")?;
         let recovery_share = recovery_shares.get(medium_idx).ok_or("missing recovery share")?;
 
         let primary_path = dir.join(PRIMARY_SHARE_FILE);
         let mut primary_text = Zeroizing::new(format!("{}\n", primary_share.as_str()));
-        let primary_ct = encrypt(primary_text.as_bytes(), passphrase).map_err(str::to_owned)?;
+        let primary_ct = match encrypt(primary_text.as_bytes(), passphrase) {
+            Ok(ct) => ct,
+            Err(cause) => {
+                primary_text.zeroize();
+                return Err(media::rollback_partial_shares(media_dirs, &created, None, cause));
+            }
+        };
         primary_text.zeroize();
-        artifact::write_new(&primary_path, &primary_ct, age_scrypt::MAX_FILE)
-            .map_err(|problem| format!("{}: {problem}", primary_path.display()))?;
+        if let Err(cause) = writer(&primary_path, &primary_ct, age_scrypt::MAX_FILE) {
+            return Err(media::rollback_partial_shares(
+                media_dirs,
+                &created,
+                Some(&primary_path),
+                &cause,
+            ));
+        }
+        created.push(primary_path.clone());
 
         let recovery_path = dir.join(RECOVERY_SHARE_FILE);
         let mut recovery_text = Zeroizing::new(format!("{}\n", recovery_share.as_str()));
-        let recovery_ct = encrypt(recovery_text.as_bytes(), passphrase).map_err(str::to_owned)?;
+        let recovery_ct = match encrypt(recovery_text.as_bytes(), passphrase) {
+            Ok(ct) => ct,
+            Err(cause) => {
+                recovery_text.zeroize();
+                return Err(media::rollback_partial_shares(media_dirs, &created, None, cause));
+            }
+        };
         recovery_text.zeroize();
-        artifact::write_new(&recovery_path, &recovery_ct, age_scrypt::MAX_FILE)
-            .map_err(|problem| format!("{}: {problem}", recovery_path.display()))?;
+        if let Err(cause) = writer(&recovery_path, &recovery_ct, age_scrypt::MAX_FILE) {
+            return Err(media::rollback_partial_shares(
+                media_dirs,
+                &created,
+                Some(&recovery_path),
+                &cause,
+            ));
+        }
+        created.push(recovery_path.clone());
 
         paths.push([primary_path, recovery_path]);
     }
     paths.try_into().map_err(|_| "internal media path error".to_owned())
+}
+
+fn write_encrypted_shares(
+    media_dirs: &[PathBuf; 3],
+    primary_shares: &[Zeroizing<String>; 3],
+    recovery_shares: &[Zeroizing<String>; 3],
+    passphrases: &[Zeroizing<Vec<u8>>; 3],
+    encrypt: EncryptFn,
+) -> Result<[[PathBuf; 2]; 3], String> {
+    write_encrypted_shares_with(
+        media_dirs,
+        primary_shares,
+        recovery_shares,
+        passphrases,
+        encrypt,
+        media::write_share_file,
+    )
 }
 
 fn read_all_files(paths: &[[PathBuf; 2]; 3]) -> Result<(MediaBlobs, Vec<ShareFileReceipt>), String> {
@@ -165,10 +218,7 @@ fn read_all_files(paths: &[[PathBuf; 2]; 3]) -> Result<(MediaBlobs, Vec<ShareFil
         let primary_path = pair.first().ok_or("missing primary path")?;
         let recovery_path = pair.get(1).ok_or("missing recovery path")?;
 
-        let primary_bytes = Zeroizing::new(
-            artifact::read(primary_path, age_scrypt::MAX_FILE)
-                .map_err(|problem| format!("{}: {problem}", primary_path.display()))?,
-        );
+        let primary_bytes = Zeroizing::new(media::read_share_file(primary_path, age_scrypt::MAX_FILE)?);
         receipts.push(ShareFileReceipt {
             medium: label,
             role: RootRole::Primary.as_str(),
@@ -176,10 +226,7 @@ fn read_all_files(paths: &[[PathBuf; 2]; 3]) -> Result<(MediaBlobs, Vec<ShareFil
             sha256: hex::encode(Sha256::digest(primary_bytes.as_slice())),
         });
 
-        let recovery_bytes = Zeroizing::new(
-            artifact::read(recovery_path, age_scrypt::MAX_FILE)
-                .map_err(|problem| format!("{}: {problem}", recovery_path.display()))?,
-        );
+        let recovery_bytes = Zeroizing::new(media::read_share_file(recovery_path, age_scrypt::MAX_FILE)?);
         receipts.push(ShareFileReceipt {
             medium: label,
             role: RootRole::Recovery.as_str(),
@@ -227,9 +274,7 @@ where
 pub fn run_verify_prompt_probe(label: &str, path: &Path, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode {
     let result = (|| -> Result<(), String> {
         prepare_owner_terminal()?;
-        let blob = Zeroizing::new(
-            artifact::read(path, age_scrypt::MAX_FILE).map_err(|problem| format!("{}: {problem}", path.display()))?,
-        );
+        let blob = Zeroizing::new(media::read_share_file(path, age_scrypt::MAX_FILE)?);
         let verified = prompt_verified_medium_passphrase(label, &blob, age_scrypt::decrypt, hidden_passphrase, error)?;
         drop(verified);
         Ok(())
@@ -359,6 +404,19 @@ fn render_output(
     Ok(())
 }
 
+fn check_offline_guard(i_confirm_offline: bool, error: &mut dyn Write) -> Result<(), String> {
+    if i_confirm_offline {
+        writeln!(
+            error,
+            "WARNING: test-only offline override; a default route may be present."
+        )
+        .map_err(|_| "could not show offline override warning")?;
+    } else if offline_route::has_default_route()? {
+        return Err("default route is present; disconnect network before generating NC0 LMS roots".to_owned());
+    }
+    Ok(())
+}
+
 fn ceremony(
     medium_a: &Path,
     medium_b: &Path,
@@ -369,16 +427,8 @@ fn ceremony(
     error: &mut dyn Write,
 ) -> Result<(), String> {
     prepare_owner_terminal()?;
-    let media = validate_media_dirs(medium_a, medium_b, medium_c)?;
-    if i_confirm_offline {
-        writeln!(
-            error,
-            "WARNING: test-only offline override; a default route may be present."
-        )
-        .map_err(|_| "could not show offline override warning")?;
-    } else if offline_route::has_default_route()? {
-        return Err("default route is present; disconnect network before generating NC0 LMS roots".to_owned());
-    }
+    check_offline_guard(i_confirm_offline, error)?;
+    let media_dirs = media::preflight_media(medium_a, medium_b, medium_c, true)?;
 
     let mut primary_master = Zeroizing::new([0_u8; MASTER_LEN]);
     let mut recovery_master = Zeroizing::new([0_u8; MASTER_LEN]);
@@ -434,7 +484,7 @@ fn ceremony(
     let passphrases = [pass_a, pass_b, pass_c];
 
     let paths = write_encrypted_shares(
-        &media,
+        &media_dirs,
         &primary_shares,
         &recovery_shares,
         &passphrases,
@@ -507,172 +557,5 @@ pub fn run(
     match ceremony(medium_a, medium_b, medium_c, i_confirm_offline, json, output, error) {
         Ok(()) => ExitCode::SUCCESS,
         Err(problem) => render_error(json, &problem, output, error),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn media_validation_requires_three_distinct_directories_without_existing_files()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let dir_a = tempfile::tempdir()?;
-        let dir_b = tempfile::tempdir()?;
-        let dir_c = tempfile::tempdir()?;
-        assert!(validate_media_dirs(dir_a.path(), dir_b.path(), dir_c.path()).is_ok());
-        assert!(validate_media_dirs(dir_a.path(), dir_a.path(), dir_c.path()).is_err());
-        assert!(validate_media_dirs(dir_a.path(), dir_b.path(), dir_b.path()).is_err());
-
-        let existing = dir_b.path().join(RECOVERY_SHARE_FILE);
-        fs::write(&existing, b"already-here")?;
-        assert!(validate_media_dirs(dir_a.path(), dir_b.path(), dir_c.path()).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn six_file_write_wipe_and_all_three_pair_rebuilds_verify_and_detect_tampering()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let dir_a = tempfile::tempdir()?;
-        let dir_b = tempfile::tempdir()?;
-        let dir_c = tempfile::tempdir()?;
-        let media = validate_media_dirs(dir_a.path(), dir_b.path(), dir_c.path())?;
-
-        let mut primary_master = Zeroizing::new([0x11_u8; MASTER_LEN]);
-        let mut recovery_master = Zeroizing::new([0x22_u8; MASTER_LEN]);
-        let expected_primary = vault::derive_public_h5_for_test(primary_master.as_ref(), RootRole::Primary)?;
-        let expected_recovery = vault::derive_public_h5_for_test(recovery_master.as_ref(), RootRole::Recovery)?;
-
-        let primary_shares = slip39::split_2_of_3(primary_master.as_ref())?;
-        let recovery_shares = slip39::split_2_of_3(recovery_master.as_ref())?;
-        primary_master.zeroize();
-        recovery_master.zeroize();
-        drop(primary_master);
-        drop(recovery_master);
-
-        let passphrases = [
-            Zeroizing::new(b"alpha bravo charlie delta echo foxtrot golf".to_vec()),
-            Zeroizing::new(b"hotel india juliet kilo lima mike november".to_vec()),
-            Zeroizing::new(b"oscar papa quebec romeo sierra tango uniform".to_vec()),
-        ];
-
-        let paths = write_encrypted_shares(
-            &media,
-            &primary_shares,
-            &recovery_shares,
-            &passphrases,
-            age_scrypt::encrypt_test_factor18,
-        )?;
-        let (blobs, receipts) = read_all_files(&paths)?;
-        assert_eq!(receipts.len(), 6);
-
-        let mut stderr = Vec::new();
-        verify_all_pairs(
-            &blobs,
-            &passphrases,
-            &[&expected_primary, &expected_recovery],
-            age_scrypt::decrypt,
-            |master, role, _, _| vault::derive_public_h5_for_test(master, role).map_err(|err| err.to_string()),
-            &mut stderr,
-        )?;
-
-        // Wrong passphrase on Medium B must fail.
-        let mut bad_passes = passphrases.clone();
-        *bad_passes.get_mut(1).ok_or("missing pass B")? = Zeroizing::new(b"wrong passphrase".to_vec());
-        assert!(
-            verify_all_pairs(
-                &blobs,
-                &bad_passes,
-                &[&expected_primary, &expected_recovery],
-                age_scrypt::decrypt,
-                |master, role, _, _| vault::derive_public_h5_for_test(master, role).map_err(|err| err.to_string()),
-                &mut stderr,
-            )
-            .is_err()
-        );
-
-        // Swapped/tampered expected public key must fail.
-        let mut wrong_primary = expected_primary.clone();
-        *wrong_primary.public_key.last_mut().ok_or("short key")? ^= 1;
-        assert!(
-            verify_all_pairs(
-                &blobs,
-                &passphrases,
-                &[&wrong_primary, &expected_recovery],
-                age_scrypt::decrypt,
-                |master, role, _, _| vault::derive_public_h5_for_test(master, role).map_err(|err| err.to_string()),
-                &mut stderr,
-            )
-            .is_err()
-        );
-
-        // Tampered ciphertext byte on Medium C must fail.
-        let mut tampered_blobs = blobs;
-        let last = tampered_blobs
-            .get_mut(2)
-            .and_then(|pair| pair.get_mut(1))
-            .and_then(|blob| blob.last_mut())
-            .ok_or("missing blob")?;
-        *last ^= 1;
-        assert!(
-            verify_all_pairs(
-                &tampered_blobs,
-                &passphrases,
-                &[&expected_primary, &expected_recovery],
-                age_scrypt::decrypt,
-                |master, role, _, _| vault::derive_public_h5_for_test(master, role).map_err(|err| err.to_string()),
-                &mut stderr,
-            )
-            .is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn verify_passphrase_retry_allows_up_to_three_attempts_then_reports_post_write_guidance()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let good = b"alpha bravo charlie delta echo foxtrot golf";
-        let blob = age_scrypt::encrypt_test_factor18(b"test-only share text\n", good)?;
-
-        // One wrong entry followed by the right entry succeeds on attempt 2.
-        let mut attempts = [b"wrong-one".as_slice(), good.as_slice()].into_iter();
-        let mut stderr = Vec::new();
-        let recovered = prompt_verified_medium_passphrase(
-            "A",
-            &blob,
-            age_scrypt::decrypt,
-            |_, _| Ok(Zeroizing::new(attempts.next().ok_or("exhausted")?.to_vec())),
-            &mut stderr,
-        )?;
-        assert_eq!(recovered.as_slice(), good);
-        assert!(String::from_utf8(stderr)?.contains("try again (2 attempt(s) left)"));
-
-        // Two wrong entries followed by the right entry succeeds on attempt 3.
-        let mut attempts = [b"wrong-1".as_slice(), b"wrong-2".as_slice(), good.as_slice()].into_iter();
-        let mut stderr = Vec::new();
-        let recovered = prompt_verified_medium_passphrase(
-            "B",
-            &blob,
-            age_scrypt::decrypt,
-            |_, _| Ok(Zeroizing::new(attempts.next().ok_or("exhausted")?.to_vec())),
-            &mut stderr,
-        )?;
-        assert_eq!(recovered.as_slice(), good);
-        assert!(String::from_utf8(stderr)?.contains("try again (1 attempt(s) left)"));
-
-        // Three wrong entries aborts with exact post-write guidance.
-        let mut attempts = [b"w1".as_slice(), b"w2".as_slice(), b"w3".as_slice()].into_iter();
-        let mut stderr = Vec::new();
-        let err = prompt_verified_medium_passphrase(
-            "C",
-            &blob,
-            age_scrypt::decrypt,
-            |_, _| Ok(Zeroizing::new(attempts.next().ok_or("exhausted")?.to_vec())),
-            &mut stderr,
-        )
-        .err()
-        .ok_or("expected 3rd failure to abort")?;
-        assert!(err.contains(VERIFY_ABORT_MESSAGE));
-        Ok(())
     }
 }

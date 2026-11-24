@@ -351,6 +351,66 @@ class LmsHiddenPromptTest(unittest.TestCase):
                 os.close(master_fd)
                 os.close(slave_fd)
 
+    def test_piped_stdout_is_refused_even_when_stdin_and_stderr_are_a_tty(self):
+        binary = Path(os.environ.get("SUPGANG_TEST_BIN", ROOT / "target" / "debug" / "supgang"))
+        self.assertTrue(binary.is_file(), "the workspace test stage must build supgang first")
+        with tempfile.TemporaryDirectory(prefix="supgang-lms-stdout-tty-") as directory:
+            a = Path(directory) / "a"
+            b = Path(directory) / "b"
+            c = Path(directory) / "c"
+            for d in (a, b, c):
+                d.mkdir()
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
+                [
+                    str(binary),
+                    "lms-share-ceremony",
+                    "--medium-a",
+                    str(a),
+                    "--medium-b",
+                    str(b),
+                    "--medium-c",
+                    str(c),
+                    "--i-confirm-offline",
+                ],
+                stdin=slave_fd,
+                stdout=subprocess.PIPE,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            output = bytearray()
+            try:
+                deadline = time.monotonic() + 15
+                while process.poll() is None and time.monotonic() < deadline:
+                    readable, _, _ = select.select([master_fd], [], [], 0.2)
+                    if readable:
+                        try:
+                            output.extend(os.read(master_fd, 4096))
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                while True:
+                    readable, _, _ = select.select([master_fd], [], [], 0.1)
+                    if not readable:
+                        break
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+                    except OSError:
+                        break
+                self.assertEqual(process.poll(), 3, "piped stdout was not refused")
+                self.assertIn(b"interactive owner terminal", output)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+                if process.stdout is not None:
+                    process.stdout.close()
+                os.close(master_fd)
+                os.close(slave_fd)
+
 
 if __name__ == "__main__":
     unittest.main()
