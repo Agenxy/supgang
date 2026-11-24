@@ -17,8 +17,9 @@ mod acceptance;
 mod drift;
 mod gate_cache;
 mod installation;
-mod vendored_netlink;
+mod packaged_deps;
 mod vendored_netwatch;
+mod vendored_portmapper;
 
 fn main() -> ExitCode {
     let mut output = io::stdout().lock();
@@ -50,9 +51,11 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
                 if missed.is_empty() {
                     continue;
                 }
-                if missed.len() == cache.packages().count() {
+                if missed.len() == cache.packages().count() && !matches!(stage, gate_cache::Stage::Format) {
                     run_quality_stage(&root, stage, None, output, error)?;
                 } else {
+                    // Format runs per workspace package so `cargo fmt --all` does
+                    // not traverse excluded third_party path dependencies.
                     for package in &missed {
                         run_quality_stage(&root, stage, Some(package), output, error)?;
                     }
@@ -81,7 +84,10 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
             writeln!(output, "Supgang repository policy passed.").map_err(|write_error| write_error.to_string())
         }
         Some("drift") => drift::run(&root, output),
-        _ => Err("usage: cargo run --locked --package supgang-quality -- all|quick|policy|drift".to_owned()),
+        Some("packaged-deps") => packaged_deps::check_rehearsal_graph(&root, output, error),
+        _ => Err(
+            "usage: cargo run --locked --package supgang-quality -- all|quick|policy|drift|packaged-deps".to_owned(),
+        ),
     }
 }
 
@@ -191,13 +197,20 @@ fn workspace_root() -> Result<PathBuf, String> {
 
 fn policy(root: &Path) -> Result<(), String> {
     vendored_netwatch::check(root)?;
-    vendored_netlink::check(root)?;
+    vendored_portmapper::check(root)?;
     let eff_words = fs::read(root.join("crates/supgang/src/eff_large_wordlist.txt"))
         .map_err(|error| format!("EFF large wordlist: {error}"))?;
     vendored_netwatch::verify_hash(
         &eff_words,
         "addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e",
         "EFF large wordlist",
+    )?;
+    let slip39_words = fs::read(root.join("crates/supgang/src/slip39_wordlist.txt"))
+        .map_err(|error| format!("SLIP-39 wordlist: {error}"))?;
+    vendored_netwatch::verify_hash(
+        &slip39_words,
+        "bcc4555340332d169718aed8bf31dd9d5248cb7da6e5d355140ef4f1e601eec3",
+        "SLIP-39 wordlist",
     )?;
     for required in [
         "AGENTS.md",
@@ -260,7 +273,7 @@ fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
             ));
         }
         if file_type.is_dir() {
-            if path == root.join("third_party/netwatch") || path == root.join("third_party/netlink-packet-core") {
+            if path == root.join("third_party/netwatch") || path == root.join("third_party/portmapper") {
                 // This upstream source has its own lint policy. The exact-source
                 // check above covers the whole tree instead.
                 continue;
@@ -471,8 +484,6 @@ const REVIEWED_DUPLICATE_IDENTITIES: &[&str] = &[
     "serdect@0.4.3",
     "sha2@0.10.9",
     "sha2@0.11.0",
-    "spin@0.9.9",
-    "spin@0.10.1",
     "bitflags@1.3.2",
     "bitflags@2.13.2",
     "getrandom@0.2.17",

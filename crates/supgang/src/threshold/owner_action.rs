@@ -334,8 +334,8 @@ pub trait SpendLedger {
 
 /// An uninhabited runtime gate. Package 8 custody, a current-head status
 /// issuer, target-local enrollment and physical cross-host proof must exist
-/// before this type can gain a constructor or variant.
-pub enum AvailabilityPermit {}
+/// before this type can gain a constructor.
+pub struct AvailabilityPermit(std::convert::Infallible);
 
 /// Inputs that the target helper obtains from protected local policy and root proofs.
 pub struct RemapVerification<'a> {

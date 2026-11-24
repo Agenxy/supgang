@@ -3,16 +3,25 @@
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use supgang_core as _;
 
 struct TestDirectory(PathBuf);
 
+/// Tests in this binary share one process ID, and macOS clocks resolve only
+/// microseconds, so the counter keeps concurrent directories distinct.
+static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
 impl TestDirectory {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!("supgang-lms-nonterminal-{}-{nonce}", std::process::id()));
+        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "supgang-lms-nonterminal-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }
@@ -65,5 +74,31 @@ fn escrow_verify_refuses_nonterminal_input() -> Result<(), Box<dyn std::error::E
         .output()?;
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8(output.stderr)?.contains("interactive owner terminal"));
+    Ok(())
+}
+
+#[test]
+fn derive_public_refuses_nonterminal_input_and_state_dir() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args(["lms-derive-public", "primary"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("interactive owner terminal"));
+
+    let directory = TestDirectory::new()?;
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args([
+            "--state-dir",
+            directory.0.to_str().ok_or("non-UTF-8 test path")?,
+            "lms-derive-public",
+            "recovery",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("takes no peer or state directory"));
     Ok(())
 }

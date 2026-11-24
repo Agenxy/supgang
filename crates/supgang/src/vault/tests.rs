@@ -40,6 +40,9 @@ impl Enclave for Software {
         };
         Ok((sealed, public))
     }
+    fn generate_presence(&self) -> Result<(SealedKey, [u8; 33]), VaultError> {
+        self.generate()
+    }
     fn agree(&self, sealed: &SealedKey, peer: &[u8; 33]) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         let secret = SecretKey::from_slice(&sealed.bytes).map_err(|_| VaultError::Corrupt)?;
         let peer = PublicKey::from_sec1_bytes(peer).map_err(|_| VaultError::Corrupt)?;
@@ -47,6 +50,14 @@ impl Enclave for Software {
         let mut raw = Zeroizing::new([0_u8; 32]);
         raw.copy_from_slice(shared.raw_secret_bytes());
         Ok(raw)
+    }
+    fn agree_presence(
+        &self,
+        sealed: &SealedKey,
+        peer: &[u8; 33],
+        _reason: &str,
+    ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        self.agree(sealed, peer)
     }
 }
 
