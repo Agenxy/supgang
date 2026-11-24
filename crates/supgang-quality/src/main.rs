@@ -17,6 +17,7 @@ mod acceptance;
 mod drift;
 mod gate_cache;
 mod installation;
+mod vendored_netlink;
 mod vendored_netwatch;
 
 fn main() -> ExitCode {
@@ -190,6 +191,14 @@ fn workspace_root() -> Result<PathBuf, String> {
 
 fn policy(root: &Path) -> Result<(), String> {
     vendored_netwatch::check(root)?;
+    vendored_netlink::check(root)?;
+    let eff_words = fs::read(root.join("crates/supgang/src/eff_large_wordlist.txt"))
+        .map_err(|error| format!("EFF large wordlist: {error}"))?;
+    vendored_netwatch::verify_hash(
+        &eff_words,
+        "addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e",
+        "EFF large wordlist",
+    )?;
     for required in [
         "AGENTS.md",
         "CHANGELOG.md",
@@ -251,7 +260,7 @@ fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
             ));
         }
         if file_type.is_dir() {
-            if path == root.join("third_party/netwatch") {
+            if path == root.join("third_party/netwatch") || path == root.join("third_party/netlink-packet-core") {
                 // This upstream source has its own lint policy. The exact-source
                 // check above covers the whole tree instead.
                 continue;

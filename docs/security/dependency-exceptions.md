@@ -48,17 +48,14 @@ third-party notices remain a release gate.
 
 ### RustSec RUSTSEC-2024-0436
 
-Linux route monitoring brings in `netlink-packet-core` 0.8.2, which uses `paste` 1.0.15 to generate
-packet parser names at compile time. RustSec classifies `paste` as unmaintained; the advisory does
-not report a vulnerability or unsoundness. `paste` is not in the macOS target graph. The current
-`netlink-packet-core` release carries the same explicit advisory exception and considers the stable
-macro preferable to an unvetted replacement.
-
-Supgang therefore passes exactly `RUSTSEC-2024-0436` to `cargo audit --ignore` while retaining
-`--deny warnings`. Every other vulnerability, unsoundness, unmaintained dependency, or yanked crate
-remains fatal. The version and checksum remain fixed by `Cargo.lock`. This exception must be removed
-when `netlink-packet-core` replaces `paste`, and it must be reconsidered before any change to the
-ignored crate, advisory, or Linux routing dependency path.
+Linux route monitoring brings in `netlink-packet-core` 0.8.2. Its published
+manifest uses archived `paste` 1.0.15. Supgang now vendors the exact published
+crate with a single dependency change to compatible, maintained `pastey` 0.2.3.
+The gate checks the published archive hash, every archived file, and the two
+manifest representations of that one dependency change. The source lockfile no
+longer contains `paste`, and CI no longer ignores RUSTSEC-2024-0436. Packaged
+crates do not carry the workspace path patch; a public release still needs an
+upstream or distribution fix and a fresh packaged-dependency audit.
 
 ### RustSec RUSTSEC-2023-0089
 
@@ -70,8 +67,8 @@ Arm and x86 macOS and Linux), native atomics exist, and `atomic-polyfill` re-exp
 library's types rather than emulating them. No newer `frost-core` or `postcard` release removes the
 path.
 
-Supgang therefore passes exactly `RUSTSEC-2023-0089` to `cargo audit --ignore`, alongside
-`RUSTSEC-2024-0436`, while retaining `--deny warnings`. Every vulnerability, unsoundness, other
+Supgang therefore passes exactly `RUSTSEC-2023-0089` to `cargo audit --ignore`
+while retaining `--deny warnings`. Every vulnerability, unsoundness, other
 unmaintained dependency, or yanked crate remains fatal. The version and checksum remain fixed by
 `Cargo.lock`. This exception must be removed when FROST or `postcard` stops reaching
 `atomic-polyfill`, and it must be reconsidered before any change to the ignored crate, advisory, or

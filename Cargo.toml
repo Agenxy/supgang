@@ -1,10 +1,11 @@
 [workspace]
 members = ["crates/supgang", "crates/supgang-acl", "crates/supgang-cli", "crates/supgang-quality"]
-exclude = ["third_party/netwatch"]
+exclude = ["third_party/netwatch", "third_party/netlink-packet-core"]
 resolver = "3"
 
 [patch.crates-io]
 netwatch = { path = "third_party/netwatch" }
+netlink-packet-core = { path = "third_party/netlink-packet-core" }
 
 [workspace.package]
 version = "0.2.0-alpha.21"
@@ -41,10 +42,11 @@ postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] 
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 sha2 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
+scrypt = { version = "=0.12.0", default-features = false }
 semver = { version = "=1.0.28", default-features = false, features = ["std"] }
 thiserror = { version = "=2.0.20", default-features = false }
 tough = { version = "=0.24.0", default-features = false }
-url = { version = "=2.5.8", default-features = false }
+url = { version = "=2.5.9", default-features = false }
 zeroize = { version = "=1.9.0", default-features = false }
 rustix = { version = "=1.1.6", default-features = false, features = ["event", "fs", "process", "std", "termios"] }
 quinn = { version = "=0.11.11", default-features = false, features = ["bloom", "runtime-tokio", "rustls-aws-lc-rs"] }
@@ -89,3 +91,8 @@ strip = "symbols"
 [profile.dev]
 overflow-checks = true
 panic = "unwind"
+
+# H20 LMS ceremony tests hash every leaf; optimize the core test binary while
+# retaining the test profile's debug assertions and explicit overflow checks.
+[profile.test.package.supgang-core]
+opt-level = 2
