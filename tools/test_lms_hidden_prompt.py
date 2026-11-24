@@ -221,13 +221,22 @@ class LmsHiddenPromptTest(unittest.TestCase):
                 os.close(slave_fd)
 
     def test_ceremony_verify_reentry_retries_wrong_passphrase_then_accepts_or_aborts(self):
-        probe = Path(
-            os.environ.get(
-                "SUPGANG_VERIFY_PROMPT_PROBE",
-                ROOT / "target" / "debug" / "examples" / "lms_share_verify_prompt",
+        override = os.environ.get("SUPGANG_VERIFY_PROMPT_PROBE")
+        if override is None:
+            # `cargo test --all-targets` builds only the hash-suffixed test copy of an
+            # example, so build the plain probe binary here rather than rely on a
+            # leftover from an earlier `cargo build --example`.
+            subprocess.run(
+                ["cargo", "build", "--locked", "--quiet", "--package", "supgang", "--example", "lms_share_verify_prompt"],
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                check=True,
+                timeout=900,
             )
-        )
-        self.assertTrue(probe.is_file(), "the workspace test stage must build lms_share_verify_prompt first")
+            probe = ROOT / "target" / "debug" / "examples" / "lms_share_verify_prompt"
+        else:
+            probe = Path(override)
+        self.assertTrue(probe.is_file(), "lms_share_verify_prompt probe binary is missing")
         fixture_hex = (
             ROOT / "crates" / "supgang" / "tests" / "fixtures" / "age-reference-scrypt-v1.hex"
         ).read_text(encoding="utf-8").strip()
