@@ -25,13 +25,15 @@ Before starting a release rehearsal, verify that every blocker below is closed o
    must run in a per-run isolated target directory and `CARGO_HOME` so two revisions sharing
    a prerelease version can never compile against a stale temporary-registry extraction
    (`fix/package-verify-isolation-29`).
-4. **crates.io Trusted Publishing for brand-new crates**: as of `0.1.0`, only `supgang` and
-   `supgang-core` exist on crates.io. `supgang-acl`, `supgang-netwatch`, and
-   `supgang-portmapper` do not exist yet (HTTP 404). Before `.github/workflows/publish.yml`
-   can publish them via OIDC (`rust-lang/crates-io-auth-action`), the owner must register or
-   configure Trusted Publishing on crates.io for `supgang-netwatch`, `supgang-portmapper`,
-   and `supgang-acl` (binding repository `Agenxy/supgang`, workflow `publish.yml`,
-   environment `release`), and confirm the same binding on `supgang-core` and `supgang`.
+4. **First-time crates.io publish for brand-new crates**: crates.io Trusted Publishing
+   (OIDC via `rust-lang/crates-io-auth-action`) can only be configured on a crate that
+   already exists on crates.io. As of `0.1.0`, only `supgang` and `supgang-core` exist on
+   crates.io; `supgang-acl`, `supgang-netwatch`, and `supgang-portmapper` do not exist yet
+   (HTTP 404). The first publish of each new crate therefore requires an owner-held
+   crates.io API token (narrowly scoped, used once directly by the owner or placed as a
+   scoped `release` environment secret and revoked immediately after), after which the
+   owner configures Trusted Publishing on each new crate for all subsequent releases.
+   Agents never handle, store, or see any crates.io API token.
 5. **Physical cross-host acceptance**: per `AGENTS.md`, install the exact rehearsed release
    artifact on every configured physical acceptance peer and repeat the applicable
    cross-host checks (`command -v supgang`, SHA-256 hash match, `supgang --help`,
@@ -160,20 +162,47 @@ Only after the owner gives explicit approval for `RELEASE_COMMIT`:
 
 1. Confirm `main` HEAD is still `RELEASE_COMMIT` (or dispatch on the exact tag/ref pointing
    at `RELEASE_COMMIT`).
-2. Dispatch `.github/workflows/publish.yml` via GitHub Actions (`workflow_dispatch`) and
-   approve the `release` environment gate when prompted.
-3. The workflow executes in strict dependency order using short-lived OIDC tokens from
-   `rust-lang/crates-io-auth-action`:
+2. **One-time bootstrap for brand-new crates (first release only)**:
+   Because crates.io Trusted Publishing can only be attached to an existing crate, the
+   first publish of `supgang-netwatch`, `supgang-portmapper`, and `supgang-acl` cannot use
+   `rust-lang/crates-io-auth-action`. Agents never handle the API token.
+   - The owner mints a narrowly scoped temporary crates.io API token (`publish-new`) and
+     either runs the three initial publishes directly from `RELEASE_COMMIT` on their own
+     machine or supplies it once as a scoped GitHub `release` environment secret:
+     1. `cargo publish --manifest-path third_party/netwatch/Cargo.toml` (`supgang-netwatch`)
+     2. `cargo publish --manifest-path third_party/portmapper/Cargo.toml` (`supgang-portmapper`, after `supgang-netwatch` is indexed)
+     3. `cargo publish --locked --package supgang-acl` (`supgang-acl`)
+   - Immediately revoke the temporary API token on crates.io (and remove any one-time
+     environment secret if used).
+   - On crates.io (`https://crates.io/crates/<CRATE>/settings`), configure Trusted
+     Publishing for `supgang-netwatch`, `supgang-portmapper`, and `supgang-acl` (repository
+     `Agenxy/supgang`, workflow `publish.yml`, environment `release`), and confirm the same
+     Trusted Publishing binding is present for `supgang-core` and `supgang`.
+3. **OIDC publish via `.github/workflows/publish.yml`** (for `supgang-core` and `supgang`
+   on the first release, and all 5 crates on every subsequent release):
+   Dispatch `.github/workflows/publish.yml` via GitHub Actions (`workflow_dispatch`) and
+   approve the `release` environment gate when prompted. The workflow executes in strict
+   dependency order using short-lived OIDC tokens from `rust-lang/crates-io-auth-action`:
    1. `validate`: runs `supgang-quality -- all` (`SUPGANG_QUALITY_CACHE=off`), the Issue #27
-      packaged dependency graph gate, `cargo audit`, and `cargo deny check licenses sources`.
-   2. `publish-netwatch`: `cargo publish --locked --package supgang-netwatch` (skip if that
-      exact vendored version is already published on crates.io).
-   3. `publish-portmapper`: `cargo publish --locked --package supgang-portmapper` (needs
-      `publish-netwatch`; skip if already published).
-   4. `publish-acl`: `cargo publish --locked --package supgang-acl` (needs `validate`).
+      packaged dependency graph gate (`supgang-quality -- packaged-deps`), `cargo audit`,
+      and `cargo deny check licenses sources`.
+   2. `publish-netwatch`: `cargo publish --manifest-path third_party/netwatch/Cargo.toml`
+      (already published on the initial bootstrap release; runs automatically for future
+      vendored updates).
+   3. `publish-portmapper`: `cargo publish --manifest-path third_party/portmapper/Cargo.toml`
+      (needs `publish-netwatch`; already published on the initial bootstrap release).
+   4. `publish-acl`: `cargo publish --locked --package supgang-acl` (needs `validate`;
+      already published on the initial bootstrap release, automated via OIDC on subsequent
+      releases).
    5. `publish-core`: `cargo publish --locked --package supgang-core` (needs `publish-acl`
       and `publish-portmapper`).
    6. `publish-cli`: `cargo publish --locked --package supgang` (needs `publish-core`).
+   Note: `cargo publish` fails if an identical version already exists on crates.io, so when
+   running `.github/workflows/publish.yml` immediately after the one-time owner bootstrap of
+   `supgang-netwatch`, `supgang-portmapper`, and `supgang-acl`, guard or skip already-published
+   versions in the workflow jobs before dispatching (or publish `supgang-core` and `supgang` via
+   OIDC once the three new crates are indexed). From the next release onward, all five crates
+   publish through OIDC without any API token.
 4. Verify each published crate page on crates.io:
    - Confirm `cargo install --locked supgang --version <NEW_VERSION>` resolves cleanly in a
      clean temporary `CARGO_HOME` and `--root`.
@@ -257,9 +286,11 @@ No agent may perform or bypass these owner-only decisions:
 1. **Version choice (`0.2.0` vs `0.2.0-alpha.22`)**: specifically whether to promote to
    non-prerelease `0.2.0` (which clears Issue #6 on crates.io's landing page) or stay on a
    prerelease.
-2. **crates.io Trusted Publishing / initial crate registration**: enabling OIDC Trusted
-   Publishing on crates.io for new crates (`supgang-netwatch`, `supgang-portmapper`,
-   `supgang-acl`) and approving the GitHub `release` environment deployment.
+2. **First-time publish and crates.io Trusted Publishing setup**: using an owner-held,
+   immediately revoked crates.io API token (never handled by agents) for the initial publish
+   of brand-new crates (`supgang-netwatch`, `supgang-portmapper`, `supgang-acl`), then
+   configuring OIDC Trusted Publishing on crates.io for those crates and approving the
+   GitHub `release` environment deployment.
 3. **Rehearsal-to-public go-ahead**: explicit written approval to publish `RELEASE_COMMIT`
    to crates.io, push tag `v<NEW_VERSION>`, publish the GitHub release, and update
    `Agenxy/homebrew-tap`.
