@@ -2,6 +2,7 @@
 //! without weakening or skipping any check.
 
 use std::{
+    fs,
     io::Write,
     path::Path,
     process::{Command, Stdio},
@@ -16,6 +17,7 @@ const MAX_TEST_LIST_BYTES: usize = 2 * 1024 * 1024;
 const CLI_PACKAGE: &str = "supgang";
 const CORE_PACKAGE: &str = "supgang-core";
 const KDF_KAT_TEST_TARGET: &str = "lms_kdf_kat";
+const KDF_KAT_SOURCE: &str = "crates/supgang-cli/tests/lms_kdf_kat.rs";
 const SCENARIO_TEST_FILTER: &str = "service::tests::scenarios::";
 
 /// Runs policy and Rust documentation checks for docs-only pull requests.
@@ -31,16 +33,18 @@ pub fn run_docs(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> R
     writeln!(output, "Supgang docs quality gates passed.").map_err(|write_error| write_error.to_string())
 }
 
-/// Runs the core CI gate: policy, format, check, clippy, non-split tests,
-/// rustdoc, Python helper regressions, and packaged dependency graph checks.
+/// Runs the core CI gate: policy, format, check, clippy, non-split workspace
+/// tests (in a single `cargo test` invocation), rustdoc, and Python helper
+/// regressions.
 ///
-/// Paired with [`run_ci_heavy`] on the same runner OS so the union of both jobs
-/// covers every check in `all` plus the release build and packaged-deps gate.
+/// Paired with [`run_ci_heavy`] and [`run_ci_package`] on the same runner OS so
+/// the union of all three jobs covers every check in `all` plus the release
+/// build and packaged-deps gate.
 pub fn run_ci_core(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
     policy(root)?;
     let metadata = workspace_metadata(root)?;
     let packages = workspace_package_names(&metadata)?;
-    let non_kat_tests = cli_non_kat_test_targets(&metadata)?;
+    let kat_tests = kdf_kat_test_names(root)?;
 
     // Format per workspace package so `cargo fmt --all` does not traverse
     // excluded third_party path dependencies.
@@ -73,33 +77,20 @@ pub fn run_ci_core(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -
     let scratch = test_scratch()?;
     let test_env = scratch.as_deref().map_or_else(Vec::new, |dir| vec![("TMPDIR", dir)]);
 
-    let mut cli_args = vec!["test", "--locked", "--package", CLI_PACKAGE, "--bins", "--examples"];
-    for target in &non_kat_tests {
-        cli_args.push("--test");
-        cli_args.push(target.as_str());
+    let mut test_args = vec![
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--",
+        "--skip",
+        SCENARIO_TEST_FILTER,
+    ];
+    for kat_name in &kat_tests {
+        test_args.push("--skip");
+        test_args.push(kat_name.as_str());
     }
-    run_cargo_with_env(root, &cli_args, &test_env, output, error)?;
-
-    // Ensure target/debug/supgang is built for tools/test_lms_hidden_prompt.py.
-    run_cargo(root, &["build", "--locked", "--package", CLI_PACKAGE], output, error)?;
-
-    run_cargo_with_env(
-        root,
-        &[
-            "test",
-            "--locked",
-            "--workspace",
-            "--exclude",
-            CLI_PACKAGE,
-            "--all-targets",
-            "--",
-            "--skip",
-            SCENARIO_TEST_FILTER,
-        ],
-        &test_env,
-        output,
-        error,
-    )?;
+    run_cargo_with_env(root, &test_args, &test_env, output, error)?;
 
     run_cargo_with_env(
         root,
@@ -110,7 +101,6 @@ pub fn run_ci_core(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -
     )?;
 
     acceptance::run_python_suite(root, output)?;
-    packaged_deps::check_rehearsal_graph(root, output, error)?;
 
     writeln!(output, "Supgang CI core quality gates passed.").map_err(|write_error| write_error.to_string())
 }
@@ -118,7 +108,6 @@ pub fn run_ci_core(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -
 /// Runs the heavy CI split partner on the same runner OS:
 /// - the H20 KDF known-answer test in release mode (`lms_kdf_kat`);
 /// - the simulated-network scenario tests (`service::tests::scenarios::`);
-/// - isolated `cargo package` build verification of all publishable crates;
 /// - release workspace build and CLI smoke test.
 pub fn run_ci_heavy(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
     let scratch = test_scratch()?;
@@ -136,6 +125,22 @@ pub fn run_ci_heavy(root: &Path, output: &mut dyn Write, error: &mut dyn Write) 
             "--release",
         ],
         &test_env,
+        output,
+        error,
+    )?;
+
+    run_cargo(root, &["build", "--locked", "--workspace", "--release"], output, error)?;
+    run_cargo(
+        root,
+        &[
+            "run",
+            "--locked",
+            "--package",
+            CLI_PACKAGE,
+            "--release",
+            "--",
+            "--version",
+        ],
         output,
         error,
     )?;
@@ -164,25 +169,15 @@ pub fn run_ci_heavy(root: &Path, output: &mut dyn Write, error: &mut dyn Write) 
         error,
     )?;
 
-    packaged_deps::verify_packaged_workspace(root, output, error)?;
-
-    run_cargo(root, &["build", "--locked", "--workspace", "--release"], output, error)?;
-    run_cargo(
-        root,
-        &[
-            "run",
-            "--locked",
-            "--package",
-            CLI_PACKAGE,
-            "--release",
-            "--",
-            "--version",
-        ],
-        output,
-        error,
-    )?;
-
     writeln!(output, "Supgang CI heavy quality gates passed.").map_err(|write_error| write_error.to_string())
+}
+
+/// Runs isolated packaging verification and the multi-target rehearsal
+/// dependency graph check in parallel with `ci-core` and `ci-heavy`.
+pub fn run_ci_package(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
+    packaged_deps::verify_packaged_workspace(root, output, error)?;
+    packaged_deps::check_rehearsal_graph(root, output, error)?;
+    writeln!(output, "Supgang CI package verification passed.").map_err(|write_error| write_error.to_string())
 }
 
 fn workspace_metadata(root: &Path) -> Result<Value, String> {
@@ -219,47 +214,24 @@ fn workspace_package_names(metadata: &Value) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-fn cli_non_kat_test_targets(metadata: &Value) -> Result<Vec<String>, String> {
-    let packages = metadata
-        .get("packages")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "cargo metadata is missing packages".to_owned())?;
-    let cli = packages
-        .iter()
-        .find(|package| package.get("name").and_then(Value::as_str) == Some(CLI_PACKAGE))
-        .ok_or_else(|| format!("workspace package {CLI_PACKAGE} not found in cargo metadata"))?;
-    let targets = cli
-        .get("targets")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("package {CLI_PACKAGE} is missing targets"))?;
-
-    let mut saw_kat = false;
-    let mut others = Vec::new();
-    for target in targets {
-        let is_integration_test = target
-            .get("kind")
-            .and_then(Value::as_array)
-            .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("test")));
-        if !is_integration_test {
-            continue;
-        }
-        let name = target
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("integration test target in {CLI_PACKAGE} is missing a name"))?;
-        if name == KDF_KAT_TEST_TARGET {
-            saw_kat = true;
-        } else {
-            others.push(name.to_owned());
+fn kdf_kat_test_names(root: &Path) -> Result<Vec<String>, String> {
+    let source = fs::read_to_string(root.join(KDF_KAT_SOURCE))
+        .map_err(|read_error| format!("could not read {KDF_KAT_SOURCE}: {read_error}"))?;
+    let parsed =
+        syn::parse_file(&source).map_err(|parse_error| format!("could not parse {KDF_KAT_SOURCE}: {parse_error}"))?;
+    let mut names = Vec::new();
+    for item in parsed.items {
+        if let syn::Item::Fn(function) = item
+            && function.attrs.iter().any(|attr| attr.path().is_ident("test"))
+        {
+            names.push(function.sig.ident.to_string());
         }
     }
-    if !saw_kat {
-        return Err(format!(
-            "expected split integration test target {KDF_KAT_TEST_TARGET:?} was not found in {CLI_PACKAGE}"
-        ));
+    if names.is_empty() {
+        return Err(format!("{KDF_KAT_SOURCE} contains no #[test] functions"));
     }
-    others.sort();
-    Ok(others)
+    names.sort();
+    Ok(names)
 }
 
 fn count_matching_core_tests(root: &Path, filter: &str, environment: &[(&str, &str)]) -> Result<usize, String> {
@@ -292,22 +264,48 @@ fn count_matching_core_tests(root: &Path, filter: &str, environment: &[(&str, &s
 
 #[cfg(test)]
 mod tests {
-    use super::{KDF_KAT_TEST_TARGET, cli_non_kat_test_targets, workspace_metadata, workspace_package_names};
+    use std::{fs, path::Path};
+
+    use super::{KDF_KAT_SOURCE, kdf_kat_test_names, workspace_metadata, workspace_package_names};
     use crate::workspace_root;
 
+    fn collect_rust_sources(directory: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+        for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.is_dir() {
+                collect_rust_sources(&path, out)?;
+            } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
     #[test]
-    fn cli_test_partition_excludes_only_lms_kdf_kat() -> Result<(), String> {
-        let metadata = workspace_metadata(&workspace_root()?)?;
+    fn kdf_kat_test_names_are_present_and_unique_in_workspace() -> Result<(), String> {
+        let root = workspace_root()?;
+        let metadata = workspace_metadata(&root)?;
         let packages = workspace_package_names(&metadata)?;
         if !packages.iter().any(|name| name == "supgang") || !packages.iter().any(|name| name == "supgang-core") {
             return Err(format!("unexpected workspace packages: {packages:?}"));
         }
-        let non_kat = cli_non_kat_test_targets(&metadata)?;
-        if non_kat.iter().any(|name| name == KDF_KAT_TEST_TARGET) {
-            return Err(format!("{KDF_KAT_TEST_TARGET} must be excluded from core CLI tests"));
-        }
-        if non_kat.is_empty() {
-            return Err("expected at least one non-KAT integration test target in supgang".to_owned());
+        let kat_names = kdf_kat_test_names(&root)?;
+        let mut sources = Vec::new();
+        collect_rust_sources(&root.join("crates"), &mut sources)?;
+        let kat_path = root.join(KDF_KAT_SOURCE);
+        for path in sources {
+            if path == kat_path {
+                continue;
+            }
+            let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+            for name in &kat_names {
+                if text.contains(name) {
+                    return Err(format!(
+                        "KDF KAT test name {name:?} also appears in {}, which would over-skip in ci-core",
+                        path.display()
+                    ));
+                }
+            }
         }
         Ok(())
     }

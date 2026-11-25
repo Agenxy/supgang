@@ -88,10 +88,11 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
         Some("docs") => ci_split::run_docs(&root, output, error),
         Some("ci-core") => ci_split::run_ci_core(&root, output, error),
         Some("ci-heavy") => ci_split::run_ci_heavy(&root, output, error),
+        Some("ci-package") => ci_split::run_ci_package(&root, output, error),
         Some("drift") => drift::run(&root, output),
         Some("packaged-deps") => packaged_deps::check_rehearsal_graph(&root, output, error),
         _ => Err(
-            "usage: cargo run --locked --package supgang-quality -- all|quick|policy|docs|ci-core|ci-heavy|drift|packaged-deps"
+            "usage: cargo run --locked --package supgang-quality -- all|quick|policy|docs|ci-core|ci-heavy|ci-package|drift|packaged-deps"
                 .to_owned(),
         ),
     }

@@ -30,6 +30,7 @@ pub fn inspect(root: &Path) -> Result<(), String> {
     for per_os_gate in [
         "cargo run --locked --package supgang-quality -- ci-core",
         "cargo run --locked --package supgang-quality -- ci-heavy",
+        "cargo run --locked --package supgang-quality -- ci-package",
     ] {
         if workflow.matches(per_os_gate).count() < 2 {
             return Err(format!(

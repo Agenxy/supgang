@@ -118,14 +118,34 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: macos-15-heavy
-      - name: Run heavy split tests and release verification
+      - name: Run heavy split tests and release build
         env:
           SUPGANG_QUALITY_CACHE: off
         run: cargo run --locked --package supgang-quality -- ci-heavy
 
+  quality-package-macos:
+    name: Package verify (macos-15)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore the Cargo registry cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: macos-15-registry
+          cache-targets: false
+      - name: Verify packaged workspace and dependency graph
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- ci-package
+
   quality-macos:
     name: Quality (macos-15)
-    needs: [changes, quality-core-macos, quality-heavy-macos]
+    needs: [changes, quality-core-macos, quality-heavy-macos, quality-package-macos]
     if: always() && !cancelled()
     runs-on: ${{ needs.changes.outputs.docs_only == 'true' && 'macos-15' || 'ubuntu-24.04' }}
     steps:
@@ -177,12 +197,13 @@ jobs:
         env:
           CORE_RESULT: ${{ needs.quality-core-macos.result }}
           HEAVY_RESULT: ${{ needs.quality-heavy-macos.result }}
+          PACKAGE_RESULT: ${{ needs.quality-package-macos.result }}
         run: |
-          if [ "$CORE_RESULT" != "success" ] || [ "$HEAVY_RESULT" != "success" ]; then
-            printf 'macOS split gate failed: core=%s heavy=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" >&2
+          if [ "$CORE_RESULT" != "success" ] || [ "$HEAVY_RESULT" != "success" ] || [ "$PACKAGE_RESULT" != "success" ]; then
+            printf 'macOS split gate failed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT" >&2
             exit 1
           fi
-          printf 'macOS split gate passed: core=%s heavy=%s\n' "$CORE_RESULT" "$HEAVY_RESULT"
+          printf 'macOS split gate passed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT"
 
   quality-core-ubuntu:
     name: Quality core (ubuntu-24.04)
@@ -245,14 +266,34 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ubuntu-24.04-heavy
-      - name: Run heavy split tests and release verification
+      - name: Run heavy split tests and release build
         env:
           SUPGANG_QUALITY_CACHE: off
         run: cargo run --locked --package supgang-quality -- ci-heavy
 
+  quality-package-ubuntu:
+    name: Package verify (ubuntu-24.04)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore the Cargo registry cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ubuntu-24.04-registry
+          cache-targets: false
+      - name: Verify packaged workspace and dependency graph
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- ci-package
+
   quality-ubuntu:
     name: Quality (ubuntu-24.04)
-    needs: [changes, quality-core-ubuntu, quality-heavy-ubuntu]
+    needs: [changes, quality-core-ubuntu, quality-heavy-ubuntu, quality-package-ubuntu]
     if: always() && !cancelled()
     runs-on: ubuntu-24.04
     steps:
@@ -304,12 +345,13 @@ jobs:
         env:
           CORE_RESULT: ${{ needs.quality-core-ubuntu.result }}
           HEAVY_RESULT: ${{ needs.quality-heavy-ubuntu.result }}
+          PACKAGE_RESULT: ${{ needs.quality-package-ubuntu.result }}
         run: |
-          if [ "$CORE_RESULT" != "success" ] || [ "$HEAVY_RESULT" != "success" ]; then
-            printf 'Ubuntu split gate failed: core=%s heavy=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" >&2
+          if [ "$CORE_RESULT" != "success" ] || [ "$HEAVY_RESULT" != "success" ] || [ "$PACKAGE_RESULT" != "success" ]; then
+            printf 'Ubuntu split gate failed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT" >&2
             exit 1
           fi
-          printf 'Ubuntu split gate passed: core=%s heavy=%s\n' "$CORE_RESULT" "$HEAVY_RESULT"
+          printf 'Ubuntu split gate passed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT"
 
   advisories:
     name: RustSec advisories
