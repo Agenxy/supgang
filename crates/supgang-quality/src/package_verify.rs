@@ -18,42 +18,39 @@ use std::{
 };
 
 const MAX_REGISTRY_ENTRIES: usize = 64;
-const WORKSPACE_PACKAGES: &[&str] = &["supgang-acl", "supgang-core", "supgang"];
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Packages and verifies every publishable workspace crate inside an isolated
-/// per-run target directory and `CARGO_HOME`.
-pub fn verify_workspace(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
-    let base = verification_base_dir()?;
-    let host_cargo_home = resolve_host_cargo_home();
-    verify_packages(
-        root,
-        WORKSPACE_PACKAGES,
-        &base,
-        host_cargo_home.as_deref(),
-        false,
-        output,
-        error,
-    )
+/// Mode flags for an isolated `cargo package` invocation.
+#[derive(Clone, Copy)]
+pub struct PackageFlags {
+    pub locked: bool,
+    pub offline: bool,
+    pub no_verify: bool,
 }
 
-fn verify_packages(
-    root: &Path,
+/// Runs `cargo package` for `packages` inside the isolated per-run target
+/// directory and `CARGO_HOME`.
+pub fn run_cargo_package(
+    manifest_dir: &Path,
     packages: &[&str],
-    base_dir: &Path,
-    host_cargo_home: Option<&Path>,
-    offline: bool,
+    run: &IsolatedPackageRun,
+    flags: PackageFlags,
     output: &mut dyn Write,
     error: &mut dyn Write,
 ) -> Result<(), String> {
-    let run = IsolatedPackageRun::create(base_dir, host_cargo_home)?;
-    let cargo_home = path_to_str(&run.cargo_home)?;
-    let target_dir = path_to_str(&run.target_dir)?;
+    let cargo_home = run.cargo_home_str()?;
+    let target_dir = run.target_dir_str()?;
 
-    let mut arguments = vec!["package", "--locked", "--allow-dirty"];
-    if offline {
+    let mut arguments = vec!["package", "--allow-dirty"];
+    if flags.locked {
+        arguments.push("--locked");
+    }
+    if flags.offline {
         arguments.push("--offline");
+    }
+    if flags.no_verify {
+        arguments.push("--no-verify");
     }
     for package in packages {
         arguments.push("--package");
@@ -61,10 +58,12 @@ fn verify_packages(
     }
 
     let environment = [("CARGO_HOME", cargo_home), ("CARGO_TARGET_DIR", target_dir)];
-    super::run_cargo_with_env(root, &arguments, &environment, output, error)
+    super::run_cargo_with_env(manifest_dir, &arguments, &environment, output, error)
 }
 
-struct IsolatedPackageRun {
+/// Per-run isolated directory holding a fresh `CARGO_TARGET_DIR` and
+/// `CARGO_HOME`, cleaned up strictly on drop.
+pub struct IsolatedPackageRun {
     run_dir: PathBuf,
     target_dir: PathBuf,
     cargo_home: PathBuf,
@@ -72,7 +71,18 @@ struct IsolatedPackageRun {
 }
 
 impl IsolatedPackageRun {
-    fn create(base_dir: &Path, host_cargo_home: Option<&Path>) -> Result<Self, String> {
+    /// Creates an isolated run under the platform-appropriate base directory
+    /// for `namespace`, seeding real `index.crates.io-*` entries from the host
+    /// `CARGO_HOME`.
+    pub fn create_default(namespace: &str) -> Result<Self, String> {
+        let base = verification_base_dir(namespace)?;
+        let host_cargo_home = resolve_host_cargo_home();
+        Self::create(&base, host_cargo_home.as_deref())
+    }
+
+    /// Creates an isolated run under `base_dir`, seeding real
+    /// `index.crates.io-*` entries from `host_cargo_home` when present.
+    pub fn create(base_dir: &Path, host_cargo_home: Option<&Path>) -> Result<Self, String> {
         fs::create_dir_all(base_dir)
             .map_err(|create_error| format!("could not create {}: {create_error}", base_dir.display()))?;
         restrict_owner_only(base_dir)?;
@@ -98,6 +108,26 @@ impl IsolatedPackageRun {
             run.seed_crates_io_registry(host_home)?;
         }
         Ok(run)
+    }
+
+    /// Creates an owner-only scratch subdirectory inside this run's directory.
+    pub fn create_subdir(&self, name: &str) -> Result<PathBuf, String> {
+        let path = self.run_dir.join(name);
+        fs::create_dir(&path).map_err(|create_error| format!("could not create {}: {create_error}", path.display()))?;
+        restrict_owner_only(&path)?;
+        Ok(path)
+    }
+
+    pub fn target_dir(&self) -> &Path {
+        &self.target_dir
+    }
+
+    pub fn target_dir_str(&self) -> Result<&str, String> {
+        path_to_str(&self.target_dir)
+    }
+
+    pub fn cargo_home_str(&self) -> Result<&str, String> {
+        path_to_str(&self.cargo_home)
     }
 
     #[cfg(unix)]
@@ -194,15 +224,12 @@ fn create_unique_run_dir(base_dir: &Path) -> Result<PathBuf, String> {
     ))
 }
 
-fn verification_base_dir() -> Result<PathBuf, String> {
+fn verification_base_dir(namespace: &str) -> Result<PathBuf, String> {
     if cfg!(target_os = "macos") {
-        return Ok(env::temp_dir().join("supgang-package-verify"));
+        return Ok(env::temp_dir().join(namespace));
     }
     let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
-    Ok(PathBuf::from(home)
-        .join(".cache")
-        .join("supgang")
-        .join("package-verify"))
+    Ok(PathBuf::from(home).join(".cache").join("supgang").join(namespace))
 }
 
 fn resolve_host_cargo_home() -> Option<PathBuf> {
@@ -212,7 +239,7 @@ fn resolve_host_cargo_home() -> Option<PathBuf> {
     )
 }
 
-fn path_to_str(path: &Path) -> Result<&str, String> {
+pub fn path_to_str(path: &Path) -> Result<&str, String> {
     path.to_str()
         .ok_or_else(|| format!("path is not valid Unicode: {}", path.display()))
 }
@@ -239,7 +266,7 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use super::verify_packages;
+    use super::{IsolatedPackageRun, PackageFlags, run_cargo_package};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -319,6 +346,28 @@ mod tests {
         Ok(())
     }
 
+    fn verify_fixture(
+        workspace: &Path,
+        run_base: &Path,
+        host_cargo_home: &Path,
+        output: &mut Vec<u8>,
+        error: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        let run = IsolatedPackageRun::create(run_base, Some(host_cargo_home))?;
+        run_cargo_package(
+            workspace,
+            &["fixture-dep", "fixture-app"],
+            &run,
+            PackageFlags {
+                locked: true,
+                offline: true,
+                no_verify: false,
+            },
+            output,
+            error,
+        )
+    }
+
     #[test]
     fn repeated_same_version_revisions_verify_new_bytes_without_touching_host_cargo_home() -> Result<(), String> {
         let root = TempRoot::new("same-version")?;
@@ -342,15 +391,7 @@ mod tests {
         )?;
         let mut output = Vec::new();
         let mut error = Vec::new();
-        verify_packages(
-            &workspace,
-            &["fixture-dep", "fixture-app"],
-            &run_base,
-            Some(&host_cargo_home),
-            true,
-            &mut output,
-            &mut error,
-        )?;
+        verify_fixture(&workspace, &run_base, &host_cargo_home, &mut output, &mut error)?;
 
         // Revision 2 keeps the exact same 0.1.0-alpha.1 version, removes REV_ONE,
         // and introduces REV_TWO. If Cargo reused revision 1's extraction, this
@@ -360,15 +401,7 @@ mod tests {
             "pub const REV_TWO: u32 = 2;\n",
             "fn main() { let _ = fixture_dep::REV_TWO; }\n",
         )?;
-        verify_packages(
-            &workspace,
-            &["fixture-dep", "fixture-app"],
-            &run_base,
-            Some(&host_cargo_home),
-            true,
-            &mut output,
-            &mut error,
-        )?;
+        verify_fixture(&workspace, &run_base, &host_cargo_home, &mut output, &mut error)?;
 
         // Fail-closed check: referencing removed REV_ONE against revision 2 must fail.
         write_fixture_workspace(
@@ -376,15 +409,7 @@ mod tests {
             "pub const REV_TWO: u32 = 2;\n",
             "fn main() { let _ = fixture_dep::REV_ONE; }\n",
         )?;
-        let broken = verify_packages(
-            &workspace,
-            &["fixture-dep", "fixture-app"],
-            &run_base,
-            Some(&host_cargo_home),
-            true,
-            &mut output,
-            &mut error,
-        );
+        let broken = verify_fixture(&workspace, &run_base, &host_cargo_home, &mut output, &mut error);
         if broken.is_ok() {
             return Err("package verification must fail closed when consumer references removed API".to_owned());
         }

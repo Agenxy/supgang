@@ -80,6 +80,61 @@ class LmsHiddenPromptTest(unittest.TestCase):
                 os.close(master)
                 os.close(slave)
 
+    def test_derive_public_hides_input_and_refuses_wrong_length_master(self):
+        binary = Path(os.environ.get("SUPGANG_TEST_BIN", ROOT / "target" / "debug" / "supgang"))
+        self.assertTrue(binary.is_file(), "the workspace test stage must build supgang first")
+        prompt = b"Master secret hex (hidden): "
+        short_master = b"00112233445566778899aabbccddeeff"
+
+        master_fd, slave_fd = pty.openpty()
+        process = subprocess.Popen(
+            [str(binary), "--json", "lms-derive-public", "primary"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        output = bytearray()
+        try:
+            deadline = time.monotonic() + 15
+            while prompt not in output and time.monotonic() < deadline:
+                readable, _, _ = select.select([master_fd], [], [], 0.2)
+                if readable:
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                        self.assertLessEqual(len(output) + len(chunk), 16_384, "derive output exceeded test bound")
+                        output.extend(chunk)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                if process.poll() is not None:
+                    break
+            self.assertIn(prompt, output, "derive-public did not reach the hidden input prompt")
+            modes = termios.tcgetattr(slave_fd)[3]
+            self.assertFalse(modes & termios.ECHO, "prompt appeared while echo was enabled")
+            self.assertFalse(modes & termios.ICANON, "prompt appeared while canonical input was enabled")
+            os.write(master_fd, short_master + b"\n")
+
+            while process.poll() is None and time.monotonic() < deadline:
+                readable, _, _ = select.select([master_fd], [], [], 0.2)
+                if readable:
+                    try:
+                        chunk = os.read(master_fd, 4096)
+                        self.assertLessEqual(len(output) + len(chunk), 16_384, "derive output exceeded test bound")
+                        output.extend(chunk)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+            self.assertEqual(process.poll(), 3, "derive-public did not refuse a non-32-byte master")
+            self.assertNotIn(short_master, output, "hidden master hex was echoed")
+            self.assertIn(b"64 hexadecimal characters", output)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
+            os.close(slave_fd)
+
 
 if __name__ == "__main__":
     unittest.main()

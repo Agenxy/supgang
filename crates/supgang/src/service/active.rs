@@ -100,14 +100,25 @@ pub(super) struct ActiveConnection {
     draining: tokio::sync::watch::Sender<bool>,
     /// Why this service ended the connection, for the connection history.
     retired: Arc<std::sync::OnceLock<&'static [u8]>>,
+    /// Peer-reported release identity, held in memory only for this live session.
+    peer_release: Option<crate::release::ReleaseIdentity>,
 }
 
 impl ActiveConnection {
+    #[cfg(test)]
     pub(super) fn new(connection: Connection, authorization: SessionAuthorization, capabilities: Capabilities) -> Self {
+        Self::new_with_known_networks(connection, authorization, capabilities, &[])
+    }
+
+    pub(super) fn new_with_known_networks(
+        connection: Connection,
+        authorization: SessionAuthorization,
+        capabilities: Capabilities,
+        known_networks: &[crate::network::InterfaceNetwork],
+    ) -> Self {
         let remote = connection.remote_address().ip().to_canonical();
-        let link = crate::network::interface_networks()
-            .ok()
-            .and_then(|networks| networks.into_iter().find(|network| network.contains(remote)));
+        let current_networks = crate::network::interface_networks().unwrap_or_default();
+        let link = connection_link(remote, connection.local_ip(), &current_networks, known_networks);
         let (draining, _) = tokio::sync::watch::channel(false);
         Self {
             connection,
@@ -119,7 +130,16 @@ impl ActiveConnection {
             tunnel_limit: 4,
             draining,
             retired: Arc::new(std::sync::OnceLock::new()),
+            peer_release: None,
         }
+    }
+
+    pub(super) fn set_peer_release(&mut self, identity: crate::release::ReleaseIdentity) {
+        self.peer_release = Some(identity);
+    }
+
+    pub(super) const fn peer_release(&self) -> Option<&crate::release::ReleaseIdentity> {
+        self.peer_release.as_ref()
     }
 
     pub(super) const fn bind_authority_record(&mut self, record: &crate::record::EndpointRecord) {
@@ -241,6 +261,38 @@ pub(super) fn prune_unauthorized(active: &mut BTreeMap<NodeId, ActiveConnection>
             connection.invalidate(b"peer authorization ended");
         }
     }
+}
+
+/// Identifies the directly attached local network a connection was made on.
+///
+/// Checks both current OS interfaces and the service's pre-refresh interface
+/// snapshot so an on-link connection that finishes admission right after the
+/// host leaves its LAN (before the next periodic interface refresh) still
+/// records its departed link and is retired by [`retire_unroutable`]. When the
+/// socket reports its local IP, the matched prefix must contain both endpoints
+/// so a newly formed off-link connection to a peer's global prefix is never
+/// misclassified against a stale home-LAN snapshot.
+fn connection_link(
+    remote: std::net::IpAddr,
+    local_ip: Option<std::net::IpAddr>,
+    current_networks: &[crate::network::InterfaceNetwork],
+    known_networks: &[crate::network::InterfaceNetwork],
+) -> Option<crate::network::InterfaceNetwork> {
+    let local = local_ip
+        .map(|address| address.to_canonical())
+        .filter(|address| !address.is_unspecified());
+    if let Some(local) = local {
+        return current_networks
+            .iter()
+            .chain(known_networks.iter())
+            .copied()
+            .find(|network| network.contains(local) && network.contains(remote));
+    }
+    current_networks
+        .iter()
+        .chain(known_networks.iter())
+        .copied()
+        .find(|network| network.contains(remote))
 }
 
 pub(super) fn retire_unroutable(
@@ -407,6 +459,147 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), client_connection.closed()).await?;
             server.close(0_u8.into(), b"test complete");
             client.close(0_u8.into(), b"test complete");
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+    }
+
+    #[test]
+    fn on_link_connection_admitted_after_network_move_still_records_departed_link()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home_v4 = crate::network::InterfaceNetwork::new("192.168.1.2".parse()?, "255.255.255.0".parse()?);
+        let home_v6 =
+            crate::network::InterfaceNetwork::new("2600:1:2:3::12".parse()?, "ffff:ffff:ffff:ffff::".parse()?);
+        let cell_v4 = crate::network::InterfaceNetwork::new("10.30.0.1".parse()?, "255.255.255.0".parse()?);
+        let cell_v6 =
+            crate::network::InterfaceNetwork::new("2607:4:5:6::11".parse()?, "ffff:ffff:ffff:ffff::".parse()?);
+        let home = [home_v4, home_v6];
+        let cellular = [cell_v4, cell_v6];
+
+        // Home-LAN IPv4 connection finishing admission after the OS already
+        // switched to cellular (before interface refresh updated known_networks).
+        assert_eq!(
+            super::connection_link("192.168.1.1".parse()?, Some("192.168.1.2".parse()?), &cellular, &home),
+            Some(home_v4)
+        );
+        // Home-LAN IPv6 connection finishing admission after moving to cellular.
+        assert_eq!(
+            super::connection_link(
+                "2600:1:2:3::11".parse()?,
+                Some("2600:1:2:3::12".parse()?),
+                &cellular,
+                &home,
+            ),
+            Some(home_v6)
+        );
+        // New cellular IPv6 connection to Solis's global IPv6 address must not
+        // be misclassified as on-link against the pre-refresh home snapshot.
+        assert_eq!(
+            super::connection_link(
+                "2600:1:2:3::11".parse()?,
+                Some("2607:4:5:6::11".parse()?),
+                &cellular,
+                &home,
+            ),
+            None
+        );
+        // Routed connection through a gateway stays unlinked (left to QUIC).
+        assert_eq!(
+            super::connection_link("9.9.9.9".parse()?, Some("192.168.1.2".parse()?), &home, &home),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn departed_home_lan_connection_admitted_after_move_is_retired_on_refresh() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::simnet::{Firewall6, Nat44, Network, SiteSpec, V4Access, V6Access};
+        let network = Network::new(22);
+        let home = network.add_site(SiteSpec {
+            v4: Some(V4Access::Translated {
+                public: "9.9.9.9".parse()?,
+                lan: "192.168.1.0".parse()?,
+                nat: Nat44::home_router(),
+            }),
+            v6: Some(V6Access {
+                prefix: "2600:1:2:3::".parse()?,
+                firewall: Firewall6::default_deny(),
+            }),
+        })?;
+        let away = network.add_site(SiteSpec {
+            v4: Some(V4Access::Translated {
+                public: "8.8.4.4".parse()?,
+                lan: "10.30.0.0".parse()?,
+                nat: Nat44::symmetric(),
+            }),
+            v6: Some(V6Access {
+                prefix: "2607:4:5:6::".parse()?,
+                firewall: Firewall6::default_deny(),
+            }),
+        })?;
+        let solis = network.add_host(Some(home))?;
+        let laptop = network.add_host(Some(home))?;
+        let _view = crate::network::simulated::install(std::sync::Arc::new(crate::simnet::HostView::new(
+            std::sync::Arc::clone(&network),
+            laptop,
+        )));
+        let known_networks = crate::network::interface_networks()?;
+
+        crate::transport::build_runtime()?.block_on(async {
+            let solis_id = TransportIdentity::generate()?;
+            let laptop_id = TransportIdentity::generate()?;
+            let solis_endpoint = quinn::Endpoint::new_with_abstract_socket(
+                quinn::EndpointConfig::default(),
+                Some(solis_id.server_config()?),
+                network.bind(solis, 44_330)?,
+                std::sync::Arc::new(quinn::TokioRuntime),
+            )?;
+            let laptop_endpoint = quinn::Endpoint::new_with_abstract_socket(
+                quinn::EndpointConfig::default(),
+                Some(laptop_id.server_config()?),
+                network.bind(laptop, 44_330)?,
+                std::sync::Arc::new(quinn::TokioRuntime),
+            )?;
+            let accepting = solis_endpoint.clone();
+            let accepted = tokio::spawn(async move {
+                accepting
+                    .accept()
+                    .await
+                    .ok_or("solis closed")?
+                    .await
+                    .map_err(|error| error.to_string())
+            });
+            let laptop_connection = laptop_endpoint
+                .connect_with(
+                    crate::transport::pinned_client_config(solis_id.key_id())?,
+                    SocketAddr::from(([192, 168, 1, 1], 44_330)),
+                    "supgang.invalid",
+                )?
+                .await?;
+            let _solis_connection = accepted.await??;
+
+            // Host moves to cellular before ActiveConnection is admitted.
+            network.move_host(laptop, Some(away))?;
+            let cellular = crate::network::interface_networks()?;
+            let peer = DeviceIdentity::generate()?.node_id();
+            let now = 1_700_000_000;
+            let authorization = SessionAuthorization::new(now + 60, now).ok_or("fresh authorization missing")?;
+            let admitted = ActiveConnection::new_with_known_networks(
+                laptop_connection.clone(),
+                authorization.clone(),
+                Capabilities::NONE,
+                &known_networks,
+            );
+            let mut active = BTreeMap::from([(peer, admitted)]);
+            super::retire_unroutable(&mut active, &cellular);
+            assert!(
+                active.is_empty(),
+                "home-LAN connection admitted across network move was not retired"
+            );
+            assert!(!authorization.is_current(now));
+            assert!(laptop_connection.close_reason().is_some());
+            solis_endpoint.close(0_u8.into(), b"test complete");
+            laptop_endpoint.close(0_u8.into(), b"test complete");
             Ok::<(), Box<dyn std::error::Error>>(())
         })
     }
