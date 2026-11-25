@@ -14,7 +14,7 @@ use crate::{
 #[derive(Debug, Parser)]
 #[command(
     name = "supgang",
-    version,
+    version = crate::VERSION_DISPLAY,
     about = "Finds the current address of your own computers",
     disable_help_subcommand = true,
     subcommand_precedence_over_arg = true

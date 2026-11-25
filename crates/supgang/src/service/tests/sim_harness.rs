@@ -50,6 +50,7 @@ pub(super) struct Computer {
     pub host: HostId,
     pub node: NodeId,
     controls: Arc<super::super::test_controls::SimControls>,
+    release_identity: crate::release::ReleaseIdentity,
     running: Option<Running>,
 }
 
@@ -101,6 +102,7 @@ impl Fleet {
             path: founder_path,
             host: *first,
             controls: Arc::new(super::super::test_controls::SimControls::default()),
+            release_identity: crate::release::ReleaseIdentity::local(),
             running: None,
         });
         for (index, host) in rest.iter().enumerate() {
@@ -115,6 +117,7 @@ impl Fleet {
                 path,
                 host: *host,
                 controls: Arc::new(super::super::test_controls::SimControls::default()),
+                release_identity: crate::release::ReleaseIdentity::local(),
                 node,
                 running: None,
             });
@@ -145,6 +148,16 @@ impl Fleet {
 
     pub(super) fn computer(&self, index: usize) -> Result<&Computer, Error> {
         self.computers.get(index).ok_or_else(|| "no such computer".into())
+    }
+
+    pub(super) fn set_release_identity(
+        &mut self,
+        index: usize,
+        identity: crate::release::ReleaseIdentity,
+    ) -> Result<(), Error> {
+        let computer = self.computers.get_mut(index).ok_or("no such computer")?;
+        computer.release_identity = identity;
+        Ok(())
     }
 
     /// Makes one peer model a lower local RTT estimate and reject duplicate
@@ -232,10 +245,12 @@ impl Fleet {
         let path = computer.path.clone();
         let host = computer.host;
         let controls = Arc::clone(&computer.controls);
+        let release_identity = computer.release_identity.clone();
         let thread = thread::Builder::new()
             .name(format!("simulated-{index}"))
             .spawn(move || {
-                run_computer(&network, host, &path, controls, stopped, &ready).map_err(|error| error.to_string())
+                run_computer(&network, host, &path, controls, release_identity, stopped, &ready)
+                    .map_err(|error| error.to_string())
             })?;
         if readiness.recv_timeout(START_TIMEOUT).is_ok() {
             computer.running = Some(Running { stop, thread });
@@ -287,12 +302,13 @@ fn run_computer(
     host: HostId,
     path: &Path,
     controls: Arc<super::super::test_controls::SimControls>,
+    release_identity: crate::release::ReleaseIdentity,
     stopped: tokio::sync::oneshot::Receiver<()>,
     ready: &mpsc::Sender<()>,
 ) -> Result<(), Error> {
     let _view = simulated::install(Arc::new(HostView::new(Arc::clone(network), host)));
     let _controls = super::super::test_controls::install(controls);
-    let config = automatic_config()?;
+    let config = automatic_config()?.with_release_identity(release_identity);
     let mut local = state::open(path)?;
     let identity = transport_storage::load_or_create(path)?;
     let mut directory = PeerDirectory::open_with_history_limit(

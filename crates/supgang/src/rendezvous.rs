@@ -118,7 +118,7 @@ fn encode(message: &RendezvousMessage) -> Result<Vec<u8>, RendezvousError> {
     Ok(output)
 }
 
-fn decode(input: &[u8]) -> Result<RendezvousMessage, RendezvousError> {
+pub(crate) fn decode(input: &[u8]) -> Result<RendezvousMessage, RendezvousError> {
     if input.is_empty() || input.len() > MAX_RENDEZVOUS_FRAME_BYTES {
         return Err(RendezvousError::Oversized);
     }

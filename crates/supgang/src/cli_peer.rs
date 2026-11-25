@@ -197,6 +197,7 @@ pub fn peers_from_directory(
         status: "ok".to_owned(),
         this_computer: Some(this_computer),
         peers: peer_rows_from_directory(directory, root_key, now),
+        update_notice: None,
     }
 }
 
@@ -240,6 +241,7 @@ fn peer_rows_from_directory(directory: &PeerDirectory, root_key: &VerifyingKey, 
                 candidate_count: addresses.len(),
                 addresses,
                 services: record.services.iter().map(Into::into).collect(),
+                release: None,
             }
         })
         .collect()
@@ -274,6 +276,9 @@ pub fn running_local_row(contact: &PeerContact, directory: &PeerDirectory, now: 
         candidate_count: addresses.len(),
         addresses,
         services: record.services.iter().map(Into::into).collect(),
+        release: Some(crate::release::ReleaseInfo::from(
+            &crate::release::ReleaseIdentity::local(),
+        )),
     }
 }
 
@@ -574,6 +579,9 @@ fn stopped_local_row_with_name(
         candidate_count: 0,
         addresses: Vec::new(),
         services: services.iter().map(Into::into).collect(),
+        release: Some(crate::release::ReleaseInfo::from(
+            &crate::release::ReleaseIdentity::local(),
+        )),
     }
 }
 

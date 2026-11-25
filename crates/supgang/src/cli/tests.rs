@@ -123,6 +123,10 @@ fn help_and_version_are_successful_stdout_commands() {
         assert_eq!(code, std::process::ExitCode::SUCCESS);
         assert!(!output.is_empty(), "{output:?}");
         assert!(error.is_empty(), "{error:?}");
+        if argument == "--version" {
+            let text = String::from_utf8(output).unwrap_or_default();
+            assert!(text.contains(crate::VERSION_DISPLAY), "version output: {text}");
+        }
     }
 }
 

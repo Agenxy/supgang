@@ -154,7 +154,7 @@ fn render_observation(
     };
     writeln!(
         output,
-        "Manager PID: {manager_pid}; socket PID: {socket_pid}; relationship: {}.\nManager enablement: {}; lingering: {lingering}.\nService identity: {}.\nDefinition: {}.\nInstalled program: {}.\nManager program: {}.\nLogs: {}.\nClient version: {}; running version: {}.",
+        "Manager PID: {manager_pid}; socket PID: {socket_pid}; relationship: {}.\nManager enablement: {}; lingering: {lingering}.\nService identity: {}.\nDefinition: {}.\nInstalled program: {}.\nManager program: {}.\nLogs: {}.\nClient version: {} ({}); running version: {} ({}).",
         observed.process_relationship,
         observed.manager_enablement.as_deref().unwrap_or("unknown"),
         observed.service_identity.as_deref().unwrap_or("unknown"),
@@ -163,14 +163,27 @@ fn render_observation(
         observed.manager_program.as_deref().unwrap_or("unknown"),
         observed.log_destination,
         observed.client_version,
+        crate::release::short_commit(observed.client_commit),
         observed
             .running_version
             .as_deref()
             .filter(|value| !value.is_empty())
             .unwrap_or("unknown"),
+        observed
+            .running_commit
+            .as_deref()
+            .map_or(crate::release::UNKNOWN_COMMIT, crate::release::short_commit),
     )?;
     if let Some(note) = observed.version_note {
         writeln!(output, "{note}")?;
+    }
+    if let Some(notice) = &observed.update_notice {
+        let label = if notice.kind == "update-available" {
+            "Update notice"
+        } else {
+            "Build notice"
+        };
+        writeln!(output, "{label}: {}", notice.summary)?;
     }
     if let Some(error) = observed.control_error {
         writeln!(output, "{error}")?;

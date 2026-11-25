@@ -47,10 +47,12 @@ struct DoctorOutput {
     schema: &'static str,
     status: &'static str,
     version: &'static str,
+    commit: &'static str,
     strict_mode: bool,
     public_dependencies: u8,
     checks: Vec<DoctorCheck>,
     custody: doctor::CustodyOutput,
+    update_notice: Option<crate::release::UpdateNotice>,
 }
 
 #[derive(Debug, Serialize)]
