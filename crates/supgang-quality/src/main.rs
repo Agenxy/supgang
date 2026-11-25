@@ -17,6 +17,7 @@ mod acceptance;
 mod drift;
 mod gate_cache;
 mod installation;
+mod package_verify;
 mod packaged_deps;
 mod vendored_netwatch;
 mod vendored_portmapper;

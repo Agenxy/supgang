@@ -10,15 +10,14 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
-const MAX_REGISTRY_ENTRIES: usize = 64;
+use super::package_verify::{IsolatedPackageRun, PackageFlags, path_to_str, run_cargo_package};
+
 const MAX_STAGE_FILES: usize = 4_096;
 const PUBLISHED_CRATES: &[&str] = &[
     "supgang-netwatch",
@@ -38,23 +37,20 @@ pub const SUPPORTED_TARGETS: &[&str] = &[
     "x86_64-pc-windows-msvc",
 ];
 
-static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// Packages and compiles every publishable crate in an isolated per-run workspace.
 pub fn verify_packaged_workspace(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
-    let run = IsolatedRun::create(&verification_base_dir()?, resolve_host_cargo_home().as_deref())?;
-    stage_workspace(root, &run.stage_dir)?;
-    let cargo_home = path_to_str(&run.cargo_home)?;
-    let target_dir = path_to_str(&run.target_dir)?;
-    let mut args = vec!["package", "--allow-dirty"];
-    for name in PUBLISHED_CRATES {
-        args.push("--package");
-        args.push(name);
-    }
-    super::run_cargo_with_env(
-        &run.stage_dir,
-        &args,
-        &[("CARGO_HOME", cargo_home), ("CARGO_TARGET_DIR", target_dir)],
+    let run = IsolatedPackageRun::create_default("supgang-package-verify")?;
+    let stage_dir = run.create_subdir("stage")?;
+    stage_workspace(root, &stage_dir)?;
+    run_cargo_package(
+        &stage_dir,
+        PUBLISHED_CRATES,
+        &run,
+        PackageFlags {
+            locked: false,
+            offline: false,
+            no_verify: false,
+        },
         output,
         error,
     )
@@ -64,28 +60,30 @@ pub fn verify_packaged_workspace(root: &Path, output: &mut dyn Write, error: &mu
 /// isolated temp workspace with no `[patch]`, and verifies the resolved dependency
 /// graph for every supported target.
 pub fn check_rehearsal_graph(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
-    let run = IsolatedRun::create(&verification_base_dir()?, resolve_host_cargo_home().as_deref())?;
-    stage_workspace(root, &run.stage_dir)?;
-    let cargo_home = path_to_str(&run.cargo_home)?;
-    let target_dir = path_to_str(&run.target_dir)?;
-    let mut args = vec!["package", "--allow-dirty", "--no-verify"];
-    for name in PUBLISHED_CRATES {
-        args.push("--package");
-        args.push(name);
-    }
-    super::run_cargo_with_env(
-        &run.stage_dir,
-        &args,
-        &[("CARGO_HOME", cargo_home), ("CARGO_TARGET_DIR", target_dir)],
+    let run = IsolatedPackageRun::create_default("supgang-packaged-deps")?;
+    let stage_dir = run.create_subdir("stage")?;
+    let unpacked_dir = run.create_subdir("unpacked")?;
+    stage_workspace(root, &stage_dir)?;
+    run_cargo_package(
+        &stage_dir,
+        PUBLISHED_CRATES,
+        &run,
+        PackageFlags {
+            locked: false,
+            offline: false,
+            no_verify: true,
+        },
         output,
         error,
     )?;
 
-    let package_dir = run.target_dir.join("package");
-    let unpacked_dirs = unpack_archives(&package_dir, &run.unpacked_dir)?;
-    build_unpacked_workspace(&run.unpacked_dir, &unpacked_dirs)?;
+    let cargo_home = run.cargo_home_str()?;
+    let target_dir = run.target_dir_str()?;
+    let package_dir = run.target_dir().join("package");
+    let unpacked_dirs = unpack_archives(&package_dir, &unpacked_dir)?;
+    build_unpacked_workspace(&unpacked_dir, &unpacked_dirs)?;
 
-    let manifest = run.unpacked_dir.join("Cargo.toml");
+    let manifest = unpacked_dir.join("Cargo.toml");
     let manifest_str = path_to_str(&manifest)?;
     for target in SUPPORTED_TARGETS {
         for all_features in [false, true] {
@@ -108,13 +106,13 @@ pub fn check_rehearsal_graph(root: &Path, output: &mut dyn Write, error: &mut dy
                 tree_args.push("--all-features");
             }
             let stdout = capture_cargo(
-                &run.unpacked_dir,
+                &unpacked_dir,
                 &tree_args,
                 &[("CARGO_HOME", cargo_home), ("CARGO_TARGET_DIR", target_dir)],
             )?;
             if let Err((offender, reason)) = inspect_resolved_graph(target, &stdout) {
                 let why = capture_cargo(
-                    &run.unpacked_dir,
+                    &unpacked_dir,
                     &[
                         "tree",
                         "--manifest-path",
@@ -435,147 +433,6 @@ fn capture_cargo(cwd: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> Result
         ));
     }
     String::from_utf8(output.stdout).map_err(|_| "cargo output was not valid UTF-8".to_owned())
-}
-
-struct IsolatedRun {
-    run_dir: PathBuf,
-    stage_dir: PathBuf,
-    unpacked_dir: PathBuf,
-    target_dir: PathBuf,
-    cargo_home: PathBuf,
-    linked_caches: Vec<PathBuf>,
-}
-
-impl IsolatedRun {
-    fn create(base_dir: &Path, host_cargo_home: Option<&Path>) -> Result<Self, String> {
-        fs::create_dir_all(base_dir).map_err(|err| format!("create {}: {err}", base_dir.display()))?;
-        restrict_owner_only(base_dir)?;
-        let run_dir = create_unique_run_dir(base_dir)?;
-        let mut run = Self {
-            stage_dir: run_dir.join("stage"),
-            unpacked_dir: run_dir.join("unpacked"),
-            target_dir: run_dir.join("target"),
-            cargo_home: run_dir.join("cargo-home"),
-            run_dir,
-            linked_caches: Vec::new(),
-        };
-        for dir in [&run.stage_dir, &run.unpacked_dir, &run.target_dir, &run.cargo_home] {
-            fs::create_dir(dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
-            restrict_owner_only(dir)?;
-        }
-        if let Some(host_home) = host_cargo_home {
-            run.seed_crates_io_registry(host_home)?;
-        }
-        Ok(run)
-    }
-
-    #[cfg(unix)]
-    fn seed_crates_io_registry(&mut self, host_cargo_home: &Path) -> Result<(), String> {
-        use std::os::unix::fs::symlink;
-
-        let host_registry = host_cargo_home.join("registry");
-        let run_registry = self.cargo_home.join("registry");
-        fs::create_dir(&run_registry).map_err(|err| format!("create {}: {err}", run_registry.display()))?;
-        for kind in ["index", "cache", "src"] {
-            let run_subdir = run_registry.join(kind);
-            fs::create_dir(&run_subdir).map_err(|err| format!("create {}: {err}", run_subdir.display()))?;
-            let host_subdir = host_registry.join(kind);
-            if !host_subdir.is_dir() {
-                continue;
-            }
-            for entry in fs::read_dir(&host_subdir)
-                .map_err(|err| format!("read {}: {err}", host_subdir.display()))?
-                .take(MAX_REGISTRY_ENTRIES)
-            {
-                let entry = entry.map_err(|err| err.to_string())?;
-                let file_name = entry.file_name();
-                let Some(name) = file_name.to_str() else {
-                    continue;
-                };
-                if !name.starts_with("index.crates.io-") || !entry.path().is_dir() {
-                    continue;
-                }
-                let destination = run_subdir.join(name);
-                symlink(entry.path(), &destination).map_err(|err| format!("link {}: {err}", destination.display()))?;
-                self.linked_caches.push(destination);
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn seed_crates_io_registry(&mut self, _host_cargo_home: &Path) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-impl Drop for IsolatedRun {
-    fn drop(&mut self) {
-        for link in &self.linked_caches {
-            if link.starts_with(&self.run_dir)
-                && fs::symlink_metadata(link).is_ok_and(|meta| meta.file_type().is_symlink())
-            {
-                let _removed = fs::remove_file(link);
-            }
-        }
-        let _removed = fs::remove_dir_all(&self.run_dir);
-    }
-}
-
-fn create_unique_run_dir(base_dir: &Path) -> Result<PathBuf, String> {
-    let pid = std::process::id();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    for _ in 0..16 {
-        let sequence = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let candidate = base_dir.join(format!("run-{pid}-{nanos}-{sequence}"));
-        match fs::create_dir(&candidate) {
-            Ok(()) => {
-                restrict_owner_only(&candidate)?;
-                return Ok(candidate);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(format!("could not create {}: {error}", candidate.display())),
-        }
-    }
-    Err(format!(
-        "could not allocate isolated run dir under {}",
-        base_dir.display()
-    ))
-}
-
-fn verification_base_dir() -> Result<PathBuf, String> {
-    if cfg!(target_os = "macos") {
-        return Ok(env::temp_dir().join("supgang-packaged-deps"));
-    }
-    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
-    Ok(PathBuf::from(home).join(".cache").join("supgang").join("packaged-deps"))
-}
-
-fn resolve_host_cargo_home() -> Option<PathBuf> {
-    env::var_os("CARGO_HOME").map_or_else(
-        || env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")),
-        |home| Some(PathBuf::from(home)),
-    )
-}
-
-fn path_to_str(path: &Path) -> Result<&str, String> {
-    path.to_str()
-        .ok_or_else(|| format!("path is not valid Unicode: {}", path.display()))
-}
-
-#[cfg(unix)]
-fn restrict_owner_only(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|err| format!("could not restrict {}: {err}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn restrict_owner_only(_path: &Path) -> Result<(), String> {
-    Ok(())
 }
 
 #[cfg(test)]
