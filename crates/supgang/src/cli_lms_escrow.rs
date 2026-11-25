@@ -108,7 +108,7 @@ fn manual_passphrase_is_strong(secret: &[u8]) -> bool {
             >= 7
 }
 
-fn clear_generated_display(error: &mut dyn Write) -> Result<(), String> {
+pub fn clear_generated_display(error: &mut dyn Write) -> Result<(), String> {
     // Move home, clear the visible screen, then clear scrollback. ED2 can
     // push visible lines into scrollback, so ED3 must come last.
     error
@@ -150,7 +150,7 @@ fn validate_destinations(paths: &[PathBuf]) -> Result<(), String> {
 }
 
 pub fn prepare_owner_terminal() -> Result<(), String> {
-    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() || !io::stderr().is_terminal() {
         return Err("offline LMS escrow requires an interactive owner terminal".to_owned());
     }
     rustix::process::setrlimit(
@@ -327,6 +327,52 @@ pub fn dispatch_offline(cli: &crate::cli_args::Cli, output: &mut dyn Write, erro
                 ));
             }
             Some(crate::cli_lms_derive::run(role, cli.json, output, error))
+        }
+        Command::LmsShareCeremony {
+            medium_a,
+            medium_b,
+            medium_c,
+            i_confirm_offline,
+        } => {
+            if cli.state_dir.is_some() || cli.peer.is_some() {
+                return Some(render_error(
+                    cli.json,
+                    "offline LMS share ceremony takes no peer or state directory",
+                    output,
+                    error,
+                ));
+            }
+            Some(crate::cli_lms_share_ceremony::run(
+                medium_a,
+                medium_b,
+                medium_c,
+                *i_confirm_offline,
+                cli.json,
+                output,
+                error,
+            ))
+        }
+        Command::LmsShareVerify {
+            role,
+            share,
+            expect_fingerprint,
+        } => {
+            if cli.state_dir.is_some() || cli.peer.is_some() {
+                return Some(render_error(
+                    cli.json,
+                    "offline LMS share verify takes no peer or state directory",
+                    output,
+                    error,
+                ));
+            }
+            Some(crate::cli_lms_share_verify::run(
+                role,
+                share,
+                expect_fingerprint.as_deref(),
+                cli.json,
+                output,
+                error,
+            ))
         }
         _ => None,
     }

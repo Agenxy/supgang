@@ -40,7 +40,7 @@ impl EscrowKey {
     }
 }
 
-fn answer_digest(name: &str, public: &[u8; lms_rfc::PUBLIC_LEN]) -> [u8; 32] {
+pub(super) fn answer_digest(name: &str, public: &[u8; lms_rfc::PUBLIC_LEN]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(KNOWN_ANSWER_DOMAIN);
     hash.update(name.as_bytes());
