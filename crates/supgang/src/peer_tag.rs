@@ -48,6 +48,8 @@ const RESERVED_TAGS: &[&str] = &[
     "lms-derive-public",
     "lms-keygen",
     "lms-escrow-verify",
+    "lms-share-ceremony",
+    "lms-share-verify",
     "mcp",
     "name",
     "peers",

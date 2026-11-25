@@ -88,6 +88,12 @@ strip = "symbols"
 overflow-checks = true
 panic = "unwind"
 
+[profile.dev.package.scrypt]
+opt-level = 2
+
+[profile.dev.package.salsa20]
+opt-level = 2
+
 # H20 LMS ceremony tests hash every leaf; optimize the core test binary and its
 # SHA-256 primitives while retaining debug assertions and overflow checks.
 [profile.test.package.supgang-core]

@@ -4,10 +4,10 @@
 //! secret `M` and a fixed product-root role (`primary` or `recovery`).
 
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::{LmsPublic, identity};
+use super::{EscrowPublic, LmsPublic, escrow, identity};
 use crate::vault::{VaultError, lms_rfc};
 
 /// Required byte length of an NC0 product-root master secret `M`.
@@ -154,6 +154,57 @@ pub const fn next_restore_q(highest_logged_q: u32) -> Result<u32, VaultError> {
         return Err(VaultError::LmsExhausted);
     }
     Ok(next_q)
+}
+
+/// Derive an NC0 H20/W1 root and burn `q = 0` on its known-answer signature.
+///
+/// Derives `(SEED, I)` via HKDF-SHA256, computes `T[1]` and the `q = 0` path
+/// in one streaming pass, verifies the signature, and returns public data only.
+///
+/// # Errors
+/// Refuses any master length other than 32 bytes, CSPRNG failure, treehash
+/// failure, or signature verification failure.
+pub fn derive_and_known_answer(
+    master: &[u8],
+    role: RootRole,
+    progress: impl FnMut(u32, u32),
+) -> Result<EscrowPublic, VaultError> {
+    let derived = derive_seed(master, role)?;
+    let mut randomizer = Zeroizing::new([0_u8; 32]);
+    getrandom::fill(randomizer.as_mut()).map_err(std::io::Error::other)?;
+    let (root, path) = lms_rfc::tree(
+        derived.seed(),
+        derived.id(),
+        lms_rfc::HEIGHT,
+        lms_rfc::WIDTH,
+        Some(0),
+        progress,
+    )?;
+    let public = identity(lms_rfc::public_key(derived.id(), &root));
+    let digest = escrow::answer_digest(role.root_name(), &public.public_key);
+    let signature = Zeroizing::new(lms_rfc::sign_with_path(
+        derived.seed(),
+        derived.id(),
+        0,
+        &digest,
+        &randomizer,
+        &path,
+    )?);
+    if !lms_rfc::verify_fixed(&public.public_key, &digest, &signature) {
+        return Err(VaultError::Corrupt);
+    }
+    Ok(EscrowPublic {
+        identity: public,
+        signature_sha256: hex::encode(Sha256::digest(signature.as_slice())),
+        next_q: 1,
+    })
+}
+
+#[cfg(test)]
+pub fn derive_public_h5_for_test(master: &[u8], role: RootRole) -> Result<LmsPublic, VaultError> {
+    let derived = derive_seed(master, role)?;
+    let (root, _) = lms_rfc::tree(derived.seed(), derived.id(), 5, 1, None, |_, _| {})?;
+    Ok(identity(lms_rfc::public_key(derived.id(), &root)))
 }
 
 #[cfg(test)]
