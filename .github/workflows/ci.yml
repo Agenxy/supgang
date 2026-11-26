@@ -20,15 +20,44 @@ permissions:
   contents: read
 
 jobs:
-  quality:
-    name: Quality (${{ matrix.runner }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runner:
-          - macos-15
-          - ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-24.04
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      full_gate: ${{ steps.classify.outputs.full_gate }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install the Python script runner
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.9"
+          python-version: "3.15.2"
+          enable-cache: false
+      - name: Install the pinned Python interpreter
+        run: uv python install 3.15.2
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          uv run --offline --script tools/classify_changes.py \
+            --event "$EVENT_NAME" \
+            --base "$BASE_SHA" \
+            --head "${HEAD_SHA:-HEAD}" \
+            --github-output "$GITHUB_OUTPUT"
+
+  quality-core-macos:
+    name: Quality core (macos-15)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: macos-15
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,17 +98,260 @@ jobs:
         # main never reads a pull request's, so a branch cannot seed main.
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ matrix.runner }}
-      - name: Run repository gate
+          shared-key: macos-15-core
+      - name: Run core repository gate
         env:
           SUPGANG_QUALITY_CACHE: off
-        run: cargo run --locked --package supgang-quality -- all
-      - name: Verify packaged multi-target dependency graph
-        run: cargo run --locked --package supgang-quality -- packaged-deps
-      - name: Build release binary
-        run: cargo build --locked --workspace --release
-      - name: Smoke-test command
-        run: cargo run --locked --package supgang --release -- --version
+        run: cargo run --locked --package supgang-quality -- ci-core
+
+  quality-heavy-macos:
+    name: Heavy tests (macos-15)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore the Cargo build cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: macos-15-heavy
+      - name: Run heavy split tests and release build
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- ci-heavy
+
+  quality-package-macos:
+    name: Package verify (macos-15)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore the Cargo registry cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: macos-15-registry
+          cache-targets: false
+      - name: Verify packaged workspace and dependency graph
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- ci-package
+
+  quality-macos:
+    name: Quality (macos-15)
+    needs: [changes, quality-core-macos, quality-heavy-macos, quality-package-macos]
+    if: always() && !cancelled()
+    runs-on: ${{ needs.changes.outputs.docs_only == 'true' && 'macos-15' || 'ubuntu-24.04' }}
+    steps:
+      - name: Verify changes classification succeeded
+        if: needs.changes.result != 'success'
+        run: |
+          printf 'changes job did not succeed: %s\n' "${{ needs.changes.result }}" >&2
+          exit 1
+      - name: Check out source for docs gate
+        if: needs.changes.outputs.docs_only == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch and verify the published netwatch archive
+        if: needs.changes.outputs.docs_only == 'true'
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.20.2.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/netwatch/netwatch-0.20.2.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            2acf7a1ca9205d7c1fc9a1595193a8cbaa7537b4a07dca93c6ae3de7c8d0e597 \
+            "$archive" | shasum -a 256 -c -
+      - name: Fetch and verify the published portmapper archive
+        if: needs.changes.outputs.docs_only == 'true'
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/portmapper-0.20.2.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/portmapper/portmapper-0.20.2.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            d36ce759df600731dd2511cd2d640bd551086b2f7b68bceb9bbcfd8c7ff86053 \
+            "$archive" | shasum -a 256 -c -
+      - name: Restore the Cargo build cache
+        if: needs.changes.outputs.docs_only == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: macos-15-core
+          save-if: false
+      - name: Run policy and docs checks
+        if: needs.changes.outputs.docs_only == 'true'
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- docs
+      - name: Verify macOS split jobs passed
+        if: needs.changes.outputs.docs_only != 'true'
+        env:
+          CORE_RESULT: ${{ needs.quality-core-macos.result }}
+          HEAVY_RESULT: ${{ needs.quality-heavy-macos.result }}
+          PACKAGE_RESULT: ${{ needs.quality-package-macos.result }}
+        run: |
+          if [ "$CORE_RESULT" != "success" ] || [ "$HEAVY_RESULT" != "success" ] || [ "$PACKAGE_RESULT" != "success" ]; then
+            printf 'macOS split gate failed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT" >&2
+            exit 1
+          fi
+          printf 'macOS split gate passed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT"
+
+  quality-core-ubuntu:
+    name: Quality core (ubuntu-24.04)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the Python script runner
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.9"
+          python-version: "3.15.2"
+          enable-cache: false
+      - name: Install the pinned Python interpreter
+        run: uv python install 3.15.2
+      - name: Fetch and verify the published netwatch archive
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.20.2.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/netwatch/netwatch-0.20.2.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            2acf7a1ca9205d7c1fc9a1595193a8cbaa7537b4a07dca93c6ae3de7c8d0e597 \
+            "$archive" | shasum -a 256 -c -
+      - name: Fetch and verify the published portmapper archive
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/portmapper-0.20.2.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/portmapper/portmapper-0.20.2.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            d36ce759df600731dd2511cd2d640bd551086b2f7b68bceb9bbcfd8c7ff86053 \
+            "$archive" | shasum -a 256 -c -
+      - name: Restore the Cargo build cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ubuntu-24.04-core
+      - name: Run core repository gate
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- ci-core
+
+  quality-heavy-ubuntu:
+    name: Heavy tests (ubuntu-24.04)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore the Cargo build cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ubuntu-24.04-heavy
+      - name: Run heavy split tests and release build
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- ci-heavy
+
+  quality-package-ubuntu:
+    name: Package verify (ubuntu-24.04)
+    needs: changes
+    if: needs.changes.outputs.full_gate == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Restore the Cargo registry cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ubuntu-24.04-registry
+          cache-targets: false
+      - name: Verify packaged workspace and dependency graph
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- ci-package
+
+  quality-ubuntu:
+    name: Quality (ubuntu-24.04)
+    needs: [changes, quality-core-ubuntu, quality-heavy-ubuntu, quality-package-ubuntu]
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify changes classification succeeded
+        if: needs.changes.result != 'success'
+        run: |
+          printf 'changes job did not succeed: %s\n' "${{ needs.changes.result }}" >&2
+          exit 1
+      - name: Check out source for docs gate
+        if: needs.changes.outputs.docs_only == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch and verify the published netwatch archive
+        if: needs.changes.outputs.docs_only == 'true'
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/netwatch-0.20.2.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/netwatch/netwatch-0.20.2.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            2acf7a1ca9205d7c1fc9a1595193a8cbaa7537b4a07dca93c6ae3de7c8d0e597 \
+            "$archive" | shasum -a 256 -c -
+      - name: Fetch and verify the published portmapper archive
+        if: needs.changes.outputs.docs_only == 'true'
+        run: |
+          archive="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f/portmapper-0.20.2.crate"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --show-error --silent \
+            https://static.crates.io/crates/portmapper/portmapper-0.20.2.crate \
+            --output "$archive"
+          printf '%s  %s\n' \
+            d36ce759df600731dd2511cd2d640bd551086b2f7b68bceb9bbcfd8c7ff86053 \
+            "$archive" | shasum -a 256 -c -
+      - name: Restore the Cargo build cache
+        if: needs.changes.outputs.docs_only == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ubuntu-24.04-core
+          save-if: false
+      - name: Run policy and docs checks
+        if: needs.changes.outputs.docs_only == 'true'
+        env:
+          SUPGANG_QUALITY_CACHE: off
+        run: cargo run --locked --package supgang-quality -- docs
+      - name: Verify Ubuntu split jobs passed
+        if: needs.changes.outputs.docs_only != 'true'
+        env:
+          CORE_RESULT: ${{ needs.quality-core-ubuntu.result }}
+          HEAVY_RESULT: ${{ needs.quality-heavy-ubuntu.result }}
+          PACKAGE_RESULT: ${{ needs.quality-package-ubuntu.result }}
+        run: |
+          if [ "$CORE_RESULT" != "success" ] || [ "$HEAVY_RESULT" != "success" ] || [ "$PACKAGE_RESULT" != "success" ]; then
+            printf 'Ubuntu split gate failed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT" >&2
+            exit 1
+          fi
+          printf 'Ubuntu split gate passed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT"
 
   advisories:
     name: RustSec advisories

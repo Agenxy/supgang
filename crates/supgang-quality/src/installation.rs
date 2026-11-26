@@ -15,14 +15,26 @@ pub fn inspect(root: &Path) -> Result<(), String> {
     }
     let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).map_err(|error| error.to_string())?;
     for required in [
-        "- macos-15",
-        "- ubuntu-24.04",
-        "runs-on: ${{ matrix.runner }}",
-        "cargo run --locked --package supgang-quality -- all",
+        "runs-on: macos-15",
+        "runs-on: ubuntu-24.04",
+        "name: Quality (macos-15)",
+        "name: Quality (ubuntu-24.04)",
+        "cargo run --locked --package supgang-quality -- docs",
     ] {
         if !workflow.contains(required) {
             return Err(format!(
                 "installer tests must run on macOS and Linux: missing {required}"
+            ));
+        }
+    }
+    for per_os_gate in [
+        "cargo run --locked --package supgang-quality -- ci-core",
+        "cargo run --locked --package supgang-quality -- ci-heavy",
+        "cargo run --locked --package supgang-quality -- ci-package",
+    ] {
+        if workflow.matches(per_os_gate).count() < 2 {
+            return Err(format!(
+                "installer tests must run on both macOS and Linux: expected at least two occurrences of {per_os_gate}"
             ));
         }
     }
