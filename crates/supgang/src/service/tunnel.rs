@@ -20,6 +20,10 @@ use super::{
 };
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+const REPLY_REFUSED: u8 = 0;
+const REPLY_ACCEPTED: u8 = 1;
+const REPLY_AT_CAPACITY: u8 = 2;
+const MAX_CAPACITY_REFUSALS: usize = 4;
 
 #[derive(Clone)]
 pub(super) struct TunnelRuntime {
@@ -42,8 +46,13 @@ impl TunnelRuntime {
     }
 
     pub(super) fn exposure_reply(&self) -> crate::control::ControlReply {
+        let active_tunnels = self.admission_total.saturating_sub(self.admission.available_permits());
         crate::control::ControlReply::Exposures {
-            value: ExposureSnapshot::from_policy(&self.policy.borrow(), Some(self.admission_total)),
+            value: ExposureSnapshot::from_policy_with_usage(
+                &self.policy.borrow(),
+                Some(self.admission_total),
+                Some(active_tunnels),
+            ),
         }
     }
 
@@ -76,19 +85,62 @@ impl TunnelRuntime {
     }
 }
 
-pub(super) async fn incoming(
+pub(super) fn dispatch_incoming(
+    send: SendStream,
+    receive: RecvStream,
+    runtime: TunnelRuntime,
+    authorization: SessionAuthorization,
+    peer_admission: &Arc<Semaphore>,
+    tunnels: &mut tokio::task::JoinSet<()>,
+    refusals: &mut tokio::task::JoinSet<()>,
+) {
+    // Reap completed tasks before checking JoinSet bounds: peer_actor spends
+    // idle time awaiting accept(), so tasks that finished while idle would
+    // otherwise falsely count against per_peer until after a bogus refusal.
+    while tunnels.try_join_next().is_some() {}
+    while refusals.try_join_next().is_some() {}
+    // A draining connection closes its per-peer semaphore so callers retry on
+    // the replacement session instead of seeing a permanent capacity refusal.
+    if peer_admission.is_closed() {
+        return;
+    }
+    let permits = (tunnels.len() < runtime.policy.borrow().per_peer)
+        .then(|| {
+            let global = runtime.admission.clone().try_acquire_owned().ok()?;
+            let peer = Arc::clone(peer_admission).try_acquire_owned().ok()?;
+            Some((global, peer))
+        })
+        .flatten();
+    if let Some((global, peer)) = permits {
+        tunnels.spawn(incoming(send, receive, runtime, authorization, global, peer));
+    } else if refusals.len() < MAX_CAPACITY_REFUSALS {
+        refusals.spawn(refuse_at_capacity(send, receive, authorization));
+    }
+}
+
+async fn refuse_at_capacity(mut send: SendStream, mut receive: RecvStream, authorization: SessionAuthorization) {
+    let reply = async {
+        // Consume the fixed 16-byte service name before answering so the peer's
+        // write does not race with STOP_SENDING and mask the explicit refusal.
+        let mut bytes = [0; 16];
+        let _name = receive.read_exact(&mut bytes).await;
+        let _refusal = send.write_all(&[REPLY_AT_CAPACITY]).await;
+    };
+    tokio::select! {
+        _result = tokio::time::timeout(SETUP_TIMEOUT, reply) => {}
+        () = authorization.wait_until_invalid(unix_time().unwrap_or(u64::MAX)) => {}
+    }
+}
+
+async fn incoming(
     mut send: SendStream,
     mut receive: RecvStream,
     runtime: TunnelRuntime,
     authorization: SessionAuthorization,
-    peer_admission: Arc<Semaphore>,
+    global: tokio::sync::OwnedSemaphorePermit,
+    peer: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let Ok(_global) = runtime.admission.clone().try_acquire_owned() else {
-        return;
-    };
-    let Ok(_peer) = peer_admission.try_acquire_owned() else {
-        return;
-    };
+    let _admission = (global, peer);
     let mut policy = runtime.policy.subscribe();
     let setup = async {
         if !authorization.is_current(unix_time().map_err(|_| ())?) {
@@ -99,20 +151,20 @@ pub(super) async fn incoming(
         let name = tunnel_policy::decoded_name(bytes).map_err(|_| ())?;
         let port = policy.borrow().port(&name);
         let Some(port) = port else {
-            let _refusal = send.write_all(&[0]).await;
+            let _refusal = send.write_all(&[REPLY_REFUSED]).await;
             return Err(());
         };
         if !authorization.is_current(unix_time().map_err(|_| ())?) {
             return Err(());
         }
         let Ok(socket) = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await else {
-            let _refusal = send.write_all(&[0]).await;
+            let _refusal = send.write_all(&[REPLY_REFUSED]).await;
             return Err(());
         };
         if !authorization.is_current(unix_time().map_err(|_| ())?) {
             return Err(());
         }
-        send.write_all(&[1]).await.map_err(|_| ())?;
+        send.write_all(&[REPLY_ACCEPTED]).await.map_err(|_| ())?;
         Ok((socket, name, port))
     };
     let setup = tokio::select! {
@@ -141,6 +193,7 @@ pub(super) async fn incoming(
 
 enum SetupFailure {
     Refused,
+    PeerAtCapacity,
     SessionFailed,
 }
 
@@ -165,10 +218,11 @@ pub(super) async fn outgoing(
             .read_exact(&mut accepted)
             .await
             .map_err(|_| SetupFailure::SessionFailed)?;
-        if accepted != [1] {
-            return Err(SetupFailure::Refused);
+        match accepted {
+            [REPLY_ACCEPTED] => Ok((send, receive)),
+            [REPLY_AT_CAPACITY] => Err(SetupFailure::PeerAtCapacity),
+            _ => Err(SetupFailure::Refused),
         }
-        Ok((send, receive))
     };
     let setup = tokio::select! {
         result = tokio::time::timeout(SETUP_TIMEOUT, setup) => result,
@@ -177,17 +231,22 @@ pub(super) async fn outgoing(
     let (send, receive) = match setup {
         Ok(Ok(streams)) => streams,
         failure => {
-            let message = if matches!(failure, Ok(Err(SetupFailure::Refused))) {
-                "the peer refused the service; check its exposure and runtime version"
-            } else {
-                // A missed probe is inconclusive on a delayed or congested
-                // path. Only a transport-confirmed close may retire the
-                // session and its other tunnels.
-                if !super::liveness::is_live(active.connection()).await && active.connection().close_reason().is_some()
-                {
-                    active.invalidate(b"tunnel setup failed");
+            let message = match failure {
+                Ok(Err(SetupFailure::Refused)) => {
+                    "the peer refused the service; check its exposure and runtime version"
                 }
-                crate::control::PEER_SESSION_FAILED
+                Ok(Err(SetupFailure::PeerAtCapacity)) => crate::control::PEER_AT_CAPACITY,
+                _ => {
+                    // A missed probe is inconclusive on a delayed or congested
+                    // path. Only a transport-confirmed close may retire the
+                    // session and its other tunnels.
+                    if !super::liveness::is_live(active.connection()).await
+                        && active.connection().close_reason().is_some()
+                    {
+                        active.invalidate(b"tunnel setup failed");
+                    }
+                    crate::control::PEER_SESSION_FAILED
+                }
             };
             let _reply = crate::control::write_reply(
                 &mut local,

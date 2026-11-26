@@ -17,6 +17,7 @@ pub(super) async fn connect(
     tunnels: &TunnelRuntime,
     tunnel_tasks: &mut tokio::task::JoinSet<()>,
 ) {
+    while tunnel_tasks.try_join_next().is_some() {}
     let admitted = admit(target, local_state, active, tunnels, tunnel_tasks);
     let refusal = match (admitted, crate::tunnel_policy::decoded_name(name)) {
         (Ok((connection, global, peer)), Ok(name)) => {

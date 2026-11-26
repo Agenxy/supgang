@@ -26,6 +26,7 @@ pub(super) fn spawn(
     requester: NodeId,
     authorization: &SessionAuthorization,
 ) {
+    while tasks.try_join_next().is_some() {}
     if let Some(context) = context
         && tasks.len() < 4
     {

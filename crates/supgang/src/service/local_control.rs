@@ -428,6 +428,8 @@ async fn handle_control(
                             received_datagrams: statistics.udp_rx.datagrams,
                             sent_datagrams: statistics.udp_tx.datagrams,
                             path: Some((&statistics.path).into()),
+                            active_tunnels: Some(connection.active_tunnels()),
+                            tunnel_limit: Some(connection.tunnel_limit()),
                         }
                     });
                 }

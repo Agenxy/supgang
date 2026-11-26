@@ -54,6 +54,7 @@ fn connect_exit_codes_distinguish_transient_failure_from_refusal() {
     assert_eq!(connect_failure_code(&unresponsive), ExitCode::from(75));
     for message in [
         "the peer refused the service; check its exposure and runtime version",
+        control::PEER_AT_CAPACITY,
         "the peer is revoked; tunnels to it are refused",
         "every tunnel allowed to this peer is in use",
         "no known peer with that name",
@@ -65,18 +66,23 @@ fn connect_exit_codes_distinguish_transient_failure_from_refusal() {
 
 #[test]
 fn connect_returns_any_other_refusal_at_once() {
-    let attempts = Cell::new(0);
-    let result: Result<(), _> = wait_for_peer(
-        Instant::now() + Duration::from_secs(5),
-        SHORT,
-        || {
-            attempts.set(attempts.get() + 1);
-            Err("the peer is revoked; tunnels to it are refused".to_owned())
-        },
-        || {},
-    );
-    assert!(result.is_err());
-    assert_eq!(attempts.get(), 1);
+    for refusal in [
+        "the peer is revoked; tunnels to it are refused",
+        control::PEER_AT_CAPACITY,
+    ] {
+        let attempts = Cell::new(0);
+        let result: Result<(), _> = wait_for_peer(
+            Instant::now() + Duration::from_secs(5),
+            SHORT,
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(refusal.to_owned())
+            },
+            || {},
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1, "{refusal}");
+    }
 }
 
 #[test]

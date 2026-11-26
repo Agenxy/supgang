@@ -277,6 +277,9 @@ pub fn exposures(directory: &Path, json: bool, output: &mut dyn Write, error: &m
                     "Limits: {} per peer, {} total, {} seconds idle.",
                     limits.per_peer, limits.total, limits.idle_seconds
                 )?;
+                if let (Some(active), Some(active_total)) = (limits.active_tunnels, limits.active_total) {
+                    writeln!(output, "Active tunnels: {active}/{active_total}.")?;
+                }
                 if let Some(active_total) = limits.active_total.filter(|active| *active != limits.total) {
                     writeln!(
                         output,

@@ -27,6 +27,7 @@ pub(super) fn spawn(
     authorization: &SessionAuthorization,
     events: &tokio::sync::mpsc::Sender<PeerEvent>,
 ) {
+    while tasks.try_join_next().is_some() {}
     if let Some(context) = context
         && tasks.len() < 4
     {

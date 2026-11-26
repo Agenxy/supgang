@@ -16,8 +16,8 @@ use crate::ids::TransportKeyId;
 /// Supgang's TLS application protocol identifier.
 pub const ALPN: &[u8] = b"supgang/1";
 /// Maximum accepted bidirectional streams on one peer connection: every
-/// tunnel a peer may hold, plus the sync and update streams.
-pub const MAX_BIDIRECTIONAL_STREAMS: u32 = 66;
+/// tunnel a peer may hold, plus sync, update, and bounded signing streams.
+pub const MAX_BIDIRECTIONAL_STREAMS: u32 = 70;
 /// Maximum accepted one-way control streams on one peer connection.
 pub const MAX_UNIDIRECTIONAL_STREAMS: u32 = 2;
 /// Maximum idle period before transport teardown.

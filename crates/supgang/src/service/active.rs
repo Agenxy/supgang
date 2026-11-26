@@ -168,7 +168,16 @@ impl ActiveConnection {
     }
 
     pub(super) fn has_tunnels(&self) -> bool {
-        self.tunnel_admission.available_permits() < self.tunnel_limit
+        self.active_tunnels() > 0
+    }
+
+    pub(super) fn active_tunnels(&self) -> usize {
+        self.tunnel_limit
+            .saturating_sub(self.tunnel_admission.available_permits())
+    }
+
+    pub(super) const fn tunnel_limit(&self) -> usize {
+        self.tunnel_limit
     }
 
     pub(super) const fn authorization(&self) -> &SessionAuthorization {

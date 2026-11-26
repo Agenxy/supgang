@@ -43,7 +43,7 @@ fn names_and_limits_reject_ambiguous_or_unbounded_requests() -> Result<(), Box<d
 }
 
 #[test]
-fn every_permitted_tunnel_fits_the_transport_stream_budget_beside_sync_and_update() {
+fn every_permitted_tunnel_fits_the_transport_stream_budget_beside_sync_update_and_signing() {
     let streams = usize::try_from(crate::transport::MAX_BIDIRECTIONAL_STREAMS).unwrap_or(0);
-    assert_eq!(streams, super::MAX_PER_PEER + 2);
+    assert_eq!(streams, super::MAX_PER_PEER + 6);
 }
