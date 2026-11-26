@@ -53,6 +53,12 @@ fn require_python_interpreter(root: &Path, script: &Path) -> Result<(), String> 
 }
 
 pub fn run(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
+    run_python_suite(root, output)?;
+    super::packaged_deps::verify_packaged_workspace(root, output, error)
+}
+
+/// Runs the non-privileged Python regression suite (`tools/check.py`) offline.
+pub fn run_python_suite(root: &Path, output: &mut dyn Write) -> Result<(), String> {
     writeln!(output, "Running owner-setup and gateway-probe regression tests.").map_err(|error| error.to_string())?;
     // These suites have no third-party Python dependencies and do not perform
     // privileged setup or touch live services. The script pins its Python floor.
@@ -67,7 +73,7 @@ pub fn run(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result
     if !status.success() {
         return Err("owner-setup or gateway-probe tests failed".to_owned());
     }
-    super::packaged_deps::verify_packaged_workspace(root, output, error)
+    Ok(())
 }
 
 #[cfg(test)]

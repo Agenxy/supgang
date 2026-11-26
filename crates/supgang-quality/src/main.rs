@@ -14,6 +14,7 @@ const MAX_SOURCE_LINES: usize = 700;
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 
 mod acceptance;
+mod ci_split;
 mod drift;
 mod gate_cache;
 mod installation;
@@ -84,10 +85,15 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
             policy(&root)?;
             writeln!(output, "Supgang repository policy passed.").map_err(|write_error| write_error.to_string())
         }
+        Some("docs") => ci_split::run_docs(&root, output, error),
+        Some("ci-core") => ci_split::run_ci_core(&root, output, error),
+        Some("ci-heavy") => ci_split::run_ci_heavy(&root, output, error),
+        Some("ci-package") => ci_split::run_ci_package(&root, output, error),
         Some("drift") => drift::run(&root, output),
         Some("packaged-deps") => packaged_deps::check_rehearsal_graph(&root, output, error),
         _ => Err(
-            "usage: cargo run --locked --package supgang-quality -- all|quick|policy|drift|packaged-deps".to_owned(),
+            "usage: cargo run --locked --package supgang-quality -- all|quick|policy|docs|ci-core|ci-heavy|ci-package|drift|packaged-deps"
+                .to_owned(),
         ),
     }
 }
