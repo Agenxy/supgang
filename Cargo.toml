@@ -1,16 +1,12 @@
 [workspace]
 members = ["crates/supgang", "crates/supgang-acl", "crates/supgang-cli", "crates/supgang-quality"]
-exclude = ["third_party/netwatch", "third_party/netlink-packet-core"]
+exclude = ["third_party/netwatch", "third_party/portmapper"]
 resolver = "3"
-
-[patch.crates-io]
-netwatch = { path = "third_party/netwatch" }
-netlink-packet-core = { path = "third_party/netlink-packet-core" }
 
 [workspace.package]
 version = "0.2.0-alpha.21"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 authors = ["Agenxy contributors"]
 license = "Apache-2.0"
 repository = "https://github.com/Agenxy/supgang"
@@ -36,7 +32,7 @@ minicbor = { version = "=2.3.0", default-features = false, features = ["alloc", 
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdh", "ecdsa", "std"] }
 rand_chacha = { version = "=0.3.1", default-features = false }
 nix = { version = "=0.31.3", default-features = false, features = ["net", "socket", "user"] }
-portmapper = { version = "=0.19.1", default-features = false }
+portmapper = { package = "supgang-portmapper", path = "third_party/portmapper", version = "=0.20.2", default-features = false }
 plist = { version = "=1.10.0", default-features = false, features = ["serde"] }
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
@@ -91,6 +87,12 @@ strip = "symbols"
 [profile.dev]
 overflow-checks = true
 panic = "unwind"
+
+[profile.dev.package.scrypt]
+opt-level = 2
+
+[profile.dev.package.salsa20]
+opt-level = 2
 
 # H20 LMS ceremony tests hash every leaf; optimize the core test binary and its
 # SHA-256 primitives while retaining debug assertions and overflow checks.

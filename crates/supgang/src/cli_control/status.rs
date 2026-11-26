@@ -18,8 +18,11 @@ struct StatusOutput {
     schema: &'static str,
     status: &'static str,
     version: &'static str,
+    commit: &'static str,
     running_version: Option<String>,
+    running_commit: Option<String>,
     version_note: Option<&'static str>,
+    update_notice: Option<crate::release::UpdateNotice>,
     name: String,
     hive_id: String,
     node_id: String,
@@ -86,8 +89,11 @@ fn render_status(
         schema: "supgang.status/v4",
         status: "ok",
         version: VERSION,
+        commit: crate::SOURCE_COMMIT,
         running_version: runtime.map(|value| value.version.clone()),
+        running_commit: runtime.and_then(|value| (!value.commit.is_empty()).then(|| value.commit.clone())),
         version_note: runtime.and_then(|value| crate::platform_service::observation::version_note(&value.version)),
+        update_notice: runtime.and_then(|value| value.update_notice.clone()),
         name: name.to_owned(),
         hive_id: hive_id.to_owned(),
         node_id: node_id.to_owned(),
@@ -126,12 +132,27 @@ fn render_status_human(result: &StatusOutput, output: &mut dyn Write) -> ExitCod
     }
     let header = writeln!(
         output,
-        "Hive: {}\nThis computer: {} [{}]\nService: {}",
+        "Version: {} ({})\nHive: {}\nThis computer: {} [{}]\nService: {}",
+        result.version,
+        crate::release::short_commit(result.commit),
         result.hive_id,
         result.name,
         result.node_id.chars().take(8).collect::<String>(),
         result.service
     );
+    if header.is_err() {
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    if let Some(notice) = &result.update_notice {
+        let label = if notice.kind == "update-available" {
+            "Update notice"
+        } else {
+            "Build notice"
+        };
+        if writeln!(output, "{label}: {}", notice.summary).is_err() {
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    }
     let runtime = result
         .listen
         .as_ref()
@@ -141,8 +162,7 @@ fn render_status_human(result: &StatusOutput, output: &mut dyn Write) -> ExitCod
         .zip(result.internet_reachability.as_deref())
         .zip(result.connection_recovery.as_deref())
         .zip(result.mode.as_deref());
-    if header.is_err()
-        || runtime.is_some_and(|((((((listen, active), known), mapping), reachability), recovery), mode)| {
+    if runtime.is_some_and(|((((((listen, active), known), mapping), reachability), recovery), mode)| {
             writeln!(
                 output,
                 "Role: {}\nListening: {listen}\nPeers connected now: {active} of {known}\nRouter mapping: {}\nInternet reachability: {}\nConnection recovery: {}",

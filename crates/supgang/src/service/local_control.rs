@@ -353,39 +353,49 @@ async fn handle_control(
         Ok(Ok(ControlRequest::Restart)) => {
             restart_reply(instance_id, restart_requested, is_supervised()).into_unchanged()
         }
-        Ok(Ok(ControlRequest::Status)) => ControlReply::Status {
-            value: ControlStatus {
-                version: env!("CARGO_PKG_VERSION").to_owned(),
-                process_id: std::process::id(),
-                startup_id: crate::control::startup_id(),
-                instance_id: instance_id.to_owned(),
-                restart_supported: is_supervised(),
-                name: local_contact
-                    .endpoint
-                    .record
-                    .display_name
-                    .as_ref()
-                    .map_or_else(|| "computer".to_owned(), ToString::to_string),
-                hive_id: local_state.identity().hive_id.to_string(),
-                node_id: local_state.identity().device.node_id().to_string(),
-                listen: listen.to_string(),
-                active_peers: active.len(),
-                known_peers: directory.entries().len(),
-                router_mapping: router_mapping.name().to_owned(),
-                internet_reachability: internet_reachability(
-                    local_contact,
-                    router_mapping,
-                    directory,
-                    local_state.identity().device.node_id(),
-                    unix_time().unwrap_or(0),
-                )
-                .to_owned(),
-                connection_recovery: "automatic-multi-path".to_owned(),
-                mode: if anchor_mode { "anchor" } else { "device" }.to_owned(),
-                member_count: local_state.member_count(),
-                event_count: local_state.event_count(),
-                recent_connections,
-            },
+        Ok(Ok(ControlRequest::Status)) => {
+            let now = unix_time().unwrap_or(0);
+            ControlReply::Status {
+                value: ControlStatus {
+                    version: config.release_identity.version().to_owned(),
+                    commit: config.release_identity.commit_str().to_owned(),
+                    process_id: std::process::id(),
+                    startup_id: crate::control::startup_id(),
+                    instance_id: instance_id.to_owned(),
+                    restart_supported: is_supervised(),
+                    name: local_contact
+                        .endpoint
+                        .record
+                        .display_name
+                        .as_ref()
+                        .map_or_else(|| "computer".to_owned(), ToString::to_string),
+                    hive_id: local_state.identity().hive_id.to_string(),
+                    node_id: local_state.identity().device.node_id().to_string(),
+                    listen: listen.to_string(),
+                    active_peers: active.len(),
+                    known_peers: directory.entries().len(),
+                    router_mapping: router_mapping.name().to_owned(),
+                    internet_reachability: internet_reachability(
+                        local_contact,
+                        router_mapping,
+                        directory,
+                        local_state.identity().device.node_id(),
+                        now,
+                    )
+                    .to_owned(),
+                    connection_recovery: "automatic-multi-path".to_owned(),
+                    mode: if anchor_mode { "anchor" } else { "device" }.to_owned(),
+                    member_count: local_state.member_count(),
+                    event_count: local_state.event_count(),
+                    recent_connections,
+                    update_notice: super::release_awareness::current_update_notice(
+                        &config.release_identity,
+                        active,
+                        directory,
+                        now,
+                    ),
+                },
+            }
         }
         .into_unchanged(),
         Ok(Ok(ControlRequest::Peers)) => match unix_time() {
@@ -396,6 +406,9 @@ async fn handle_control(
                     now,
                     cli_peer::running_local_row(local_contact, directory, now),
                 );
+                if let Some(this_computer) = value.this_computer.as_mut() {
+                    this_computer.release = Some(crate::release::ReleaseInfo::from(&config.release_identity));
+                }
                 for peer in &mut value.peers {
                     let connection = NodeId::from_str(&peer.node_id)
                         .ok()
@@ -404,6 +417,9 @@ async fn handle_control(
                             connection.close_reason().is_none() && connection.authorization().is_current(now)
                         });
                     peer.connected = Some(connection.is_some());
+                    peer.release = connection
+                        .and_then(ActiveConnection::peer_release)
+                        .map(crate::release::ReleaseInfo::from);
                     peer.connection = connection.map(|connection| {
                         let statistics = connection.stats();
                         crate::cli_peer_types::PeerConnection {
@@ -417,6 +433,8 @@ async fn handle_control(
                         }
                     });
                 }
+                value.update_notice =
+                    super::release_awareness::current_update_notice(&config.release_identity, active, directory, now);
                 ControlReply::Peers { value }
             }
             Err(error) => ControlReply::Error {

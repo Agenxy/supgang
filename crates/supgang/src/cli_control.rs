@@ -311,6 +311,16 @@ fn render_peers(
     if result.peers.is_empty() && writeln!(output, "No other computers are known.").is_err() {
         return ExitCode::from(EXIT_FAILURE);
     }
+    if let Some(notice) = &result.update_notice {
+        let label = if notice.kind == "update-available" {
+            "Update notice"
+        } else {
+            "Build notice"
+        };
+        if writeln!(output, "{label}: {}", notice.summary).is_err() {
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    }
     if !all && hidden > 0 && writeln!(output, "More addresses: supgang peers --all").is_err() {
         return ExitCode::from(EXIT_FAILURE);
     }

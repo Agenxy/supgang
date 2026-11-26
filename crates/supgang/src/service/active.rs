@@ -100,6 +100,8 @@ pub(super) struct ActiveConnection {
     draining: tokio::sync::watch::Sender<bool>,
     /// Why this service ended the connection, for the connection history.
     retired: Arc<std::sync::OnceLock<&'static [u8]>>,
+    /// Peer-reported release identity, held in memory only for this live session.
+    peer_release: Option<crate::release::ReleaseIdentity>,
 }
 
 impl ActiveConnection {
@@ -128,7 +130,16 @@ impl ActiveConnection {
             tunnel_limit: 4,
             draining,
             retired: Arc::new(std::sync::OnceLock::new()),
+            peer_release: None,
         }
+    }
+
+    pub(super) fn set_peer_release(&mut self, identity: crate::release::ReleaseIdentity) {
+        self.peer_release = Some(identity);
+    }
+
+    pub(super) const fn peer_release(&self) -> Option<&crate::release::ReleaseIdentity> {
+        self.peer_release.as_ref()
     }
 
     pub(super) const fn bind_authority_record(&mut self, record: &crate::record::EndpointRecord) {

@@ -3,16 +3,25 @@
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use supgang_core as _;
 
 struct TestDirectory(PathBuf);
 
+/// Tests in this binary share one process ID, and macOS clocks resolve only
+/// microseconds, so the counter keeps concurrent directories distinct.
+static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
 impl TestDirectory {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!("supgang-lms-nonterminal-{}-{nonce}", std::process::id()));
+        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "supgang-lms-nonterminal-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }
@@ -91,5 +100,69 @@ fn derive_public_refuses_nonterminal_input_and_state_dir() -> Result<(), Box<dyn
         .output()?;
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8(output.stderr)?.contains("takes no peer or state directory"));
+    Ok(())
+}
+
+#[test]
+fn share_ceremony_and_verify_refuse_nonterminal_and_state_dir() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = TestDirectory::new()?;
+    let a = directory.0.join("a");
+    let b = directory.0.join("b");
+    let c = directory.0.join("c");
+    std::fs::create_dir(&a)?;
+    std::fs::create_dir(&b)?;
+    std::fs::create_dir(&c)?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args([
+            "lms-share-ceremony",
+            "--medium-a",
+            a.to_str().ok_or("non-UTF-8 path")?,
+            "--medium-b",
+            b.to_str().ok_or("non-UTF-8 path")?,
+            "--medium-c",
+            c.to_str().ok_or("non-UTF-8 path")?,
+            "--i-confirm-offline",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("interactive owner terminal"));
+    assert!(!a.join("nc0-product-primary.share.age").exists());
+    assert!(!b.join("nc0-product-primary.share.age").exists());
+    assert!(!c.join("nc0-product-primary.share.age").exists());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args([
+            "--state-dir",
+            directory.0.to_str().ok_or("non-UTF-8 path")?,
+            "lms-share-verify",
+            "primary",
+            "--share",
+            a.to_str().ok_or("non-UTF-8 path")?,
+            "--share",
+            b.to_str().ok_or("non-UTF-8 path")?,
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("takes no peer or state directory"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
+        .args([
+            "lms-share-verify",
+            "primary",
+            "--share",
+            a.to_str().ok_or("non-UTF-8 path")?,
+            "--share",
+            b.to_str().ok_or("non-UTF-8 path")?,
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8(output.stderr)?.contains("interactive owner terminal"));
     Ok(())
 }

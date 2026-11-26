@@ -116,9 +116,8 @@ pub(super) fn tree(
     if target.is_some_and(|q| q >= leaves) {
         return Err(VaultError::Corrupt);
     }
-    let sibling_nodes: Vec<u32> = target
-        .map(|q| (0..height).map(|level| ((leaves + q) >> level) ^ 1).collect())
-        .unwrap_or_default();
+    let sibling_nodes: Vec<u32> =
+        target.map_or_default(|q| (0..height).map(|level| ((leaves + q) >> level) ^ 1).collect());
     let mut path: Vec<Option<[u8; 32]>> = vec![None; sibling_nodes.len()];
     let mut stack: Vec<(u32, [u8; 32])> = Vec::with_capacity(usize::from(height) + 1);
     for q in 0..leaves {

@@ -12,6 +12,7 @@ mod agent_sign;
 mod forward;
 mod lossy_path;
 mod production;
+mod release_awareness;
 mod scenarios;
 mod sim_harness;
 
@@ -156,7 +157,7 @@ fn interface_refresh_preserves_owner_declared_router_mapping() -> Result<(), Box
             .iter()
             .any(|candidate| candidate.address() == old_local)
     );
-    assert!(config.candidates.len() <= super::MAX_CANDIDATES);
+    assert!(config.candidates.len() <= crate::candidate::MAX_CANDIDATES);
     Ok(())
 }
 
@@ -167,7 +168,7 @@ fn automatic_mode_keeps_a_fixed_interface_candidate_ceiling() -> Result<(), Box<
         .map(|host| SocketAddr::from(([10, 0, 0, host], 4_433)))
         .collect::<Vec<_>>();
     let config = ServiceConfig::new(name(), listen, &local, &[])?.with_automatic_interface_refresh(true);
-    assert_eq!(config.candidates.len(), super::MAX_CANDIDATES);
+    assert_eq!(config.candidates.len(), crate::candidate::MAX_CANDIDATES);
     Ok(())
 }
 

@@ -4,10 +4,10 @@
 //! secret `M` and a fixed product-root role (`primary` or `recovery`).
 
 use hkdf::Hkdf;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::{LmsPublic, identity};
+use super::{EscrowPublic, LmsPublic, escrow, identity};
 use crate::vault::{VaultError, lms_rfc};
 
 /// Required byte length of an NC0 product-root master secret `M`.
@@ -156,6 +156,57 @@ pub const fn next_restore_q(highest_logged_q: u32) -> Result<u32, VaultError> {
     Ok(next_q)
 }
 
+/// Derive an NC0 H20/W1 root and burn `q = 0` on its known-answer signature.
+///
+/// Derives `(SEED, I)` via HKDF-SHA256, computes `T[1]` and the `q = 0` path
+/// in one streaming pass, verifies the signature, and returns public data only.
+///
+/// # Errors
+/// Refuses any master length other than 32 bytes, CSPRNG failure, treehash
+/// failure, or signature verification failure.
+pub fn derive_and_known_answer(
+    master: &[u8],
+    role: RootRole,
+    progress: impl FnMut(u32, u32),
+) -> Result<EscrowPublic, VaultError> {
+    let derived = derive_seed(master, role)?;
+    let mut randomizer = Zeroizing::new([0_u8; 32]);
+    getrandom::fill(randomizer.as_mut()).map_err(std::io::Error::other)?;
+    let (root, path) = lms_rfc::tree(
+        derived.seed(),
+        derived.id(),
+        lms_rfc::HEIGHT,
+        lms_rfc::WIDTH,
+        Some(0),
+        progress,
+    )?;
+    let public = identity(lms_rfc::public_key(derived.id(), &root));
+    let digest = escrow::answer_digest(role.root_name(), &public.public_key);
+    let signature = Zeroizing::new(lms_rfc::sign_with_path(
+        derived.seed(),
+        derived.id(),
+        0,
+        &digest,
+        &randomizer,
+        &path,
+    )?);
+    if !lms_rfc::verify_fixed(&public.public_key, &digest, &signature) {
+        return Err(VaultError::Corrupt);
+    }
+    Ok(EscrowPublic {
+        identity: public,
+        signature_sha256: hex::encode(Sha256::digest(signature.as_slice())),
+        next_q: 1,
+    })
+}
+
+#[cfg(test)]
+pub fn derive_public_h5_for_test(master: &[u8], role: RootRole) -> Result<LmsPublic, VaultError> {
+    let derived = derive_seed(master, role)?;
+    let (root, _) = lms_rfc::tree(derived.seed(), derived.id(), 5, 1, None, |_, _| {})?;
+    Ok(identity(lms_rfc::public_key(derived.id(), &root)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,49 +229,27 @@ mod tests {
     }
 
     #[test]
-    fn kat_primary_okm_t1_and_pub56_sha256() -> Result<(), Box<dyn std::error::Error>> {
-        let master = test_master();
-
+    fn kat_primary_okm() -> Result<(), Box<dyn std::error::Error>> {
         // Labs spec rev 2 KAT for TEST master 000102..1f (second-family check).
-        let primary_okm = derive_okm(&master, RootRole::Primary)?;
+        // The H20 public key and fingerprint KAT is crates/supgang-cli/tests/lms_kdf_kat.rs,
+        // in its own test binary so its long treehash never shares CPU with timing tests.
+        let okm = derive_okm(&test_master(), RootRole::Primary)?;
         assert_eq!(
-            hex::encode(primary_okm.as_ref()),
+            hex::encode(okm.as_ref()),
             "46489c0c98db7f1e9ea6397f9f7be802bb06b28582991073a12fee790ab3ea16e9042da9345063a411cffea9be4b6e0b"
-        );
-        let primary_public = derive_public(&master, RootRole::Primary, |_, _| {})?;
-        assert_eq!(primary_public.public_key.get(..8), Some(&[0, 0, 0, 8, 0, 0, 0, 1][..]));
-        assert_eq!(primary_public.public_key.get(8..24), primary_okm.get(32..48));
-        assert_eq!(
-            hex::encode(primary_public.public_key.get(24..56).ok_or("short pub56")?),
-            "b8547249f0f57763fbe1db67565b1d65c387ba95e5b902f1ae32e74dd453d57e"
-        );
-        assert_eq!(
-            primary_public.fingerprint,
-            "e150742e94bff4a7ae2c6b41e8367c19162127e166a76cc3e4985984cd202932"
         );
         Ok(())
     }
 
     #[test]
-    fn kat_recovery_okm_t1_and_pub56_sha256() -> Result<(), Box<dyn std::error::Error>> {
-        let master = test_master();
-
+    fn kat_recovery_okm() -> Result<(), Box<dyn std::error::Error>> {
         // Labs spec rev 2 KAT for TEST master 000102..1f (second-family check).
-        let recovery_okm = derive_okm(&master, RootRole::Recovery)?;
+        // The H20 public key and fingerprint KAT is crates/supgang-cli/tests/lms_kdf_kat.rs,
+        // in its own test binary so its long treehash never shares CPU with timing tests.
+        let okm = derive_okm(&test_master(), RootRole::Recovery)?;
         assert_eq!(
-            hex::encode(recovery_okm.as_ref()),
+            hex::encode(okm.as_ref()),
             "748c9808af52a1c99b2397f74c7cf6456f85e2b20f3e82b5e96d7348dc25901657f644285f666d1cca75c9726a84d5d4"
-        );
-        let recovery_public = derive_public(&master, RootRole::Recovery, |_, _| {})?;
-        assert_eq!(recovery_public.public_key.get(..8), Some(&[0, 0, 0, 8, 0, 0, 0, 1][..]));
-        assert_eq!(recovery_public.public_key.get(8..24), recovery_okm.get(32..48));
-        assert_eq!(
-            hex::encode(recovery_public.public_key.get(24..56).ok_or("short pub56")?),
-            "a67c41713d9e1ca9f2ff8b21ee788d96bda1f03234d72141af3e92ddedb9b465"
-        );
-        assert_eq!(
-            recovery_public.fingerprint,
-            "dda58b9612c73e99e50f64285587817f8ee2e445000534782188029d2859d3ab"
         );
         Ok(())
     }

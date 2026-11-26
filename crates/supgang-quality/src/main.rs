@@ -17,8 +17,10 @@ mod acceptance;
 mod drift;
 mod gate_cache;
 mod installation;
-mod vendored_netlink;
+mod package_verify;
+mod packaged_deps;
 mod vendored_netwatch;
+mod vendored_portmapper;
 
 fn main() -> ExitCode {
     let mut output = io::stdout().lock();
@@ -50,9 +52,11 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
                 if missed.is_empty() {
                     continue;
                 }
-                if missed.len() == cache.packages().count() {
+                if missed.len() == cache.packages().count() && !matches!(stage, gate_cache::Stage::Format) {
                     run_quality_stage(&root, stage, None, output, error)?;
                 } else {
+                    // Format runs per workspace package so `cargo fmt --all` does
+                    // not traverse excluded third_party path dependencies.
                     for package in &missed {
                         run_quality_stage(&root, stage, Some(package), output, error)?;
                     }
@@ -81,7 +85,10 @@ fn execute(mode: Option<&OsStr>, output: &mut dyn Write, error: &mut dyn Write) 
             writeln!(output, "Supgang repository policy passed.").map_err(|write_error| write_error.to_string())
         }
         Some("drift") => drift::run(&root, output),
-        _ => Err("usage: cargo run --locked --package supgang-quality -- all|quick|policy|drift".to_owned()),
+        Some("packaged-deps") => packaged_deps::check_rehearsal_graph(&root, output, error),
+        _ => Err(
+            "usage: cargo run --locked --package supgang-quality -- all|quick|policy|drift|packaged-deps".to_owned(),
+        ),
     }
 }
 
@@ -191,7 +198,7 @@ fn workspace_root() -> Result<PathBuf, String> {
 
 fn policy(root: &Path) -> Result<(), String> {
     vendored_netwatch::check(root)?;
-    vendored_netlink::check(root)?;
+    vendored_portmapper::check(root)?;
     let eff_words = fs::read(root.join("crates/supgang/src/eff_large_wordlist.txt"))
         .map_err(|error| format!("EFF large wordlist: {error}"))?;
     vendored_netwatch::verify_hash(
@@ -267,7 +274,7 @@ fn inspect_tree(root: &Path, directory: &Path) -> Result<(), String> {
             ));
         }
         if file_type.is_dir() {
-            if path == root.join("third_party/netwatch") || path == root.join("third_party/netlink-packet-core") {
+            if path == root.join("third_party/netwatch") || path == root.join("third_party/portmapper") {
                 // This upstream source has its own lint policy. The exact-source
                 // check above covers the whole tree instead.
                 continue;
@@ -478,8 +485,6 @@ const REVIEWED_DUPLICATE_IDENTITIES: &[&str] = &[
     "serdect@0.4.3",
     "sha2@0.10.9",
     "sha2@0.11.0",
-    "spin@0.9.9",
-    "spin@0.10.1",
     "bitflags@1.3.2",
     "bitflags@2.13.2",
     "getrandom@0.2.17",

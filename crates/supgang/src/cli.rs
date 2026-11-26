@@ -47,10 +47,12 @@ struct DoctorOutput {
     schema: &'static str,
     status: &'static str,
     version: &'static str,
+    commit: &'static str,
     strict_mode: bool,
     public_dependencies: u8,
     checks: Vec<DoctorCheck>,
     custody: doctor::CustodyOutput,
+    update_notice: Option<crate::release::UpdateNotice>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,7 +78,6 @@ struct JoinOutput {
 }
 
 /// Parses the process arguments and writes output to the process streams.
-#[must_use]
 pub fn run_from_env() -> ExitCode {
     // Do not hold global stream locks: the MCP subcommand owns stdio for its
     // asynchronous JSON-RPC transport.
@@ -88,7 +89,6 @@ pub fn run_from_env() -> ExitCode {
 /// Executes the CLI against caller-provided streams.
 ///
 /// This entry point keeps tests and embedders independent from global output.
-#[must_use]
 pub fn run<I, T>(arguments: I, output: &mut dyn Write, error: &mut dyn Write) -> ExitCode
 where
     I: IntoIterator<Item = T>,
@@ -125,7 +125,13 @@ where
 
     match cli.command {
         Some(Command::Capabilities) => unreachable!("capabilities returns before state lookup"),
-        Some(Command::LmsKeygen { .. } | Command::LmsEscrowVerify { .. } | Command::LmsDerivePublic { .. }) => {
+        Some(
+            Command::LmsKeygen { .. }
+            | Command::LmsEscrowVerify { .. }
+            | Command::LmsDerivePublic { .. }
+            | Command::LmsShareCeremony { .. }
+            | Command::LmsShareVerify { .. },
+        ) => {
             unreachable!("offline LMS commands return before state lookup")
         }
         Some(Command::Connect { peer, service }) => {
@@ -620,6 +626,15 @@ pub(crate) fn render_error(json: bool, message: &str, output: &mut dyn Write, er
     } else {
         rendered
     }
+}
+
+/// Test-only entry point exercising the share-ceremony medium verification
+/// prompt retry loop over a real terminal without running H20/W1 keygen.
+#[doc(hidden)]
+pub fn run_lms_share_verify_prompt_probe(label: &str, path: &std::path::Path) -> ExitCode {
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    crate::cli_lms_share_ceremony::run_verify_prompt_probe(label, path, &mut stdout, &mut stderr)
 }
 
 #[cfg(test)]

@@ -67,24 +67,7 @@ pub fn run(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result
     if !status.success() {
         return Err("owner-setup or gateway-probe tests failed".to_owned());
     }
-    // Cargo's temporary registry resolves this exact package set without
-    // publishing or silently building against workspace path dependencies.
-    super::run_cargo(
-        root,
-        &[
-            "package",
-            "--locked",
-            "--allow-dirty",
-            "--package",
-            "supgang-acl",
-            "--package",
-            "supgang-core",
-            "--package",
-            "supgang",
-        ],
-        output,
-        error,
-    )
+    super::packaged_deps::verify_packaged_workspace(root, output, error)
 }
 
 #[cfg(test)]

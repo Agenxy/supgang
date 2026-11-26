@@ -23,7 +23,9 @@ mod escrow;
 mod kdf;
 mod presence;
 pub use escrow::{EscrowKey, EscrowPublic, generate_escrow, verify_escrow, verify_escrow_public};
-pub use kdf::{MASTER_LEN, OKM_LEN, RESTORE_Q_BLOCK, RootRole, derive_public, next_restore_q};
+#[cfg(test)]
+pub use kdf::derive_public_h5_for_test;
+pub use kdf::{MASTER_LEN, OKM_LEN, RESTORE_Q_BLOCK, RootRole, derive_and_known_answer, derive_public, next_restore_q};
 pub(super) use presence::PresenceWrap;
 use presence::{open_presence, seal_presence};
 
