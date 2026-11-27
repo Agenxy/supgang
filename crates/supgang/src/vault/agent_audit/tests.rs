@@ -4,7 +4,7 @@ use crate::{agent_sign_protocol::SignRequest, artifact, ids::NodeId, vault::Vaul
 
 #[test]
 fn nonce_replay_and_purpose_budget_refuse_before_signing() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
     create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false, None)?;
     let mut request = SignRequest {
@@ -34,7 +34,7 @@ fn nonce_replay_and_purpose_budget_refuse_before_signing() -> Result<(), Box<dyn
 
 #[test]
 fn authenticated_denials_have_a_separate_bounded_budget() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
     create_reserved(directory.path(), requester, "build", b"policy", &[3; 32], false, None)?;
     let mut request = SignRequest {
@@ -70,7 +70,7 @@ fn authenticated_denials_have_a_separate_bounded_budget() -> Result<(), Box<dyn 
 
 #[test]
 fn linked_segments_verify_and_tampering_refuses() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
     let first = Record::new(
         1,
@@ -119,7 +119,7 @@ fn linked_segments_verify_and_tampering_refuses() -> Result<(), Box<dyn std::err
 
 #[test]
 fn creation_limits_count_each_member_and_the_hive() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     for member in 1..=4 {
         let requester = NodeId::from_bytes([member; 32]);
         for index in 0..8 {
@@ -155,7 +155,7 @@ fn creation_limits_count_each_member_and_the_hive() -> Result<(), Box<dyn std::e
 
 #[test]
 fn future_audit_time_refuses_further_effects() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let requester = NodeId::from_bytes([1; 32]);
     let mut record = Record::new(
         1,

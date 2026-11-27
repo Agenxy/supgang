@@ -20,7 +20,7 @@ fn unreachable_current_records_do_not_delay_the_only_usable_historical_family() 
         }
     }
     let _routes = crate::network::simulated::install(std::sync::Arc::new(BothFamiliesRouted));
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut publisher = state::initialize(&state_path)?;
     let transport = TransportIdentity::generate()?;

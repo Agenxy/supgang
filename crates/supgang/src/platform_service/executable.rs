@@ -192,7 +192,7 @@ mod tests {
     fn replacing_an_installed_binary_uses_a_fresh_inode_and_keeps_the_old_open_file()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::{io::Read as _, os::unix::fs::MetadataExt as _};
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let source_path = temporary.path().join("source");
         let target = temporary.path().join("supgang");
         fs::write(&source_path, b"new binary")?;
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn installed_executable_requires_exact_owner_only_mode() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let executable = temporary.path().join("supgang");
         fs::write(&executable, b"binary")?;
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn executable_copy_is_bounded_and_exact() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let source_path = temporary.path().join("source");
         let destination_path = temporary.path().join("destination");
         fs::write(&source_path, vec![7_u8; 128 * 1024])?;

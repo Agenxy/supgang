@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn successful_routes_survive_restart_but_require_pin_and_private_context() -> Result<(), Box<dyn std::error::Error>>
     {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let local = DeviceIdentity::generate()?;
         let peer = DeviceIdentity::generate()?.node_id();
         let pin = TransportKeyId::from_bytes([7; 32]);

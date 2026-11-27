@@ -104,7 +104,7 @@ fn independent_recovery_is_required_and_recovery_forks_use_the_pre_rotation_key(
 fn session_history_bound_and_file_corruption_fail_closed() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut participants = machines(&f.root, &step, &[1], directory.path())?;
     let machine = participants.values_mut().next().ok_or(Error::Invalid)?;
     for index in 0..MAX_RECORDS {

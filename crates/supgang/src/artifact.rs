@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn artifact_round_trips_and_never_overwrites() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("request.sg");
         write_new(&path, b"bounded", 32)?;
         assert_eq!(read(&path, 32)?, b"bounded");
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn permissive_artifact_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("request.sg");
         write_new(&path, b"bounded", 32)?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn fifo_is_rejected_without_waiting_for_a_writer() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("pipe");
         let status = Command::new("mkfifo").arg(&path).status()?;
         assert!(status.success());

@@ -336,7 +336,7 @@ fn non_authority_member_cannot_use_local_agent_key_path() -> Result<(), Box<dyn 
         membership::{MAX_MEMBERSHIP_LIFETIME_SECONDS, MembershipRoles},
     };
 
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let founder_path = temporary.path().join("founder");
     let joiner_path = temporary.path().join("joiner");
     let mut founder = state::initialize(&founder_path)?;

@@ -116,7 +116,7 @@ fn member_keygen_control_request_rejects_trailing_or_changed_length() -> Result<
 
 #[test]
 fn listener_rejects_symlink_and_cleans_only_its_socket() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_directory = temporary.path().join("state");
     fs::create_dir(&state_directory)?;
     fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
@@ -141,7 +141,7 @@ fn listener_rejects_symlink_and_cleans_only_its_socket() -> Result<(), Box<dyn s
 
 #[test]
 fn client_treats_a_safe_stale_socket_as_service_stopped() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_directory = temporary.path().join("state");
     fs::create_dir(&state_directory)?;
     fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
@@ -159,7 +159,7 @@ fn client_treats_a_safe_stale_socket_as_service_stopped() -> Result<(), Box<dyn 
 fn tunnel_setup_gives_up_at_its_callers_deadline() -> Result<(), Box<dyn std::error::Error>> {
     // `connect` retries setup while a peer reconnects; a retry that starts
     // just before its deadline must not then wait a full setup timeout.
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_directory = temporary.path().join("state");
     fs::create_dir(&state_directory)?;
     fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
@@ -195,7 +195,7 @@ fn tunnel_setup_gives_up_at_its_callers_deadline() -> Result<(), Box<dyn std::er
 fn a_reply_that_trickles_in_cannot_stretch_the_setup_deadline() -> Result<(), Box<dyn std::error::Error>> {
     // A per-read timeout would restart with every byte; the deadline must not.
     use std::io::{Read, Write};
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_directory = temporary.path().join("state");
     fs::create_dir(&state_directory)?;
     fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;
@@ -238,7 +238,7 @@ fn a_service_that_accepts_but_never_answers_is_reported_as_unresponsive() -> Res
     // A heavily loaded computer can leave the service unscheduled after the
     // kernel has accepted the connection. The owner must be told that, within
     // the bound, rather than see a generic socket failure.
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_directory = temporary.path().join("state");
     fs::create_dir(&state_directory)?;
     fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;

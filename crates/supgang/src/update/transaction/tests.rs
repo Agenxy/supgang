@@ -3,7 +3,7 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn cancelled_caller_cannot_release_live_work_or_its_input() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let incoming = crate::update::incoming_bundle(&state)?;

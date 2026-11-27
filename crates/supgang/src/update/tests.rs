@@ -121,8 +121,8 @@ fn metadata_description(bytes: &[u8]) -> Result<Metafile, Box<dyn std::error::Er
 }
 
 pub(super) fn signed_repository() -> Result<SignedRepository, Box<dyn std::error::Error>> {
-    let metadata = tempfile::tempdir()?;
-    let targets_directory = tempfile::tempdir()?;
+    let metadata = crate::storage::test_tempdir()?;
+    let targets_directory = crate::storage::test_tempdir()?;
     let target_name = format!("supgang-9999.0.0-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let target_path = targets_directory.path().join(&target_name);
     fs::copy(fixture_executable()?, &target_path)?;
@@ -206,9 +206,9 @@ pub(super) fn signed_repository() -> Result<SignedRepository, Box<dyn std::error
 }
 
 fn repository_with_root_rotation(seed: u8, version: &str) -> Result<SignedRepository, Box<dyn std::error::Error>> {
-    let metadata = tempfile::tempdir()?;
-    let targets_directory = tempfile::tempdir()?;
-    let trust = tempfile::tempdir()?;
+    let metadata = crate::storage::test_tempdir()?;
+    let targets_directory = crate::storage::test_tempdir()?;
+    let trust = crate::storage::test_tempdir()?;
     let target_name = format!("supgang-{version}-{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let target_path = targets_directory.path().join(&target_name);
     fs::copy(fixture_executable()?, &target_path)?;
@@ -363,7 +363,7 @@ fn target_names_bind_version_platform_and_architecture() -> Result<(), Box<dyn s
 
 #[test]
 fn trust_root_is_local_only_and_rejects_invalid_metadata() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     let initialized = crate::state::initialize(&state)?;
     drop(initialized);
@@ -379,7 +379,7 @@ fn trust_root_is_local_only_and_rejects_invalid_metadata() -> Result<(), Box<dyn
 
 #[test]
 fn update_status_is_plain_and_empty_before_trust_is_established() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let report = status(&state)?;
@@ -393,7 +393,7 @@ fn update_status_is_plain_and_empty_before_trust_is_established() -> Result<(), 
 
 #[test]
 fn update_status_rejects_a_corrupted_pinned_root() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let updates = super::updates_directory(&state, true)?;
@@ -406,7 +406,7 @@ fn update_status_rejects_a_corrupted_pinned_root() -> Result<(), Box<dyn std::er
 
 #[test]
 fn update_status_rejects_a_corrupted_pending_record() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let executable = temporary.path().join("supgang");
@@ -423,7 +423,7 @@ fn update_status_rejects_a_corrupted_pending_record() -> Result<(), Box<dyn std:
 
 #[test]
 fn local_reinstall_refreshes_changed_bytes_at_the_same_version() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let executable = temporary.path().join("supgang");
@@ -440,7 +440,7 @@ fn local_reinstall_refreshes_changed_bytes_at_the_same_version() -> Result<(), B
 
 #[test]
 fn a_zero_length_crash_temporary_cannot_wedge_the_prepared_outbox() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     let source = temporary.path().join("source.bundle");
@@ -459,7 +459,7 @@ fn a_zero_length_crash_temporary_cannot_wedge_the_prepared_outbox() -> Result<()
 #[tokio::test]
 async fn real_tuf_repository_is_verified_staged_and_rollback_protected() -> Result<(), Box<dyn std::error::Error>> {
     let repository = signed_repository()?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     initialize_active_fixture(&state, temporary.path())?;
@@ -518,7 +518,7 @@ async fn rotated_root_is_the_restart_anchor_and_retired_key_forks_are_rejected()
 -> Result<(), Box<dyn std::error::Error>> {
     let legitimate = repository_with_root_rotation(8, "9998.0.0")?;
     let retired_key_fork = repository_with_root_rotation(9, "9999.0.0")?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     initialize_active_fixture(&state, temporary.path())?;
@@ -560,7 +560,7 @@ async fn rotated_root_is_the_restart_anchor_and_retired_key_forks_are_rejected()
 #[test]
 fn missing_promoted_root_state_fails_closed_without_bootstrap_fallback() -> Result<(), Box<dyn std::error::Error>> {
     let repository = signed_repository()?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     trust_root(&state, &repository.root)?;
@@ -573,7 +573,7 @@ fn missing_promoted_root_state_fails_closed_without_bootstrap_fallback() -> Resu
 #[test]
 fn interrupted_initial_root_pin_can_resume_only_with_the_same_root() -> Result<(), Box<dyn std::error::Error>> {
     let repository = signed_repository()?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     trust_root(&state, &repository.root)?;
@@ -588,7 +588,7 @@ fn interrupted_initial_root_pin_can_resume_only_with_the_same_root() -> Result<(
 fn root_authorized_bundle_crosses_real_quic_and_is_independently_verified() -> Result<(), Box<dyn std::error::Error>> {
     crate::transport::build_runtime()?.block_on(async {
         let repository = signed_repository()?;
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("receiver-state");
         drop(crate::state::initialize(&state)?);
         initialize_active_fixture(&state, temporary.path())?;

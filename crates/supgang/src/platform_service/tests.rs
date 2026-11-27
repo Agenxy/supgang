@@ -11,7 +11,7 @@ use super::wait_for_control;
 fn definition_replacement_is_atomic_mode_0600_and_leaves_no_temporary_file() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Read as _;
     use std::os::unix::fs::MetadataExt as _;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("service");
     super::write_atomic(&path, b"old definition")?;
     let mut old = fs::File::open(&path)?;
@@ -54,7 +54,7 @@ fn bootout_that_never_disappears_fails_within_its_bound() {
 
 #[test]
 fn stop_wait_retries_a_socket_closing_during_handoff() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_directory = temporary.path().join("state");
     fs::create_dir(&state_directory)?;
     fs::set_permissions(&state_directory, fs::Permissions::from_mode(0o700))?;

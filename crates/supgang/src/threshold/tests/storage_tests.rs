@@ -25,7 +25,7 @@ impl SessionStore for FailStore {
 fn consumption_is_durable_before_share_computation_and_crash_keeps_lock() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let output = f.root.outputs.first().ok_or(Error::Invalid)?;
     let binding = Binding {
         hive: step.hive,
@@ -89,7 +89,7 @@ fn failed_consumption_write_releases_no_share_and_poisons_the_session() -> TestR
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
     let output = f.root.outputs.first().ok_or(Error::Invalid)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let file = FileSessionStore::open(
         directory.path().join("state"),
         Binding {
@@ -135,7 +135,7 @@ fn failed_consumption_write_releases_no_share_and_poisons_the_session() -> TestR
 fn restart_returns_cached_share_and_preserves_permanent_predecessor_lock() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut original = machines(&f.root, &step, &[1, 2], directory.path())?;
     let package = prepare(&f.root, &step, &mut original, 100)?;
     let before = finish(&f.root, &step, &mut original, &package, 101)?;
@@ -158,7 +158,7 @@ fn restart_returns_cached_share_and_preserves_permanent_predecessor_lock() -> Te
 fn restarted_unsigned_attempt_burns_nonces_and_rejects_clock_rollback() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut original = machines(&f.root, &step, &[1, 2], directory.path())?;
     let package = prepare(&f.root, &step, &mut original, 100)?;
     drop(original);
@@ -183,7 +183,7 @@ fn restarted_unsigned_attempt_burns_nonces_and_rejects_clock_rollback() -> TestR
 #[test]
 fn store_refuses_parallel_ownership_other_scope_and_restored_old_group_share() -> TestResult {
     let f = fixture(3)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let binding = Binding {
         hive: f.chain.hive(),
         group: f.root.descriptor()?.clone(),

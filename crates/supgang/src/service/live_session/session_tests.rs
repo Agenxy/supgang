@@ -108,7 +108,7 @@ async fn connection_pair(
 #[test]
 fn follow_up_sync_proves_either_canonical_direction_and_rejects_close() -> Result<(), Box<dyn std::error::Error>> {
     transport::build_runtime()?.block_on(async {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let local = state::initialize(temporary.path().join("state"))?;
         let root = local.identity().root_verifying_key;
         let page = SyncPage {
@@ -166,7 +166,7 @@ fn follow_up_sync_proves_either_canonical_direction_and_rejects_close() -> Resul
 #[test]
 fn replacement_proof_preserves_service_and_update_streams_before_sync() -> Result<(), Box<dyn std::error::Error>> {
     transport::build_runtime()?.block_on(async {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let local = state::initialize(temporary.path().join("state"))?;
         let root = local.identity().root_verifying_key;
         let page = SyncPage {
@@ -262,7 +262,7 @@ impl RejectedDurableSnapshot {
 fn duplicate_stale_and_capacity_rejections_precede_durable_exchange_effects() -> Result<(), Box<dyn std::error::Error>>
 {
     transport::build_runtime()?.block_on(async {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let mut local_state = state::initialize(&state_path)?;
         let local_transport = TransportIdentity::generate()?;

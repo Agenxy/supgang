@@ -24,7 +24,7 @@ fn contact(
 
 #[test]
 fn current_local_contact_is_a_dial_hint_before_any_connection() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let mut founder = state::initialize(&path)?;
     let peer = DeviceIdentity::generate()?;
@@ -49,7 +49,7 @@ fn current_local_contact_is_a_dial_hint_before_any_connection() -> Result<(), Bo
 #[test]
 fn on_link_bypass_requires_a_locally_authenticated_route_and_current_signed_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let mut founder = state::initialize(&path)?;
     let peer = DeviceIdentity::generate()?;
@@ -201,7 +201,7 @@ fn conflicting_contact(
 
 #[test]
 fn imports_replays_and_stops_on_equivocation() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -258,7 +258,7 @@ fn imports_replays_and_stops_on_equivocation() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn one_sync_page_coalesces_repeated_node_updates_to_one_durable_frame() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -300,7 +300,7 @@ fn one_sync_page_coalesces_repeated_node_updates_to_one_durable_frame() -> Resul
 #[test]
 fn equivocation_churn_persists_only_the_first_conflict_and_survives_restart() -> Result<(), Box<dyn std::error::Error>>
 {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -350,7 +350,7 @@ fn equivocation_churn_persists_only_the_first_conflict_and_survives_restart() ->
 
 #[test]
 fn terminal_equivocation_compacts_a_bloated_legacy_journal() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -402,7 +402,7 @@ fn terminal_equivocation_compacts_a_bloated_legacy_journal() -> Result<(), Box<d
 
 #[test]
 fn revocation_view_rejects_rollback_equivocation_and_restoration() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let first = DeviceIdentity::generate()?;
@@ -471,7 +471,7 @@ fn revocation_view_rejects_rollback_equivocation_and_restoration() -> Result<(),
 
 #[test]
 fn expired_contact_remains_pin_authority_only_for_authenticated_recovery() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -496,7 +496,7 @@ fn expired_contact_remains_pin_authority_only_for_authenticated_recovery() -> Re
 
 #[test]
 fn revocation_immediately_removes_every_automatic_use() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -530,7 +530,7 @@ fn revocation_immediately_removes_every_automatic_use() -> Result<(), Box<dyn st
 
 #[test]
 fn historical_dial_hints_are_newest_first_deduplicated_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -570,7 +570,7 @@ fn historical_dial_hints_are_newest_first_deduplicated_and_bounded() -> Result<(
 
 #[test]
 fn historical_records_retry_only_addresses_missing_from_newer_records() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;

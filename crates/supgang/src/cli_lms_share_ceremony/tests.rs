@@ -20,9 +20,9 @@ use crate::{
 #[test]
 fn media_preflight_checks_distinct_dirs_st_dev_existing_files_and_cleans_probes()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir_a = tempfile::tempdir()?;
-    let dir_b = tempfile::tempdir()?;
-    let dir_c = tempfile::tempdir()?;
+    let dir_a = crate::storage::test_tempdir()?;
+    let dir_b = crate::storage::test_tempdir()?;
+    let dir_c = crate::storage::test_tempdir()?;
 
     // Three tempdirs on the same host volume share st_dev -> refused when distinct devices are required.
     let same_dev_err = media::preflight_media(dir_a.path(), dir_b.path(), dir_c.path(), true)
@@ -50,7 +50,7 @@ fn media_preflight_checks_distinct_dirs_st_dev_existing_files_and_cleans_probes(
 
 #[test]
 fn removable_media_writer_and_reader_handle_exfat_modes_and_refuse_faults() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = crate::storage::test_tempdir()?;
     let path = dir.path().join(PRIMARY_SHARE_FILE);
     media::write_share_file(&path, b"age-ciphertext-bytes", 128)?;
     assert_eq!(media::read_share_file(&path, 128)?, b"age-ciphertext-bytes");
@@ -84,9 +84,9 @@ fn removable_media_writer_and_reader_handle_exfat_modes_and_refuse_faults() -> R
 
 #[test]
 fn partial_write_failure_cleans_all_created_share_files() -> Result<(), Box<dyn std::error::Error>> {
-    let dir_a = tempfile::tempdir()?;
-    let dir_b = tempfile::tempdir()?;
-    let dir_c = tempfile::tempdir()?;
+    let dir_a = crate::storage::test_tempdir()?;
+    let dir_b = crate::storage::test_tempdir()?;
+    let dir_c = crate::storage::test_tempdir()?;
     let media_dirs = [
         dir_a.path().to_path_buf(),
         dir_b.path().to_path_buf(),
@@ -140,9 +140,9 @@ fn partial_write_failure_cleans_all_created_share_files() -> Result<(), Box<dyn 
 #[test]
 fn rollback_preserves_preexisting_target_planted_after_preflight_and_removes_earlier_files()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir_a = tempfile::tempdir()?;
-    let dir_b = tempfile::tempdir()?;
-    let dir_c = tempfile::tempdir()?;
+    let dir_a = crate::storage::test_tempdir()?;
+    let dir_b = crate::storage::test_tempdir()?;
+    let dir_c = crate::storage::test_tempdir()?;
     let media_dirs = media::preflight_media(dir_a.path(), dir_b.path(), dir_c.path(), false)?;
 
     // Plant a pre-existing file at the 6th destination after preflight succeeds.
@@ -262,9 +262,9 @@ fn first_typeback_allows_three_attempts_redisplays_same_phrase_and_clears_each_t
 #[test]
 fn six_file_write_wipe_and_all_three_pair_rebuilds_verify_and_detect_tampering()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir_a = tempfile::tempdir()?;
-    let dir_b = tempfile::tempdir()?;
-    let dir_c = tempfile::tempdir()?;
+    let dir_a = crate::storage::test_tempdir()?;
+    let dir_b = crate::storage::test_tempdir()?;
+    let dir_c = crate::storage::test_tempdir()?;
     let media_dirs = media::preflight_media(dir_a.path(), dir_b.path(), dir_c.path(), false)?;
 
     let mut primary_master = Zeroizing::new([0x11_u8; MASTER_LEN]);
@@ -454,7 +454,7 @@ impl Drop for MountedExfatImage {
 #[cfg(target_os = "macos")]
 #[test]
 fn exfat_hdiutil_images_preflight_write_and_verify_all_pairs() -> Result<(), Box<dyn std::error::Error>> {
-    let scratch = tempfile::tempdir()?;
+    let scratch = crate::storage::test_tempdir()?;
     let img_a = MountedExfatImage::create(scratch.path(), "SGEXFATA")?;
     let img_b = MountedExfatImage::create(scratch.path(), "SGEXFATB")?;
     let img_c = MountedExfatImage::create(scratch.path(), "SGEXFATC")?;

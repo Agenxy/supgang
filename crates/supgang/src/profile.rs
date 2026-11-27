@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn automatic_profile_is_owner_only_and_user_replaceable() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let local = state::initialize(&state_path)?;
         let node = local.identity().device.node_id();
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn symlinked_or_permissive_profile_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let local = state::initialize(&state_path)?;
         let node = local.identity().device.node_id();
@@ -393,7 +393,7 @@ mod tests {
     // so the signed record is canonical without further work.
     #[test]
     fn service_advertisements_live_beside_the_name() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let local = state::initialize(&state_path)?;
         let node = local.identity().device.node_id();

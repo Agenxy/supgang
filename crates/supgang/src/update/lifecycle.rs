@@ -463,7 +463,7 @@ mod tests {
     };
 
     fn initialized_state() -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let executable = temporary.path().join("supgang");

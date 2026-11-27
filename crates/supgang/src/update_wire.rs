@@ -371,7 +371,7 @@ mod tests {
     fn an_early_retry_interrupts_a_flow_control_blocked_upload_without_losing_the_delivery()
     -> Result<(), Box<dyn std::error::Error>> {
         crate::transport::build_runtime()?.block_on(async {
-            let temporary = tempfile::tempdir()?;
+            let temporary = crate::storage::test_tempdir()?;
             let bundle = temporary.path().join("bundle");
             fs::write(&bundle, vec![7_u8; 2 * 1024 * 1024])?;
             fs::set_permissions(&bundle, fs::Permissions::from_mode(0o600))?;
@@ -440,7 +440,7 @@ mod tests {
 
     fn stalled_receiver(authorized: bool) -> Result<(), Box<dyn std::error::Error>> {
         crate::transport::build_runtime()?.block_on(async {
-            let temporary = tempfile::tempdir()?;
+            let temporary = crate::storage::test_tempdir()?;
             let state = temporary.path().join("state");
             let local = crate::state::initialize(&state)?;
             let root = crate::identity::RootIdentity::generate()?;

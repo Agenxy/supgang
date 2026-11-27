@@ -233,7 +233,7 @@ fn revoked_then_represented_certificate_is_refused() -> TestResult {
 #[test]
 fn revoked_id_cannot_be_recertified_by_an_update() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let mut store = FileRevisionStore::open(temp.path().join("authority"), hive(), key.public_key())?;
     let first = AuthorityUpdate {
         add: vec![certificate(&key, ID)?],
@@ -257,7 +257,7 @@ fn revoked_id_cannot_be_recertified_by_an_update() -> TestResult {
 #[test]
 fn id_reused_is_refused_even_for_an_identical_certificate() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let mut store = FileRevisionStore::open(temp.path().join("authority"), hive(), key.public_key())?;
     let update = AuthorityUpdate {
         add: vec![certificate(&key, ID)?],
@@ -274,7 +274,7 @@ fn id_reused_is_refused_even_for_an_identical_certificate() -> TestResult {
 #[test]
 fn older_epoch_is_refused_and_advance_clears_prior_authority() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let mut store = FileRevisionStore::open(temp.path().join("authority"), hive(), key.public_key())?;
     let first = AuthorityUpdate {
         add: vec![certificate(&key, ID)?],
@@ -383,7 +383,7 @@ fn clock_rollback_past_latest_issuance_refuses_until_clock_recovers() -> TestRes
 #[test]
 fn sixty_five_revocations_are_refused_before_reserving() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let mut store = FileRevisionStore::open(temp.path().join("authority"), hive(), key.public_key())?;
     let ids = (0_u8..65).map(|i| [i; 16]).collect();
     let update = AuthorityUpdate {
@@ -419,7 +419,7 @@ fn encoded_manifest_above_eight_kib_is_refused() -> TestResult {
 #[test]
 fn reserve_without_commit_burns_revision_across_reopen() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let path = temp.path().join("authority");
     let mut store = FileRevisionStore::open(&path, hive(), key.public_key())?;
     let mut pending = manifest(&key)?.content;

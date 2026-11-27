@@ -17,7 +17,7 @@ use crate::{
 
 #[test]
 fn founder_and_sequences_replay_after_restart() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     assert_eq!(state.event_count(), 1);
@@ -34,7 +34,7 @@ fn founder_and_sequences_replay_after_restart() -> Result<(), Box<dyn std::error
 
 #[test]
 fn initialization_recovers_the_identity_before_genesis_crash_window() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let incomplete = storage::initialize(&path)?;
     let expected_node = incomplete.identity.device.node_id();
@@ -50,7 +50,7 @@ fn initialization_recovers_the_identity_before_genesis_crash_window() -> Result<
 
 #[test]
 fn issued_membership_is_durable_and_root_verified() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     let peer = DeviceIdentity::generate()?;
@@ -63,7 +63,7 @@ fn issued_membership_is_durable_and_root_verified() -> Result<(), Box<dyn std::e
 
 #[test]
 fn sequence_gap_fails_closed_during_replay() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     drop(initialize(&path)?);
     let (mut journal, _) = storage::open_journal(&path)?;
@@ -78,7 +78,7 @@ fn sequence_gap_fails_closed_during_replay() -> Result<(), Box<dyn std::error::E
 
 #[test]
 fn offline_join_never_exports_the_recipient_private_key() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let founder_path = directory.path().join("founder");
     let joiner_path = directory.path().join("joiner");
     let mut founder = initialize(&founder_path)?;
@@ -112,7 +112,7 @@ fn offline_join_never_exports_the_recipient_private_key() -> Result<(), Box<dyn 
 
 #[test]
 fn join_authorization_rejects_an_unexpected_proved_node_before_mutation() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let founder_path = directory.path().join("founder");
     let joiner_path = directory.path().join("joiner");
     let mut founder = initialize(&founder_path)?;
@@ -148,7 +148,7 @@ fn join_authorization_rejects_an_unexpected_proved_node_before_mutation() -> Res
 
 #[test]
 fn join_install_rejects_an_unexpected_hive_before_filesystem_mutation() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let founder_path = directory.path().join("founder");
     let joiner_path = directory.path().join("joiner");
     let mut founder = initialize(&founder_path)?;
@@ -190,7 +190,7 @@ fn join_install_rejects_an_unexpected_hive_before_filesystem_mutation() -> Resul
 
 #[test]
 fn endpoint_signature_is_returned_only_after_sequence_persistence() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     let now = unix_time()?;
@@ -227,7 +227,7 @@ fn endpoint_signature_is_returned_only_after_sequence_persistence() -> Result<()
 
 #[test]
 fn revocation_is_durable_idempotent_and_permanent() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     let peer = DeviceIdentity::generate()?;
@@ -266,7 +266,7 @@ fn revocation_is_durable_idempotent_and_permanent() -> Result<(), Box<dyn std::e
 
 #[test]
 fn revocation_merge_rejects_equivocation_and_set_rollback() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     let first_peer = DeviceIdentity::generate()?;
@@ -328,7 +328,7 @@ fn revocation_merge_rejects_equivocation_and_set_rollback() -> Result<(), Box<dy
 
 #[test]
 fn signed_checkpoint_preserves_authority_and_sequence_across_restart() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     let peer = DeviceIdentity::generate()?;
@@ -360,7 +360,7 @@ fn signed_checkpoint_preserves_authority_and_sequence_across_restart() -> Result
 
 #[test]
 fn near_full_authoritative_history_compacts_before_append_and_restarts() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     let final_sequence = 370_000_u64;
@@ -389,7 +389,7 @@ fn near_full_authoritative_history_compacts_before_append_and_restarts() -> Resu
 
 #[test]
 fn checkpoint_signature_tampering_and_post_checkpoint_rollback_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let tampered_path = directory.path().join("tampered");
     let mut tampered = initialize(&tampered_path)?;
     assert_eq!(tampered.reserve_next_sequence()?, 1);
@@ -429,7 +429,7 @@ fn checkpoint_signature_tampering_and_post_checkpoint_rollback_fail_closed() -> 
 fn ambiguous_compaction_failure_poisoned_state_until_reopen() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let path = directory.path().join("state");
     let mut state = initialize(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500))?;

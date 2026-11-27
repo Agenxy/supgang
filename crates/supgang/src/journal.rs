@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn append_reopen_and_recover_partial_tail() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("state.journal");
         let (mut journal, empty) = Journal::open(&path)?;
         assert!(empty.is_empty(), "{empty:?}");
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn compaction_atomically_retains_only_requested_frames() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("state.journal");
         let (mut journal, empty) = Journal::open(&path)?;
         assert!(empty.is_empty(), "{empty:?}");
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn complete_corruption_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("state.journal");
         let (mut journal, _) = Journal::open(&path)?;
         journal.append(b"important")?;
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn committed_tail_truncation_is_detected_instead_of_repaired() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("state.journal");
         let (mut journal, _) = Journal::open(&path)?;
         journal.append(b"first")?;
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn symlink_and_permissive_mode_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let target = directory.path().join("target");
         let link = directory.path().join("link");
         let mut file = OpenOptions::new()

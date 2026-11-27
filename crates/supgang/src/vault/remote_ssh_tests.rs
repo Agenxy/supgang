@@ -20,7 +20,7 @@ fn remote_ssh_target() -> Result<RemoteSshTarget, Box<dyn std::error::Error>> {
         membership::{MAX_MEMBERSHIP_LIFETIME_SECONDS, MembershipRoles},
     };
 
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let founder_path = temporary.path().join("founder");
     let target_path = temporary.path().join("target");
     let mut founder = state::initialize(&founder_path)?;

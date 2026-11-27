@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn committed_state_round_trips_through_a_fresh_datastore() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let updates = temporary.path().join("updates");
         let source = temporary.path().join("source");
         let restored = temporary.path().join("restored");
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn corruption_and_datastore_symlinks_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let updates = temporary.path().join("updates");
         let source = temporary.path().join("source");
         let restored = temporary.path().join("restored");

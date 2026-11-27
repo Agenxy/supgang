@@ -5,7 +5,7 @@ use crate::threshold::session::{DEADLINE_SECONDS, Phase};
 fn presence_is_required_before_commitment_or_nonce_release() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1], directory.path())?;
     let machine = machines.values_mut().next().ok_or(Error::Invalid)?;
     let id = Session::<FileSessionStore>::new_id()?;
@@ -30,7 +30,7 @@ fn presence_is_required_before_commitment_or_nonce_release() -> TestResult {
 fn another_step_is_locked_until_the_unsigned_ten_minute_deadline() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1], directory.path())?;
     let machine = machines.values_mut().next().ok_or(Error::Invalid)?;
     let first = Session::<FileSessionStore>::new_id()?;
@@ -54,7 +54,7 @@ fn another_step_is_locked_until_the_unsigned_ten_minute_deadline() -> TestResult
 fn delayed_publication_never_releases_the_shared_signers_lock() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1, 2], directory.path())?;
     let package = prepare(&f.root, &step, &mut machines, 100)?;
     let signed = finish(&f.root, &step, &mut machines, &package, 101)?;
@@ -82,7 +82,7 @@ fn delayed_publication_never_releases_the_shared_signers_lock() -> TestResult {
 fn identical_package_returns_cached_share_but_changed_commitments_are_refused() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1, 2], directory.path())?;
     let package = prepare(&f.root, &step, &mut machines, 100)?;
     let machine = machines.values_mut().next().ok_or(Error::Invalid)?;
@@ -105,7 +105,7 @@ fn identical_package_returns_cached_share_but_changed_commitments_are_refused() 
 fn substituted_message_and_wrong_generation_are_refused_before_consumption() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1, 2], directory.path())?;
     let package = prepare(&f.root, &step, &mut machines, 100)?;
     let machine = machines.values_mut().next().ok_or(Error::Invalid)?;
@@ -133,7 +133,7 @@ fn substituted_message_and_wrong_generation_are_refused_before_consumption() -> 
 fn resumed_session_uses_new_id_fresh_nonces_and_the_same_step_lock() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1, 2], directory.path())?;
     let first = prepare(&f.root, &step, &mut machines, 100)?;
     for machine in machines.values_mut() {
@@ -159,7 +159,7 @@ fn resumed_session_uses_new_id_fresh_nonces_and_the_same_step_lock() -> TestResu
 fn expired_signing_attempt_discards_nonces_and_cannot_be_replayed() -> TestResult {
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1, 2], directory.path())?;
     let package = prepare(&f.root, &step, &mut machines, 100)?;
     for machine in machines.values_mut() {
@@ -178,7 +178,7 @@ fn aggregate_is_an_ordinary_ed25519_signature_and_bad_shares_fail() -> TestResul
     use ed25519_dalek::Verifier as _;
     let f = fixture(3)?;
     let step = proposal(&f.chain, 1)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(&f.root, &step, &[1, 2], directory.path())?;
     let package = prepare(&f.root, &step, &mut machines, 100)?;
     let signed = finish(&f.root, &step, &mut machines, &package, 101)?;

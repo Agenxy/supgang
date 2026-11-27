@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn missing_settings_use_a_bounded_default_without_creating_a_file() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let initialized = state::initialize(&state_path)?;
         drop(initialized);
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn settings_are_owner_only_bounded_and_replaceable() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let initialized = state::initialize(&state_path)?;
         drop(initialized);
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn unknown_permissive_and_symlinked_settings_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let initialized = state::initialize(&state_path)?;
         drop(initialized);

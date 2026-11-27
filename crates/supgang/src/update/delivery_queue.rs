@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn four_maximal_deliveries_fit_the_advertised_document_bound() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let updates = crate::update::updates_directory(&state, true)?;
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn delivery_survives_restart_and_protects_its_prepared_bundle() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let now = std::time::SystemTime::now()
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn expired_delivery_is_removed_durably() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let source = temporary.path().join("bundle");
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn supervisor_probation_lock_does_not_prevent_queue_recovery() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let source = temporary.path().join("bundle");
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn expired_deliveries_do_not_pin_the_bounded_outbox() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         for index in 0_u8..4 {

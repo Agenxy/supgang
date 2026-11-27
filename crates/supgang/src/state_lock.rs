@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn second_process_owner_is_refused_until_release() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let initialized = state::initialize(&directory)?;
         drop(initialized);

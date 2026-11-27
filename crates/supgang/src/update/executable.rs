@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn an_exact_copy_retains_the_approved_designated_requirement() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let authority = std::env::current_exe()?;
         let candidate = temporary.path().join("supgang");
         fs::copy(&authority, &candidate)?;
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn a_valid_signature_with_another_identity_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let authority = std::env::current_exe()?;
         let candidate = temporary.path().join("supgang");
         fs::copy(&authority, &candidate)?;
@@ -386,7 +386,7 @@ mod tests {
     fn service_transition_rejects_a_tampered_candidate_signature() -> Result<(), Box<dyn std::error::Error>> {
         use std::io::{Read, Seek, SeekFrom, Write};
 
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let authority = temporary.path().join("authority");
         let candidate = temporary.path().join("candidate");
         fs::copy(std::env::current_exe()?, &authority)?;

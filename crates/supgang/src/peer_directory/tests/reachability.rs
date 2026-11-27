@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_full_cache_keeps_its_bound_when_the_local_gateway_arrives() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let mut founder = state::initialize(&path)?;
     let local = founder.identity().device.node_id();
@@ -59,7 +59,7 @@ fn a_full_cache_keeps_its_bound_when_the_local_gateway_arrives() -> Result<(), B
 
 #[test]
 fn one_reporter_cannot_displace_another_or_the_local_gateway() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let mut founder = state::initialize(&path)?;
     let local = founder.identity().device.node_id();
@@ -119,7 +119,7 @@ fn one_reporter_cannot_displace_another_or_the_local_gateway() -> Result<(), Box
 
 #[test]
 fn reporter_bound_reachability_is_ephemeral_and_revocation_aware() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut founder = state::initialize(&state_path)?;
     let subject = DeviceIdentity::generate()?;
@@ -184,7 +184,7 @@ fn reporter_bound_reachability_is_ephemeral_and_revocation_aware() -> Result<(),
 
 #[test]
 fn mapped_ipv4_observations_share_one_hint_and_cannot_hide_loopback() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let mut founder = state::initialize(&path)?;
     let subject = DeviceIdentity::generate()?;
@@ -231,7 +231,7 @@ fn mapped_ipv4_observations_share_one_hint_and_cannot_hide_loopback() -> Result<
 
 #[test]
 fn gateway_report_replaces_only_ephemeral_local_provenance() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let founder = state::initialize(&state_path)?;
     let membership = founder.local_membership().ok_or("local membership missing")?.clone();

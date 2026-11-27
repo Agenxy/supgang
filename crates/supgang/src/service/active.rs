@@ -380,7 +380,7 @@ mod tests {
     fn revocation_removes_authority_before_the_connection_can_emit_more_work() -> Result<(), Box<dyn std::error::Error>>
     {
         crate::transport::build_runtime()?.block_on(async {
-            let temporary = tempfile::tempdir()?;
+            let temporary = crate::storage::test_tempdir()?;
             let mut local_state = state::initialize(temporary.path().join("state"))?;
             let peer = DeviceIdentity::generate()?;
             let issued_at = local_state.revocations().list.issued_at;

@@ -1,9 +1,9 @@
 //! Native per-user background-service installation for macOS and Linux.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -195,7 +195,7 @@ fn ensure_child_directory(parent: &Path, name: &str) -> Result<PathBuf, ServiceE
     match fs::symlink_metadata(&child) {
         Ok(_) => validate_owner_directory(&child)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir(&child)?;
+            DirBuilder::new().mode(0o700).create(&child)?;
             fs::set_permissions(&child, fs::Permissions::from_mode(0o700))?;
             supgang_acl::clear_inherited_acl(&File::open(&child)?)?;
             validate_owner_directory(&child)?;

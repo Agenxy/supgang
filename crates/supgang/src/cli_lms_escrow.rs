@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn escrow_destinations_must_be_new_distinct_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let first = directory.path().join("first.age");
         let second = directory.path().join("second.age");
         assert!(validate_destinations(&[first.clone(), second.clone()]).is_ok());

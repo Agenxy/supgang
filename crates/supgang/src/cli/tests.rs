@@ -43,7 +43,7 @@ fn run_json(arguments: &[&str]) -> Result<serde_json::Value, Box<dyn std::error:
 
 #[test]
 fn capabilities_are_static_and_work_without_state() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let missing = temporary.path().join("no-state");
     let missing = missing.to_str().ok_or("temporary path was not UTF-8")?;
     assert_eq!(
@@ -72,7 +72,7 @@ fn capabilities_are_static_and_work_without_state() -> Result<(), Box<dyn std::e
 
 #[test]
 fn exposures_lists_saved_policy_without_mapped_addresses() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     drop(crate::state::initialize(&state_path)?);
     let mut policy = crate::tunnel_policy::TunnelPolicy::default();
@@ -194,7 +194,7 @@ fn anchor_help_describes_a_user_owned_meeting_point() -> Result<(), Box<dyn std:
 
 #[test]
 fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let state = directory.path().join("state");
     let state_text = state.to_str().ok_or("temporary path was not UTF-8")?;
     let mut output = Vec::new();
@@ -248,7 +248,7 @@ fn json_lifecycle_has_stable_schemas_and_no_secret() -> Result<(), Box<dyn std::
 
 #[test]
 fn offline_cli_join_round_trip_uses_recipient_generated_key() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let founder = directory.path().join("founder");
     let joiner = directory.path().join("joiner");
     let request = directory.path().join("join.request");
@@ -309,7 +309,7 @@ fn offline_cli_join_round_trip_uses_recipient_generated_key() -> Result<(), Box<
 
 #[test]
 fn contact_import_and_explicit_resolution_are_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let founder = directory.path().join("founder");
     let joiner = directory.path().join("joiner");
     let request = directory.path().join("join.request");

@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn legacy_identity_is_replaced_once_without_replacing_membership() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let local = state::initialize(&directory)?;
         let node = local.identity().device.node_id();
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn corruption_and_lock_contention_do_not_trigger_replacement() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let _local = state::initialize(&directory)?;
         let mut bytes = legacy_file(&directory)?;
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn unsafe_legacy_permissions_do_not_authorize_migration() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let _local = state::initialize(&directory)?;
         let bytes = legacy_file(&directory)?;
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn transport_pipe_is_rejected_without_waiting_for_a_writer() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let _local = state::initialize(&directory)?;
         let path = directory.join(super::TRANSPORT_IDENTITY_FILE_NAME);
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn identity_is_stable_owner_only_and_corruption_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let _state = state::initialize(&directory)?;
         let first = load_or_create(&directory)?;
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn symlink_is_never_followed() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let _state = state::initialize(&directory)?;
         let target = temporary.path().join("target");
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn transport_key_file_rejects_trailing_growth() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let directory = temporary.path().join("state");
         let _state = state::initialize(&directory)?;
         drop(load_or_create(&directory)?);

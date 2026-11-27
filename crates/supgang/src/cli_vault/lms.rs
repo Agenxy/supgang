@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn signed_output_matches_validated_input_and_refuses_changed_source() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let input = temporary.path().join("unsigned.nc0");
         let output = temporary.path().join("signed.nc0");
         let mut header = [0_u8; 64];

@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn formerly_allowed_command_tags_remain_readable_and_removable() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let path = temporary.path().join("state");
         drop(state::initialize(&path)?);
         let node = NodeId::from_bytes([1; 32]);
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn tags_are_owner_only_unique_and_removable() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let initialized = state::initialize(&state_path)?;
         drop(initialized);
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn corrupt_permissive_and_symlinked_documents_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let initialized = state::initialize(&state_path)?;
         drop(initialized);
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn concurrent_tag_mutation_fails_instead_of_losing_an_update() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state_path = temporary.path().join("state");
         let initialized = state::initialize(&state_path)?;
         drop(initialized);

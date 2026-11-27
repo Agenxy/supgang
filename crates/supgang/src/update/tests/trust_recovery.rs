@@ -43,7 +43,7 @@ fn roles(repository: &SignedRepository, timestamp: u64, snapshot: u64) -> Result
 #[tokio::test]
 async fn partial_failure_rejects_actual_timestamp_and_snapshot_rollback() -> Result<(), Box<dyn std::error::Error>> {
     let repository = repository_with_root_rotation(8, "9998.0.0")?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let bad_path = repository.metadata.path().join("targets.json");
     let good_targets = fs::read(&bad_path)?;
     for (name, replay_timestamp, replay_snapshot) in [("timestamp", 1, 2), ("snapshot", 3, 1)] {
@@ -94,7 +94,7 @@ async fn partial_failure_rejects_actual_timestamp_and_snapshot_rollback() -> Res
 fn legacy_state_and_key_rotation_back_to_the_original_key_recover_after_failure()
 -> Result<(), Box<dyn std::error::Error>> {
     let repository = repository_with_root_rotation(8, "9998.0.0")?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     trust_root(&state, &repository.root)?;
@@ -136,7 +136,7 @@ fn legacy_state_and_key_rotation_back_to_the_original_key_recover_after_failure(
     let fourth = repository.metadata.path().join("4.root.json");
     fs::write(&fourth, b"invalid fourth root")?;
     fs::set_permissions(&fourth, fs::Permissions::from_mode(0o600))?;
-    let datastore = tempfile::tempdir()?;
+    let datastore = crate::storage::test_tempdir()?;
     fs::write(datastore.path().join("root.json"), serde_json::to_vec(&original)?)?;
     for name in ["timestamp.json", "snapshot.json"] {
         fs::copy(repository.metadata.path().join(name), datastore.path().join(name))?;
@@ -153,7 +153,7 @@ fn legacy_state_and_key_rotation_back_to_the_original_key_recover_after_failure(
     let trust = root_state::load(&updates)?;
     assert_eq!(trust.root().signed.version.get(), 3);
     assert_eq!(trust.role_reset_version(), 3);
-    let resumed = tempfile::tempdir()?;
+    let resumed = crate::storage::test_tempdir()?;
     tuf_state::seed_current(&updates, resumed.path(), &trust)?;
     assert!(!resumed.path().join("timestamp.json").exists());
     assert!(!resumed.path().join("snapshot.json").exists());

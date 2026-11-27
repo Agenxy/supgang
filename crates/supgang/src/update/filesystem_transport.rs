@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn streams_from_space_containing_paths_without_decoding_url_input() -> Result<(), Box<dyn std::error::Error>> {
         crate::transport::build_runtime()?.block_on(async {
-            let temporary = tempfile::tempdir()?;
+            let temporary = crate::storage::test_tempdir()?;
             let repository = temporary.path().join("repository with spaces");
             let metadata = repository.join("metadata");
             let targets = repository.join("targets");
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn rejects_nested_encoded_and_symlink_names() -> Result<(), Box<dyn std::error::Error>> {
         crate::transport::build_runtime()?.block_on(async {
-            let temporary = tempfile::tempdir()?;
+            let temporary = crate::storage::test_tempdir()?;
             let metadata = temporary.path().join("metadata");
             let targets = temporary.path().join("targets");
             fs::create_dir(&metadata)?;
