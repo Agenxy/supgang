@@ -25,7 +25,7 @@ fn recovery_generation_lock_survives_restart_and_coordinator_replacement() -> Te
     let y = transition(&f, &other_view, &successor, Kind::Recovery)?.step;
     assert_ne!(x.predecessor, y.predecessor);
     assert_eq!(x.recovery_gen, y.recovery_gen);
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut ab = machines(&f.recovery, &x, &[1, 2], directory.path())?;
     let policy = ChainPolicy {
         chain: &f.chain,
@@ -173,7 +173,7 @@ fn policy_refuses_stale_tip_before_presence_commitment_or_nonces() -> TestResult
     let stale = proposal(&f.chain, 1)?;
     let mut current = f.chain.clone();
     current.accept(sign(&f.root, &stale, &[1, 2])?)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut signers = machines(&f.root, &stale, &[1], directory.path())?;
     let signer = signers.values_mut().next().ok_or(Error::Invalid)?;
     let id = Session::<FileSessionStore>::new_id()?;
@@ -268,7 +268,7 @@ fn succession_cannot_merge_root_and_recovery_keys() -> TestResult {
     transition.possession = proof;
     transition.recovery_possession = proof;
     step.payload = transition.encode()?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut signers = machines(&f.recovery, &step, &[1], directory.path())?;
     assert!(matches!(
         prepare_reviewed(

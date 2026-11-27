@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn local_preference_survives_public_reports_and_changes_after_roaming() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let path = temporary.path().join("state");
         let mut founder = state::initialize(&path)?;
         let reporter = DeviceIdentity::generate()?;

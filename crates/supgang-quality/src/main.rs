@@ -166,20 +166,49 @@ fn test_scratch() -> Result<Option<String>, String> {
         return Ok(None);
     }
     let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
-    let scratch = PathBuf::from(home).join(".cache").join("supgang").join("test-tmp");
-    fs::create_dir_all(&scratch)
-        .map_err(|create_error| format!("could not create {}: {create_error}", scratch.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700))
-            .map_err(|mode_error| format!("could not restrict {}: {mode_error}", scratch.display()))?;
-    }
+    let cache = PathBuf::from(home).join(".cache");
+    let supgang = cache.join("supgang");
+    let scratch = supgang.join("test-tmp");
+    ensure_private_directory(&cache, false)?;
+    ensure_private_directory(&supgang, true)?;
+    ensure_private_directory(&scratch, true)?;
     scratch
         .into_os_string()
         .into_string()
         .map(Some)
         .map_err(|_| "the home path is not valid Unicode".to_owned())
+}
+
+fn ensure_private_directory(path: &Path, tighten_existing: bool) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            if tighten_existing {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                        .map_err(|mode_error| format!("could not restrict {}: {mode_error}", path.display()))?;
+                }
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(path)
+                    .map_err(|create_error| format!("could not create {}: {create_error}", path.display()))
+            }
+            #[cfg(not(unix))]
+            {
+                fs::create_dir(path)
+                    .map_err(|create_error| format!("could not create {}: {create_error}", path.display()))
+            }
+        }
+        Err(error) => Err(format!("could not inspect {}: {error}", path.display())),
+    }
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
@@ -361,6 +390,14 @@ fn inspect_file(root: &Path, path: &Path) -> Result<(), String> {
         let contains_unsafe =
             text.contains(&unsafe_block) || text.contains(&unsafe_function) || text.contains(&unsafe_implementation);
         let relative = display(root, path);
+        if relative.starts_with("crates/supgang/src/")
+            && (text.contains("tempfile::tempdir(") || text.contains("TempDir::new("))
+        {
+            return Err(format!(
+                "{relative} uses bare tempfile::tempdir/TempDir::new (creates 0o775 under umask 0002); \
+                 use crate::storage::test_tempdir() instead"
+            ));
+        }
         installation::source(&relative, &text)?;
         let is_acl_boundary = relative == "crates/supgang-acl/src/lib.rs";
         if contains_unsafe && !is_acl_boundary {

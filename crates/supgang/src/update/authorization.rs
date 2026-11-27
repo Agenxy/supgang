@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn authorization_nonce_is_consumed_durably_before_bundle_receipt() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let root = RootIdentity::generate()?;
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn authorization_nonce_ledger_is_bounded_and_prunes_expired_records() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let root = RootIdentity::generate()?;

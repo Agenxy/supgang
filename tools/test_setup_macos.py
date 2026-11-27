@@ -174,7 +174,10 @@ class SetupTests(unittest.TestCase):
             home = Path(directory)
             owner = pwd.struct_passwd(("fixture", "*", os.getuid(), os.getgid(), "", str(home), "/bin/zsh"))
             supervisor = home / "Library/Application Support" / setup.LABEL / "bin/supgang"
-            supervisor.parent.mkdir(parents=True, mode=0o700)
+            current = home
+            for part in ("Library", "Application Support", setup.LABEL, "bin"):
+                current = current / part
+                current.mkdir(mode=0o700)
             supervisor.write_bytes(b"not executable")
             supervisor.chmod(0o700)
             for target, acl in ((supervisor, "everyone allow write"),

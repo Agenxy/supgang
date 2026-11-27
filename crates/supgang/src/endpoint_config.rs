@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn reads_a_bounded_owner_only_configuration() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("endpoints.json");
         write_config(
             &path,
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn rejects_permissive_unknown_and_duplicate_input() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let permissive = directory.path().join("permissive.json");
         write_config(
             &permissive,
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn rejects_more_than_the_protocol_candidate_budget() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("too-many.json");
         let candidates = (1..=MAX_CANDIDATES + 1)
             .map(|port| serde_json::json!({"kind": "local", "address": format!("127.0.0.1:{port}")}))

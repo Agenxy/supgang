@@ -120,7 +120,7 @@ fn invalid_signature_does_not_create_equivocation_or_advance_watermark() -> Test
 #[test]
 fn store_excludes_concurrent_writers_and_rejects_stale_predecessors() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let path = temp.path().join("authority");
     let mut store = FileRevisionStore::open(&path, hive(), key.public_key())?;
     assert!(FileRevisionStore::open(&path, hive(), key.public_key()).is_err());
@@ -142,7 +142,7 @@ fn store_excludes_concurrent_writers_and_rejects_stale_predecessors() -> TestRes
 #[test]
 fn store_commits_only_exactly_reserved_content_and_is_bound_to_issuer() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let path = temp.path().join("authority");
     let mut store = FileRevisionStore::open(&path, hive(), key.public_key())?;
     let mut content = manifest(&key)?.content;
@@ -163,7 +163,7 @@ fn store_commits_only_exactly_reserved_content_and_is_bound_to_issuer() -> TestR
 #[test]
 fn update_validates_services_and_manifest_deadlines_before_reserving() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let mut store = FileRevisionStore::open(temp.path().join("authority"), hive(), key.public_key())?;
     assert!(
         AuthorityUpdate::default()
@@ -236,7 +236,7 @@ fn manifest_decoder_bounds_declared_counts_before_allocation() -> TestResult {
 #[test]
 fn recovered_reservation_cannot_commit_even_with_a_surviving_signature() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let path = temp.path().join("authority");
     let mut store = FileRevisionStore::open(&path, hive(), key.public_key())?;
     let mut content = manifest(&key)?.content;
@@ -335,7 +335,7 @@ fn equivocation_retains_the_issuance_watermark_across_epoch_recovery() -> TestRe
 #[test]
 fn certificate_count_and_epoch_reset_are_validated_before_reservation() -> TestResult {
     let key = FileDeviceKey::generate()?;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     let mut store = FileRevisionStore::open(temp.path().join("authority"), hive(), key.public_key())?;
     let excessive = AuthorityUpdate {
         add: (0_u8..17)

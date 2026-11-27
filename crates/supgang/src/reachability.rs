@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn peer_observation_round_trips_with_exact_provenance() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let mut founder = state::initialize(temporary.path().join("state"))?;
         let reporter = DeviceIdentity::generate()?;
         let membership =
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn changing_the_reported_socket_breaks_the_signature() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let mut founder = state::initialize(temporary.path().join("state"))?;
         let reporter = DeviceIdentity::generate()?;
         let membership =
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn expired_and_self_reported_peer_observations_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let founder = state::initialize(temporary.path().join("state"))?;
         let membership = founder.local_membership().ok_or("local membership missing")?.clone();
         assert_eq!(

@@ -19,7 +19,7 @@ async fn mcp_2026_versioning_and_compatibility_initialize_selects_only_legacy() 
     // MCP 2026-07-28, Versioning and Compatibility:
     // "Backward Compatibility with Initialization-Based Versions" makes initialize
     // the legacy door. UnsupportedProtocolVersionError lists that door's versions.
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     for requested in ["2026-07-28", "2099-01-01"] {
         for metadata in [
             None,
@@ -51,7 +51,7 @@ async fn mcp_2026_versioning_and_compatibility_initialize_selects_only_legacy() 
 
 #[tokio::test]
 async fn legacy_initialize_is_not_subject_to_modern_metadata_requirements() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut request = initialize_request("2025-11-25");
     request
         .get_mut("params")
@@ -83,7 +83,7 @@ async fn legacy_initialize_is_not_subject_to_modern_metadata_requirements() -> R
 
 #[tokio::test]
 async fn legacy_2025_lifecycle_lists_a_strict_read_only_surface() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let responses = exchange(
         directory.path(),
         &[
@@ -119,7 +119,7 @@ async fn legacy_2025_lifecycle_lists_a_strict_read_only_surface() -> Result<(), 
 
 #[tokio::test]
 async fn modern_2026_discovery_is_self_contained_and_cacheable() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let responses = exchange(
         directory.path(),
         &[
@@ -155,7 +155,7 @@ async fn official_sdk_client_transcript_replays_byte_for_byte() -> Result<(), Bo
     let transcript = include_str!("../../assets/mcp-sdk-client.ndjson");
     let lines: Vec<&str> = transcript.lines().collect();
     assert_eq!(lines.len(), 9);
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     for session in [
         lines.get(..5).ok_or("missing legacy transcript")?,
         lines.get(5..).ok_or("missing modern transcript")?,
@@ -192,7 +192,7 @@ async fn captured_resolve_error_replays_byte_for_byte() -> Result<(), Box<dyn Er
         .ok_or("missing captured reply")?;
     assert!(lines.next().is_none());
 
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
     let local = crate::state::initialize(directory.path())?;
     let _name = crate::profile::load_or_create(directory.path(), local.identity().device.node_id())?;
@@ -205,7 +205,7 @@ async fn captured_resolve_error_replays_byte_for_byte() -> Result<(), Box<dyn Er
 
 #[tokio::test]
 async fn malformed_and_unknown_requests_have_bounded_json_rpc_errors() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let input = b"{\n[]\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n";
     let output = exchange_bytes(directory.path(), input, false).await?;
     let lines = std::str::from_utf8(&output)?.lines().collect::<Vec<_>>();
@@ -239,7 +239,7 @@ async fn malformed_and_unknown_requests_have_bounded_json_rpc_errors() -> Result
 #[tokio::test]
 async fn modern_tool_calls_without_initialize_are_strict_and_return_structured_local_state()
 -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
     let local = crate::state::initialize(directory.path())?;
     let _name = crate::profile::load_or_create(directory.path(), local.identity().device.node_id())?;
@@ -281,7 +281,7 @@ async fn modern_tool_calls_without_initialize_are_strict_and_return_structured_l
 
 #[tokio::test]
 async fn offline_tools_never_create_or_repair_state() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
     let local = crate::state::initialize(directory.path())?;
     let _name = crate::profile::load_or_create(directory.path(), local.identity().device.node_id())?;
@@ -319,7 +319,7 @@ async fn offline_tools_never_create_or_repair_state() -> Result<(), Box<dyn Erro
 
 #[tokio::test]
 async fn unsupported_protocol_and_oversized_input_fail_closed() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let responses = exchange_tolerating_shutdown(directory.path(), &[initialize_request("2025-06-18")]).await?;
     let unsupported = response_with_id(&responses, 1)?;
     assert_eq!(unsupported.pointer("/error/code"), Some(&json!(-32022)));

@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn wake_refresh_signs_a_fresh_record_while_the_monotonic_deadline_is_in_the_future()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let path = temporary.path().join("state");
         let mut state = crate::state::initialize(&path)?;
         let identity = crate::transport_storage::load_or_create(&path)?;
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn expired_membership_stops_refresh_without_signing_or_advancing_the_deadline()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let path = temporary.path().join("state");
         let mut state = crate::state::initialize(&path)?;
         let identity = crate::transport_storage::load_or_create(&path)?;

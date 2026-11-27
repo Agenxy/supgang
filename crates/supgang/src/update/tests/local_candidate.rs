@@ -32,7 +32,7 @@ fn candidate_bytes(directory: &std::path::Path) -> std::result::Result<Vec<u8>, 
 
 #[test]
 fn a_same_version_refresh_is_not_staged() -> Result {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     initialize_active_fixture(&state, temporary.path())?;
@@ -44,7 +44,7 @@ fn a_same_version_refresh_is_not_staged() -> Result {
 
 #[test]
 fn a_newer_release_waits_as_the_candidate_and_the_known_good_one_stays_active() -> Result {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     initialize_active_fixture(&state, temporary.path())?;
@@ -64,7 +64,7 @@ fn a_newer_release_waits_as_the_candidate_and_the_known_good_one_stays_active() 
 
 #[test]
 fn a_committed_candidate_that_never_reconnects_returns_to_the_previous_release() -> Result {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     initialize_active_fixture(&state, temporary.path())?;
@@ -109,7 +109,7 @@ fn set_version(state: &std::path::Path, file: &str, version: &str) -> Result {
 
 #[test]
 fn after_a_failed_candidate_is_reverted_the_next_revert_restores_a_release_that_worked() -> Result {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     // A ran, then B replaced it: A is the previous release.

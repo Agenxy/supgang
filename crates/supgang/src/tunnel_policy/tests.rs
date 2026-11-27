@@ -5,7 +5,7 @@ use crate::{record::ServiceName, state};
 
 #[test]
 fn exposures_are_opt_in_bounded_and_owner_only() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     drop(state::initialize(&path)?);
     let exposures = load(&path)?.exposures;

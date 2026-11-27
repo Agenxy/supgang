@@ -90,7 +90,7 @@ impl Fleet {
     /// its first contact from the interfaces its host has now, and every other
     /// computer remembers it.
     pub(super) fn pair(network: Arc<Network>, hosts: &[HostId]) -> Result<Self, Error> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let mut computers = Vec::new();
         let (first, rest) = hosts.split_first().ok_or("a hive needs a founder")?;
         let founder_path = temporary.path().join("c0");

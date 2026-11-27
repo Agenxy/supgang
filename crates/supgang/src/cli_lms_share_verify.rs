@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn share_path_validation_requires_two_distinct_files_and_refuses_cross_role_names()
     -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
+        let dir = crate::storage::test_tempdir()?;
         let a = dir.path().join("a.share.age");
         let b = dir.path().join("b.share.age");
         let c = dir.path().join("c.share.age");

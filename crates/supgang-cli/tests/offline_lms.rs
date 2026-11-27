@@ -1,6 +1,8 @@
 //! The escrow command must refuse a process without an owner terminal before creating files.
 
 use std::{
+    fs::DirBuilder,
+    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -22,7 +24,7 @@ impl TestDirectory {
             "supgang-lms-nonterminal-{}-{nonce}-{sequence}",
             std::process::id()
         ));
-        std::fs::create_dir(&path)?;
+        DirBuilder::new().mode(0o700).create(&path)?;
         Ok(Self(path))
     }
 }
@@ -109,9 +111,9 @@ fn share_ceremony_and_verify_refuse_nonterminal_and_state_dir() -> Result<(), Bo
     let a = directory.0.join("a");
     let b = directory.0.join("b");
     let c = directory.0.join("c");
-    std::fs::create_dir(&a)?;
-    std::fs::create_dir(&b)?;
-    std::fs::create_dir(&c)?;
+    DirBuilder::new().mode(0o700).create(&a)?;
+    DirBuilder::new().mode(0o700).create(&b)?;
+    DirBuilder::new().mode(0o700).create(&c)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_supgang"))
         .args([

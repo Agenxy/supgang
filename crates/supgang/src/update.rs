@@ -1,9 +1,9 @@
 //! TUF-verified, owner-controlled software update staging.
 
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Seek, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -520,7 +520,7 @@ fn ensure_child(parent: &Path, name: &str) -> Result<PathBuf, UpdateError> {
             storage::validate_trusted_owner_directory(&path)?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir(&path)?;
+            DirBuilder::new().mode(0o700).create(&path)?;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
             supgang_acl::clear_inherited_acl(&File::open(&path)?)?;
             storage::validate_trusted_owner_directory(&path)?;
@@ -536,7 +536,7 @@ fn create_random_child(parent: &Path, prefix: &str) -> Result<PathBuf, UpdateErr
         let mut random = [0_u8; 16];
         getrandom::fill(&mut random).map_err(|_| UpdateError::InvalidBundle)?;
         let path = parent.join(format!("{prefix}{}", hex::encode(random)));
-        match fs::create_dir(&path) {
+        match DirBuilder::new().mode(0o700).create(&path) {
             Ok(()) => {
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
                 supgang_acl::clear_inherited_acl(&File::open(&path)?)?;

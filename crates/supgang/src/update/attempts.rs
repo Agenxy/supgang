@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn interrupted_probations_cannot_retry_forever() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let updates = crate::update::updates_directory(&state, true)?;

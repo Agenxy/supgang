@@ -57,7 +57,7 @@ fn successor_possession_is_distinct_from_recovery_authorization() -> TestResult 
     let mut other = f.chain.clone();
     other.accept(sign(&f.root, &proposal(&other, 8)?, &[1, 2])?)?;
     let y = transition(&f, &other, &successor, Kind::Recovery)?.step;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut participants = machines(&successor, &x, &[1, 2], directory.path())?;
     for (step, chain, now) in [(&x, &f.chain, 100), (&y, &other, 1000)] {
         let proof = Succession::decode(&step.payload)?.possession_step(step)?;
@@ -98,7 +98,7 @@ fn recovery_rotation_policy_requires_both_possessions() -> TestResult {
         group: replacement.descriptor()?.clone(),
     };
     let proof = payload.possession_step(&step)?;
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut participants = machines(&replacement, &proof, &[1, 2], directory.path())?;
     let package = prepare_reviewed(
         &replacement,

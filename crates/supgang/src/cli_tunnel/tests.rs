@@ -104,7 +104,7 @@ fn connect_stops_waiting_at_its_bound() {
 
 #[test]
 fn tunnel_limits_without_changes_keeps_the_saved_limits() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let directory = temporary.path().join("state");
     drop(state::initialize(&directory)?);
     let mut sink = Vec::new();

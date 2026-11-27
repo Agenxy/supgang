@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn queued_delivery_rechecks_a_pending_activation_without_revalidating_each_pass()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let path = temporary.path().join("state");
         let local = state::initialize(&path)?;
         let executable = temporary.path().join("signed-executable");

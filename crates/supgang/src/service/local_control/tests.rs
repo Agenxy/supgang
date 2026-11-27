@@ -25,7 +25,7 @@ async fn exercise_control_dispatch(body: Option<&[u8]>, expect_status: bool) -> 
     use std::{collections::BTreeMap, task::Poll, time::Duration};
     use tokio::{io::AsyncWriteExt, net::UnixStream, sync::oneshot};
 
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let mut local_state = state::initialize(&path)?;
     let device = DeviceIdentity::generate()?;
@@ -140,7 +140,7 @@ fn restart_is_owner_local_and_requires_a_supervisor() {
 
 #[test]
 fn owner_revocation_requests_gossip_only_when_state_changes() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let mut local_state = state::initialize(&path)?;
     let device = DeviceIdentity::generate()?;
@@ -262,7 +262,7 @@ fn unverified_address_sources_are_never_reported_as_confirmed() -> Result<(), Bo
 
 #[test]
 fn first_equivocation_refreshes_gossip_and_repeats_do_not() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let mut local_state = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?;
@@ -289,7 +289,7 @@ fn first_equivocation_refreshes_gossip_and_repeats_do_not() -> Result<(), Box<dy
 
 #[test]
 fn disconnected_peer_update_is_durable_instead_of_timing_dependent() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state_path = temporary.path().join("state");
     let local_state = state::initialize(&state_path)?;
     let peer = DeviceIdentity::generate()?.node_id();

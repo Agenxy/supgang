@@ -106,7 +106,7 @@ fn sealed_records_round_trip_and_refuse_noncanonical_truncated_and_foreign_input
 #[test]
 fn sealed_file_is_owner_only_nonreplacing_and_restores_the_same_signer() -> TestResult {
     use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir()?;
+    let temp = crate::storage::test_tempdir()?;
     std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700))?;
     crate::storage::prepare_directory(temp.path())?;
     let signer = FileProvider.generate(PresencePolicy::Unattended)?;

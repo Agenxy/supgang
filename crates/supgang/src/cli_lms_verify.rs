@@ -162,7 +162,7 @@ mod tests {
         let passphrase = b"test-only-escrow-verify-passphrase-2026-long";
         let key = vault::generate_escrow(name, |_, _| {})?;
         let file = age_scrypt::encrypt_test_factor18(key.record(), passphrase)?;
-        let directory = tempfile::tempdir()?;
+        let directory = crate::storage::test_tempdir()?;
         let path = directory.path().join("escrow.age");
         artifact::write_new(&path, &file, age_scrypt::MAX_FILE)?;
         let on_disk = artifact::read(&path, age_scrypt::MAX_FILE)?;

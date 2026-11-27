@@ -66,7 +66,7 @@ impl Enclave for Software {
 /// # Errors
 /// Returns an error when the temporary directory cannot be created or initialized.
 pub fn state_directory() -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     drop(state::initialize(&path)?);
     Ok((temporary, path))

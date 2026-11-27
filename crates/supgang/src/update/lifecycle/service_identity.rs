@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn transition_audit_is_durable_idempotent_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let updates = temporary.path();
         append_transition_audit(updates, "v1 old=a new=b\n")?;
         append_transition_audit(updates, "v1 old=a new=b\n")?;

@@ -4,10 +4,7 @@ use std::{
     env,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
-        prelude::MetadataExt,
-    },
+    os::unix::{fs::OpenOptionsExt, prelude::MetadataExt},
     path::{Path, PathBuf},
 };
 
@@ -23,7 +20,11 @@ use crate::{
 
 mod path_safety;
 
-use path_safety::{nearest_existing_ancestor, normalized_absolute, validate_ancestor_chain};
+#[cfg(test)]
+pub(crate) use path_safety::test_tempdir;
+use path_safety::{
+    create_private_directories, nearest_existing_ancestor, normalized_absolute, validate_ancestor_chain,
+};
 
 /// Name of the protected local identity file.
 pub const IDENTITY_FILE_NAME: &str = "identity.key";
@@ -336,10 +337,7 @@ pub(crate) fn prepare_directory(path: &Path) -> Result<PathBuf, StorageError> {
             let absolute = normalized_absolute(path)?;
             let existing = nearest_existing_ancestor(&absolute)?;
             validate_ancestor_chain(&existing, false)?;
-            fs::create_dir_all(&absolute)?;
-            fs::set_permissions(&absolute, fs::Permissions::from_mode(0o700))?;
-            let directory = File::open(&absolute)?;
-            supgang_acl::clear_inherited_acl(&directory)?;
+            create_private_directories(&existing, &absolute)?;
             validate_directory(&absolute)
         }
         Err(error) => Err(error.into()),
@@ -581,7 +579,7 @@ mod tests {
 
     #[test]
     fn initialize_and_load_preserves_public_identity() -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
+        let parent = crate::storage::test_tempdir()?;
         let path = parent.path().join("state");
         let initialized = initialize(&path)?;
         let expected_node = initialized.identity.device.node_id();
@@ -598,7 +596,7 @@ mod tests {
 
     #[test]
     fn reinitialization_and_insecure_directory_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
+        let parent = crate::storage::test_tempdir()?;
         let path = parent.path().join("state");
         drop(initialize(&path)?);
         assert!(matches!(initialize(&path), Err(StorageError::AlreadyInitialized)));
@@ -613,7 +611,7 @@ mod tests {
 
     #[test]
     fn identity_corruption_is_detected() -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
+        let parent = crate::storage::test_tempdir()?;
         let path = parent.path().join("state");
         drop(initialize(&path)?);
         let identity_path = path.join("identity.key");
@@ -627,7 +625,7 @@ mod tests {
 
     #[test]
     fn pending_identity_is_local_and_durable() -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
+        let parent = crate::storage::test_tempdir()?;
         let path = parent.path().join("state");
         let pending = create_pending_identity(&path)?;
         let loaded = load_pending_identity(&path)?;
@@ -642,7 +640,7 @@ mod tests {
 
     #[test]
     fn secret_key_files_reject_trailing_growth() -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
+        let parent = crate::storage::test_tempdir()?;
         let initialized_path = parent.path().join("initialized");
         drop(initialize(&initialized_path)?);
         let identity_path = initialized_path.join(super::IDENTITY_FILE_NAME);
@@ -669,7 +667,7 @@ mod tests {
 
     #[test]
     fn state_creation_rejects_cross_user_writable_or_symlinked_ancestors() -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
+        let parent = crate::storage::test_tempdir()?;
         let shared = parent.path().join("shared");
         fs::create_dir(&shared)?;
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o777))?;

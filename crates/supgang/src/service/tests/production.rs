@@ -111,7 +111,7 @@ async fn wait_connected(paths: &[&Path]) -> Result<(), Box<dyn std::error::Error
 #[tokio::test]
 async fn named_tunnel_is_default_deny_and_preserves_bytes_and_half_close() -> Result<(), Box<dyn std::error::Error>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let left_path = temporary.path().join("left");
     let right_path = temporary.path().join("right");
     let mut founder = state::initialize(&left_path)?;
@@ -280,7 +280,7 @@ async fn named_tunnel_is_default_deny_and_preserves_bytes_and_half_close() -> Re
 
 #[tokio::test]
 async fn pending_activation_does_not_starve_control_or_peer_restart() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let left_path = temporary.path().join("left");
     let right_path = temporary.path().join("right");
     let mut founder = state::initialize(&left_path)?;

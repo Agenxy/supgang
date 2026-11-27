@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn update_state_has_one_cross_process_writer() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let state = temporary.path().join("state");
         drop(crate::state::initialize(&state)?);
         let first = UpdateLock::acquire(&state)?;

@@ -9,7 +9,7 @@ use crate::update::{UpdateError, pack_repository, trust_root, verify_and_stage};
 async fn failed_rotated_release_never_restores_retired_authority() -> Result<(), Box<dyn std::error::Error>> {
     let legitimate = repository_with_root_rotation(8, "9998.0.0")?;
     let fork = repository_with_root_rotation(9, "9999.0.0")?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let fork_bundle = temporary.path().join("fork.bundle");
     pack_repository(
         fork.metadata.path(),
@@ -80,7 +80,7 @@ async fn failed_rotated_release_never_restores_retired_authority() -> Result<(),
 #[tokio::test]
 async fn later_role_failure_retains_authenticated_timestamp_and_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let repository = repository_with_root_rotation(8, "9998.0.0")?;
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let state = temporary.path().join("state");
     drop(crate::state::initialize(&state)?);
     initialize_active_fixture(&state, temporary.path())?;

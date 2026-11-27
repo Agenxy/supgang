@@ -2,9 +2,9 @@
 
 use std::{
     env, fs,
-    fs::File,
+    fs::{DirBuilder, File},
     io,
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
 
@@ -105,12 +105,64 @@ fn validate_resolved_chain(path: &Path, final_must_be_owner: bool, current_uid: 
     Ok(())
 }
 
+pub(super) fn create_private_directories(existing: &Path, target: &Path) -> Result<(), StorageError> {
+    let suffix = target
+        .strip_prefix(existing)
+        .map_err(|_| StorageError::UnsafeAncestor)?;
+    let mut current = existing.to_path_buf();
+    for component in suffix.components() {
+        let Component::Normal(segment) = component else {
+            return Err(StorageError::UnsafeAncestor);
+        };
+        current.push(segment);
+        DirBuilder::new().mode(0o700).create(&current)?;
+        fs::set_permissions(&current, fs::Permissions::from_mode(0o700))?;
+        let directory = File::open(&current)?;
+        supgang_acl::clear_inherited_acl(&directory)?;
+    }
+    Ok(())
+}
+
+/// Creates a `0o700` temporary directory for tests so storage ancestor checks
+/// do not fail on Linux systems whose default `umask` is `0002`.
+#[cfg(test)]
+pub fn test_tempdir() -> io::Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+}
+
 fn validate_ancestor_access(file: &File, owner: u32, mode: u32, current_uid: u32) -> Result<(), StorageError> {
     if (owner != 0 && owner != current_uid) || mode & 0o022 != 0 {
         return Err(StorageError::UnsafeAncestor);
     }
     // Root ownership does not override ACL grants to another account.
     super::validate_ancestor_acl(file)
+}
+
+#[cfg(test)]
+mod umask_tests {
+    use std::{fs, os::unix::fs::MetadataExt};
+
+    use super::{create_private_directories, test_tempdir, validate_ancestor_chain};
+
+    #[test]
+    fn private_directories_and_test_tempdir_are_created_owner_only() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = test_tempdir()?;
+        assert_eq!(fs::symlink_metadata(temporary.path())?.mode() & 0o777, 0o700);
+        let nested = temporary.path().join("first").join("second").join("state");
+        create_private_directories(temporary.path(), &nested)?;
+        for relative in ["first", "first/second", "first/second/state"] {
+            let path = temporary.path().join(relative);
+            assert_eq!(
+                fs::symlink_metadata(&path)?.mode() & 0o777,
+                0o700,
+                "newly created directory {relative} must be 0o700 regardless of umask"
+            );
+        }
+        validate_ancestor_chain(&nested, true)?;
+        Ok(())
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -120,7 +172,7 @@ mod tests {
 
     #[test]
     fn both_ancestor_walks_reject_acl_grants_and_accept_deny_only() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let path = fs::canonicalize(temporary.path())?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
         let uid = rustix::process::getuid().as_raw();

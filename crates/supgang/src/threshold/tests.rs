@@ -184,7 +184,7 @@ fn finish(
 }
 
 fn sign(group: &Group, step: &RootStep, ids: &[u16]) -> Result<SignedStep, Error> {
-    let directory = tempfile::tempdir()?;
+    let directory = crate::storage::test_tempdir()?;
     let mut machines = machines(group, step, ids, directory.path())?;
     let package = prepare(group, step, &mut machines, 100)?;
     finish(group, step, &mut machines, &package, 101)

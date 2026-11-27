@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn endpoint_file_is_validated_before_it_enters_a_service_definition() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
+        let temporary = crate::storage::test_tempdir()?;
         let path = temporary.path().join("endpoints.json");
         crate::artifact::write_new(
             &path,

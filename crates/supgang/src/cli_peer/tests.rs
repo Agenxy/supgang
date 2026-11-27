@@ -188,7 +188,7 @@ fn this_computer_prefers_a_private_ipv4_interface() -> Result<(), Box<dyn std::e
 
 #[test]
 fn a_stopped_computer_does_not_invent_an_advertised_port() -> Result<(), Box<dyn std::error::Error>> {
-    let temporary = tempfile::tempdir()?;
+    let temporary = crate::storage::test_tempdir()?;
     let path = temporary.path().join("state");
     let local = crate::state::initialize(&path)?;
     let row = super::stopped_local_row_with_name(&local, &crate::profile::PeerName::new("Stopped")?, &[]);
