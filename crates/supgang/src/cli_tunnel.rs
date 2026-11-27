@@ -50,7 +50,7 @@ pub fn add_mapped(
             .map_err(|error| request_failed(&error, "local endpoint publication request failed"))?
         {
             Some(ControlReply::EndpointChanged) => Ok(()),
-            Some(ControlReply::Error { message }) => Err(message),
+            Some(ControlReply::Error { message, .. }) => Err(message),
             _ => Err("start a compatible local Supgang service before publishing the mapped endpoint".to_owned()),
         }
     })();
@@ -195,7 +195,7 @@ pub fn expose(
             .map_err(|error| request_failed(&error, "local service exposure request failed"))?
         {
             Some(ControlReply::ExposureChanged) => Ok(()),
-            Some(ControlReply::Error { message }) => Err(message),
+            Some(ControlReply::Error { message, .. }) => Err(message),
             Some(_) => Err("local service does not support exposure; refresh its installed artifact".to_owned()),
             None => {
                 let _state_lock = state::open(directory).map_err(|_| "protected tunnel state could not be opened")?;
@@ -233,7 +233,7 @@ fn snapshot(directory: &Path) -> Result<(&'static str, tunnel_policy::ExposureSn
         .map_err(|failure| request_failed(&failure, "local exposure listing request failed"))?
     {
         Some(ControlReply::Exposures { value }) => Ok(("running-service", value)),
-        Some(ControlReply::Error { message }) => Err(message),
+        Some(ControlReply::Error { message, .. }) => Err(message),
         Some(_) => Err("local service does not support exposure listing; refresh its installed artifact".to_owned()),
         None => {
             let _state =
@@ -334,7 +334,7 @@ pub fn limits(
             .map_err(|error| request_failed(&error, "local service request failed"))?
         {
             Some(ControlReply::LimitsSaved) => return Ok(true),
-            Some(ControlReply::Error { message }) => return Err(message),
+            Some(ControlReply::Error { message, .. }) => return Err(message),
             Some(_) => return Err("local service returned an unexpected reply".to_owned()),
             None => {}
         }
@@ -358,7 +358,7 @@ pub fn limits(
         ),
         Ok(running) => {
             let message = if running {
-                "Tunnel limits saved. New connections use them now; restart the service to apply the total."
+                "Tunnel limits saved. New tunnels use them now, on every peer; restart the service to apply the total."
             } else {
                 "Tunnel limits saved. Start the service to apply them."
             };

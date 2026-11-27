@@ -39,6 +39,7 @@ pub(super) fn queue_update(
         ),
         Err(message) => (
             ControlReply::Error {
+                code: None,
                 message: message.to_owned(),
             },
             false,

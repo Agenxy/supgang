@@ -34,7 +34,7 @@ pub(super) struct McpStatusOutput {
 pub(super) fn fleet_data(state_directory: &Path) -> Result<cli_peer::PeersOutput, String> {
     let mut fleet = match control::request(state_directory, ControlRequest::Peers) {
         Ok(Some(ControlReply::Peers { value })) => Ok(value),
-        Ok(Some(ControlReply::Error { message })) => Err(message),
+        Ok(Some(ControlReply::Error { message, .. })) => Err(message),
         Ok(Some(_)) => Err("Supgang's local service returned an unexpected response".to_owned()),
         Ok(None) => return cli_peer::peers_read_only(state_directory),
         Err(error) => Err(error.to_string()),
@@ -46,7 +46,7 @@ pub(super) fn fleet_data(state_directory: &Path) -> Result<cli_peer::PeersOutput
 pub(super) fn status_data(state_directory: &Path) -> Result<McpStatusOutput, String> {
     match control::request(state_directory, ControlRequest::Status) {
         Ok(Some(ControlReply::Status { value })) => return Ok(running_status(value)),
-        Ok(Some(ControlReply::Error { message })) => return Err(message),
+        Ok(Some(ControlReply::Error { message, .. })) => return Err(message),
         Ok(Some(_)) => return Err("Supgang's local service returned an unexpected response".to_owned()),
         Ok(None) => {}
         Err(error) => return Err(error.to_string()),
@@ -110,7 +110,7 @@ pub(super) fn resolve_data(state_directory: &Path, selector: &str) -> Result<cli
     };
     let mut resolution = match control::request(state_directory, ControlRequest::Resolve(node_id)) {
         Ok(Some(ControlReply::Resolve { value })) => Ok(value),
-        Ok(Some(ControlReply::Error { message })) => Err(message),
+        Ok(Some(ControlReply::Error { message, .. })) => Err(message),
         Ok(Some(_)) => Err("Supgang's local service returned an unexpected response".to_owned()),
         Ok(None) => return cli_peer::resolve_read_only(state_directory, &node_id.to_string()),
         Err(error) => Err(error.to_string()),

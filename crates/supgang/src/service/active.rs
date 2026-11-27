@@ -176,10 +176,6 @@ impl ActiveConnection {
             .saturating_sub(self.tunnel_admission.available_permits())
     }
 
-    pub(super) const fn tunnel_limit(&self) -> usize {
-        self.tunnel_limit
-    }
-
     pub(super) const fn authorization(&self) -> &SessionAuthorization {
         &self.authorization
     }

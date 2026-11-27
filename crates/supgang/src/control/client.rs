@@ -70,7 +70,7 @@ pub fn connect_service_by(
         .map_err(|error| failed(error, "local tunnel setup failed"))?;
     match serde_json::from_slice::<ControlReply>(&bytes).map_err(|_| "local tunnel reply is invalid")? {
         ControlReply::Connected => {}
-        ControlReply::Error { message } => return Err(message),
+        ControlReply::Error { message, .. } => return Err(message),
         _ => return Err("local runtime does not support service tunnels; refresh its installed artifact".to_owned()),
     }
     Ok(stream)

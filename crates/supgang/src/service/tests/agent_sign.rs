@@ -45,7 +45,7 @@ fn authenticated_member_sign_stream_returns_a_bounded_refusal_for_unknown_purpos
         },
     )?;
     assert!(
-        matches!(&reply, Some(ControlReply::Error { message }) if message == "the signing peer refused the request"),
+        matches!(&reply, Some(ControlReply::Error { message, .. }) if message == "the signing peer refused the request"),
         "reply: {reply:?}"
     );
     Ok(())

@@ -23,6 +23,8 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_REFUSED: u8 = 0;
 const REPLY_ACCEPTED: u8 = 1;
 const REPLY_AT_CAPACITY: u8 = 2;
+/// The service is exposed but its loopback listener refused or failed the connect.
+const REPLY_UPSTREAM_UNAVAILABLE: u8 = 3;
 const MAX_CAPACITY_REFUSALS: usize = 4;
 
 #[derive(Clone)]
@@ -158,7 +160,7 @@ async fn incoming(
             return Err(());
         }
         let Ok(socket) = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await else {
-            let _refusal = send.write_all(&[REPLY_REFUSED]).await;
+            let _refusal = send.write_all(&[REPLY_UPSTREAM_UNAVAILABLE]).await;
             return Err(());
         };
         if !authorization.is_current(unix_time().map_err(|_| ())?) {
@@ -194,6 +196,7 @@ async fn incoming(
 enum SetupFailure {
     Refused,
     PeerAtCapacity,
+    UpstreamUnavailable,
     SessionFailed,
 }
 
@@ -221,6 +224,7 @@ pub(super) async fn outgoing(
         match accepted {
             [REPLY_ACCEPTED] => Ok((send, receive)),
             [REPLY_AT_CAPACITY] => Err(SetupFailure::PeerAtCapacity),
+            [REPLY_UPSTREAM_UNAVAILABLE] => Err(SetupFailure::UpstreamUnavailable),
             _ => Err(SetupFailure::Refused),
         }
     };
@@ -231,11 +235,19 @@ pub(super) async fn outgoing(
     let (send, receive) = match setup {
         Ok(Ok(streams)) => streams,
         failure => {
-            let message = match failure {
-                Ok(Err(SetupFailure::Refused)) => {
-                    "the peer refused the service; check its exposure and runtime version"
-                }
-                Ok(Err(SetupFailure::PeerAtCapacity)) => crate::control::PEER_AT_CAPACITY,
+            let reply = match failure {
+                Ok(Err(SetupFailure::Refused)) => crate::control::ControlReply::coded(
+                    crate::control::ErrorCode::Refused,
+                    "the peer refused the service; check its exposure and runtime version",
+                ),
+                Ok(Err(SetupFailure::PeerAtCapacity)) => crate::control::ControlReply::coded(
+                    crate::control::ErrorCode::PeerAtCapacity,
+                    crate::control::PEER_AT_CAPACITY,
+                ),
+                Ok(Err(SetupFailure::UpstreamUnavailable)) => crate::control::ControlReply::coded(
+                    crate::control::ErrorCode::UpstreamUnavailable,
+                    crate::control::PEER_UPSTREAM_UNAVAILABLE,
+                ),
                 _ => {
                     // A missed probe is inconclusive on a delayed or congested
                     // path. Only a transport-confirmed close may retire the
@@ -245,16 +257,13 @@ pub(super) async fn outgoing(
                     {
                         active.invalidate(b"tunnel setup failed");
                     }
-                    crate::control::PEER_SESSION_FAILED
+                    crate::control::ControlReply::coded(
+                        crate::control::ErrorCode::SessionFailed,
+                        crate::control::PEER_SESSION_FAILED,
+                    )
                 }
             };
-            let _reply = crate::control::write_reply(
-                &mut local,
-                &crate::control::ControlReply::Error {
-                    message: message.to_owned(),
-                },
-            )
-            .await;
+            let _reply = crate::control::write_reply(&mut local, &reply).await;
             return;
         }
     };

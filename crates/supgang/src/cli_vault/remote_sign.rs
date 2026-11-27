@@ -107,7 +107,7 @@ fn verify_reply(reply: Option<ControlReply>, request: &SignRequest, key_pin: &st
             public_key,
             signature,
         }) => (nonce, public_key, signature),
-        Some(ControlReply::Error { message }) => return Err(message),
+        Some(ControlReply::Error { message, .. }) => return Err(message),
         Some(_) => return Err("local service returned an unexpected signing reply".to_owned()),
         None => return Err("the local Supgang service must be running for remote signing".to_owned()),
     };

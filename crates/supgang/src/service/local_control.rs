@@ -321,7 +321,7 @@ async fn handle_control(
             );
             match result {
                 Ok(changed) => (ControlReply::EndpointChanged, changed),
-                Err(tunnel_control::PublicationError::Policy(message)) => (ControlReply::Error { message }, false),
+                Err(tunnel_control::PublicationError::Policy(message)) => (ControlReply::error(message), false),
                 Err(tunnel_control::PublicationError::Authority(error)) => return Err(error),
             }
         }
@@ -336,7 +336,7 @@ async fn handle_control(
             u64::from(idle_seconds),
         ) {
             Ok(()) => ControlReply::LimitsSaved,
-            Err(message) => ControlReply::Error { message },
+            Err(message) => ControlReply::error(message),
         }
         .into_unchanged(),
         Ok(Ok(ControlRequest::Expose { name, port })) => {
@@ -429,7 +429,7 @@ async fn handle_control(
                             sent_datagrams: statistics.udp_tx.datagrams,
                             path: Some((&statistics.path).into()),
                             active_tunnels: Some(connection.active_tunnels()),
-                            tunnel_limit: Some(connection.tunnel_limit()),
+                            tunnel_limit: Some(tunnels.policy.borrow().per_peer),
                         }
                     });
                 }
@@ -438,6 +438,7 @@ async fn handle_control(
                 ControlReply::Peers { value }
             }
             Err(error) => ControlReply::Error {
+                code: None,
                 message: error.to_string(),
             },
         }
@@ -449,9 +450,11 @@ async fn handle_control(
         Ok(Ok(ControlRequest::Resolve(node_id))) if node_id == local_state.identity().device.node_id() => {
             match unix_time() {
                 Err(error) => ControlReply::Error {
+                    code: None,
                     message: error.to_string(),
                 },
                 Ok(_) if directory.is_revoked(&node_id) => ControlReply::Error {
+                    code: None,
                     message: "this computer's identity is revoked".to_owned(),
                 },
                 Ok(now) => match local_contact.verify(&local_state.identity().root_verifying_key, now) {
@@ -459,6 +462,7 @@ async fn handle_control(
                         value: cli_peer::resolve_local_live(local_contact, directory, now),
                     },
                     Err(error) => ControlReply::Error {
+                        code: None,
                         message: format!("this computer's signed record is not currently valid: {error}"),
                     },
                 },
@@ -468,13 +472,12 @@ async fn handle_control(
         Ok(Ok(ControlRequest::Resolve(node_id))) => unix_time()
             .map_or_else(
                 |error| ControlReply::Error {
+                    code: None,
                     message: error.to_string(),
                 },
                 |now| {
-                    cli_peer::resolve_from_directory(directory, node_id, now).map_or_else(
-                        |message| ControlReply::Error { message },
-                        |value| ControlReply::Resolve { value },
-                    )
+                    cli_peer::resolve_from_directory(directory, node_id, now)
+                        .map_or_else(ControlReply::error, |value| ControlReply::Resolve { value })
                 },
             )
             .into_unchanged(),
@@ -485,6 +488,7 @@ async fn handle_control(
             queue_update(state_directory, update_delivery, local_state, target, digest)
         }
         Ok(Err(_)) | Err(_) => ControlReply::Error {
+            code: None,
             message: "local control request is invalid".to_owned(),
         }
         .into_unchanged(),
@@ -495,6 +499,7 @@ async fn handle_control(
 
 fn unreachable_connect_reply() -> ControlReply {
     ControlReply::Error {
+        code: None,
         message: "local tunnel request was not admitted".to_owned(),
     }
 }
@@ -506,6 +511,7 @@ fn is_supervised() -> bool {
 fn restart_reply(instance_id: &str, requested: &mut bool, supervised: bool) -> ControlReply {
     if !supervised {
         return ControlReply::Error {
+            code: None,
             message: "this foreground process has no background supervisor to restart it".to_owned(),
         };
     }
@@ -540,6 +546,7 @@ fn revoke_from_control(
         Err(error) => {
             return Ok((
                 ControlReply::Error {
+                    code: None,
                     message: error.to_string(),
                 },
                 false,

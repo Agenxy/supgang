@@ -34,13 +34,7 @@ pub(super) async fn connect(
         (Err(refusal), _) => refusal,
         (Ok(_), Err(_)) => Refusal::InvalidName,
     };
-    let _reply = control::write_reply(
-        &mut stream,
-        &ControlReply::Error {
-            message: refusal.message().to_owned(),
-        },
-    )
-    .await;
+    let _reply = control::write_reply(&mut stream, &ControlReply::coded(refusal.code(), refusal.message())).await;
 }
 
 /// Why a tunnel request was refused, each with what the owner can do.
@@ -55,6 +49,17 @@ pub(super) enum Refusal {
 }
 
 impl Refusal {
+    pub(super) const fn code(self) -> control::ErrorCode {
+        match self {
+            Self::Revoked => control::ErrorCode::Revoked,
+            Self::NotConnected => control::ErrorCode::NotConnected,
+            Self::Unauthorized => control::ErrorCode::AuthorizationLapsed,
+            Self::RuntimeFull => control::ErrorCode::RuntimeFull,
+            Self::PeerFull => control::ErrorCode::PeerFull,
+            Self::InvalidName => control::ErrorCode::InvalidName,
+        }
+    }
+
     pub(super) const fn message(self) -> &'static str {
         match self {
             Self::Revoked => "the peer is revoked; tunnels to it are refused",
@@ -96,6 +101,9 @@ pub(super) fn admit(
     }
     if tunnel_tasks.len() >= tunnels.policy.borrow().total {
         return Err(Refusal::RuntimeFull);
+    }
+    if connection.active_tunnels() >= tunnels.policy.borrow().per_peer {
+        return Err(Refusal::PeerFull);
     }
     let global = tunnels
         .admission
@@ -139,7 +147,7 @@ pub(super) fn expose(
             }
             (ControlReply::ExposureChanged, removes_grant)
         }
-        Err(message) => (ControlReply::Error { message }, false),
+        Err(message) => (ControlReply::error(message), false),
     }
 }
 

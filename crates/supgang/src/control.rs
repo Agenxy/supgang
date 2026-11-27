@@ -28,6 +28,9 @@ pub const PEER_SESSION_FAILED: &str = "the session to the peer failed during tun
 /// Immediate refusal when the remote peer has no free per-peer or total tunnel slot.
 pub const PEER_AT_CAPACITY: &str =
     "the peer has reached its tunnel limit; close idle sessions or raise its limit with `supgang tunnel-limits`";
+/// The peer exposes the service, but nothing on its loopback port accepted the
+/// connection: the target's own server is down or its listen backlog is full.
+pub const PEER_UPSTREAM_UNAVAILABLE: &str = "the peer exposes the service, but could not connect to its local server; check that the server on the peer is running and accepting connections";
 /// Older services send this ambiguous reply for both refusal and setup timeout; current services do not emit it.
 pub const LEGACY_SETUP_FAILED: &str =
     "peer refused the service or service setup timed out; check target exposure and runtime version";
@@ -251,9 +254,62 @@ pub enum ControlReply {
     },
     /// Safe request failure.
     Error {
+        /// Stable machine-readable class for local clients to branch on;
+        /// absent when the failure has no defined class.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<ErrorCode>,
         /// Human-readable failure with no secret material.
         message: String,
     },
+}
+
+impl ControlReply {
+    /// A failure with no stable machine-readable class.
+    #[must_use]
+    pub const fn error(message: String) -> Self {
+        Self::Error { code: None, message }
+    }
+
+    /// A failure local clients can branch on by `code` instead of `message`.
+    #[must_use]
+    pub fn coded(code: ErrorCode, message: &str) -> Self {
+        Self::Error {
+            code: Some(code),
+            message: message.to_owned(),
+        }
+    }
+}
+
+/// Stable class of a local-control failure. Clients must branch on this, never
+/// on `message` text. New classes may be added; an older client reads a class
+/// it does not know as `Unknown`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// The remote peer has no free tunnel slot; retry later.
+    PeerAtCapacity,
+    /// This computer's per-peer tunnel budget for the target is in use; retry later.
+    PeerFull,
+    /// This computer's runtime-wide tunnel budget is in use; retry later.
+    RuntimeFull,
+    /// The peer session failed during tunnel setup and reconnects on its own; retry.
+    SessionFailed,
+    /// The peer is not connected right now and reconnects on its own; retry.
+    NotConnected,
+    /// The peer session authorization lapsed and renews on next contact; retry.
+    AuthorizationLapsed,
+    /// The peer is revoked; final.
+    Revoked,
+    /// The peer refused the named service; final until its exposure changes.
+    Refused,
+    /// The peer exposes the service but its loopback server did not accept
+    /// the connection, e.g. a full listen backlog; retry later.
+    UpstreamUnavailable,
+    /// The service name is invalid; final.
+    InvalidName,
+    /// A class this client does not know, sent by a newer service.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Local-control validation or I/O failure.

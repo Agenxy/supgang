@@ -133,7 +133,7 @@ fn execute(state_directory: &Path, command: &UpdateCommand) -> Result<UpdateOutp
                     digest: Some(digest),
                     ..simple("send")
                 }),
-                Ok(Some(ControlReply::Error { message })) => Err(message),
+                Ok(Some(ControlReply::Error { message, .. })) => Err(message),
                 Ok(Some(_)) => Err("local service returned an unexpected response".to_owned()),
                 Ok(None) => Err("Supgang must be running before it can deliver an update to a peer".to_owned()),
                 Err(error) => Err(error.to_string()),
