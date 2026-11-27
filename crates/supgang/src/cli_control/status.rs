@@ -50,7 +50,7 @@ pub fn status(state_directory: &Path, json: bool, output: &mut dyn Write, error:
                 error,
             );
         }
-        Ok(Some(ControlReply::Error { message })) => return render_error(json, &message, output, error),
+        Ok(Some(ControlReply::Error { message, .. })) => return render_error(json, &message, output, error),
         Ok(Some(_)) => return render_error(json, "local service returned an unexpected response", output, error),
         Ok(None) => {}
         Err(control_error) => return render_error(json, &control_error.to_string(), output, error),

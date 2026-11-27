@@ -123,11 +123,10 @@ pub(super) fn register_connection(
         connection.close(2_u8.into(), b"duplicate or neighbor limit");
         return;
     }
-    let limit = registry
-        .update
-        .as_ref()
-        .and_then(|update| update.tunnels.as_ref())
-        .map_or(4, |runtime| runtime.policy.borrow().per_peer);
+    // Size the per-peer budget at the hard ceiling and enforce the owner's
+    // live per-peer limit at admission, so a changed limit applies to this
+    // already-established session instead of only after it reconnects.
+    let limit = crate::tunnel_policy::MAX_PER_PEER;
     let tunnel_admission = Arc::new(tokio::sync::Semaphore::new(limit));
     let registered = ActiveConnection::new_with_known_networks(
         connection.clone(),

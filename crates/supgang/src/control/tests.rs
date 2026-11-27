@@ -3,7 +3,10 @@ use std::{
     os::unix::{fs::symlink, net::UnixListener as BlockingUnixListener},
 };
 
-use super::{ControlError, ControlListener, ControlRequest, decode_request, encode_request, request, request_within};
+use super::{
+    ControlError, ControlListener, ControlReply, ControlRequest, ErrorCode, PEER_AT_CAPACITY, decode_request,
+    encode_request, request, request_within,
+};
 use crate::ids::NodeId;
 use std::os::unix::fs::PermissionsExt;
 
@@ -259,5 +262,46 @@ fn a_service_that_accepts_but_never_answers_is_reported_as_unresponsive() -> Res
     );
     assert!(error.to_string().contains("did not answer within 1 s"), "{error}");
     assert!(elapsed < std::time::Duration::from_secs(3), "waited {elapsed:?}");
+    Ok(())
+}
+
+/// Local clients branch on `code`, never on `message`, so the field must be
+/// stable on the wire, absent when unclassified, and readable both by older
+/// clients (which ignore it) and by this client facing a newer service.
+#[test]
+fn error_code_is_stable_optional_and_forward_compatible() -> Result<(), Box<dyn std::error::Error>> {
+    let coded = serde_json::to_value(ControlReply::coded(ErrorCode::PeerAtCapacity, PEER_AT_CAPACITY))?;
+    assert_eq!(
+        coded,
+        serde_json::json!({"response": "error", "code": "peer_at_capacity", "message": PEER_AT_CAPACITY})
+    );
+    let plain = serde_json::to_value(ControlReply::error("x".to_owned()))?;
+    assert_eq!(plain, serde_json::json!({"response": "error", "message": "x"}));
+
+    let older: ControlReply = serde_json::from_str(r#"{"response":"error","message":"x"}"#)?;
+    assert!(matches!(older, ControlReply::Error { code: None, ref message } if message == "x"));
+    let newer: ControlReply = serde_json::from_str(r#"{"response":"error","code":"from_the_future","message":"x"}"#)?;
+    assert!(matches!(
+        newer,
+        ControlReply::Error {
+            code: Some(ErrorCode::Unknown),
+            ..
+        }
+    ));
+
+    for (code, wire) in [
+        (ErrorCode::PeerAtCapacity, "peer_at_capacity"),
+        (ErrorCode::PeerFull, "peer_full"),
+        (ErrorCode::RuntimeFull, "runtime_full"),
+        (ErrorCode::SessionFailed, "session_failed"),
+        (ErrorCode::NotConnected, "not_connected"),
+        (ErrorCode::AuthorizationLapsed, "authorization_lapsed"),
+        (ErrorCode::Revoked, "revoked"),
+        (ErrorCode::Refused, "refused"),
+        (ErrorCode::UpstreamUnavailable, "upstream_unavailable"),
+        (ErrorCode::InvalidName, "invalid_name"),
+    ] {
+        assert_eq!(serde_json::to_value(code)?, serde_json::json!(wire));
+    }
     Ok(())
 }

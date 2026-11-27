@@ -66,8 +66,12 @@ The owner-only control socket already provides the stream endpoint other local t
   (`supgang --json resolve <peer>` reports `node_id`).
 - **Reply.** One frame: a 4-byte big-endian length, then JSON. `{"response":"connected"}` is
   followed on the same socket by the service's raw bytes in both directions until either side
-  closes; half-close is carried. `{"response":"error","message":"..."}` ends the exchange. Callers
-  key on the tag, never on message text.
+  closes; half-close is carried. `{"response":"error","code":"...","message":"..."}` ends the
+  exchange. Callers key on the tag and `code`, never on message text. `code` is one of
+  `peer_at_capacity`, `peer_full`, `runtime_full`, `upstream_unavailable`, `session_failed`,
+  `not_connected` and `authorization_lapsed` (transient: retry within the caller's deadline), or `revoked`,
+  `refused` and `invalid_name` (final). It is absent from older services and from failures with
+  no defined class; a caller treats an unknown or absent code as it would its safest default.
 - **Bounds.** The peer must have a live authorized session; streams are admitted against the
   per-peer and runtime tunnel limits (owner-configured, `supgang tunnel-limits`); setup times out
   after a few seconds; the target connects only to the loopback port its owner exposed under

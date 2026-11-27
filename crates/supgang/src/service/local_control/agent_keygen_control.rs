@@ -44,9 +44,11 @@ pub(super) async fn handle(
                         public_key: hex::encode(public_key),
                     },
                     Ok(KeygenReply::Refused { .. }) => ControlReply::Error {
+                        code: None,
                         message: "the key creation peer refused the request".to_owned(),
                     },
                     Err(message) => ControlReply::Error {
+                        code: None,
                         message: message.to_owned(),
                     },
                 };
@@ -62,6 +64,7 @@ pub(super) async fn handle(
     let _sent = control::write_reply(
         &mut stream,
         &ControlReply::Error {
+            code: None,
             message: refusal.to_owned(),
         },
     )

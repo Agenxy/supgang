@@ -146,7 +146,9 @@ pub fn name(
                 Ok(name) => (name, "unchanged"),
                 Err(profile_error) => return render_error(json, &profile_error.to_string(), output, error),
             },
-            Ok(Some(control::ControlReply::Error { message })) => return render_error(json, &message, output, error),
+            Ok(Some(control::ControlReply::Error { message, .. })) => {
+                return render_error(json, &message, output, error);
+            }
             Ok(Some(_)) => return render_error(json, "local service returned an unexpected response", output, error),
             Ok(None) => {
                 let local_state = match state::open(state_directory) {

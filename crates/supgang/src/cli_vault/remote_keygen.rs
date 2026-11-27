@@ -104,7 +104,7 @@ fn send_request(state_directory: &Path, remote: &str, request: &KeygenRequest) -
 fn verify_reply(reply: Option<ControlReply>, request: &KeygenRequest) -> Result<SigningPublic, String> {
     let (nonce, public_key) = match reply {
         Some(ControlReply::AgentKeyCreated { nonce, public_key }) => (nonce, public_key),
-        Some(ControlReply::Error { message }) => return Err(message),
+        Some(ControlReply::Error { message, .. }) => return Err(message),
         Some(_) => return Err("local service returned an unexpected key creation reply".to_owned()),
         None => return Err("the local Supgang service must be running for remote key creation".to_owned()),
     };

@@ -8,6 +8,17 @@ The corrective source reports version `0.2.0-alpha.21` so it cannot be mistaken 
 `0.1.0` build that failed physical WAN acceptance. This version advances from the alpha.20
 agent-keygen build accepted on the laptop and Solis.
 
+- Give local-control error replies a stable machine-readable `code` beside `message`, so local
+  consumers such as Remap can tell a full tunnel budget or reconnecting peer (retry) from a
+  revoked peer or refused service (final) without parsing English text.
+
+- Report an exposed service whose loopback connect failed, for example because of a full listen
+  backlog or file limit, as `upstream_unavailable` instead of as an unexposed service. Older peers
+  still report it as a refusal.
+
+- Apply a raised or lowered per-peer tunnel limit to peers that are already connected. Before,
+  the limit was fixed when each peer session was made, so raising it needed a service restart.
+
 - Add explicit, fingerprint-pinned migration of an existing unscoped Ed25519
   signing key to an immutable agent-purpose policy. Its public key and consumer
   fingerprint stay unchanged. A durable reservation precedes resealing, and a

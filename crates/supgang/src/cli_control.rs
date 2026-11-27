@@ -219,7 +219,7 @@ fn resolve_node(
                 render_resolve(&value, json, output, error)
             }
         }
-        Ok(Some(ControlReply::Error { message })) => render_error(json, &message, output, error),
+        Ok(Some(ControlReply::Error { message, .. })) => render_error(json, &message, output, error),
         Ok(Some(_)) => unexpected(json, output, error),
         Ok(None) => match cli_peer::resolve(state_directory, &node_id.to_string()) {
             Ok(result) => render_resolve(&result, json, output, error),
@@ -232,7 +232,7 @@ fn resolve_node(
 fn peers_snapshot(state_directory: &Path) -> Result<cli_peer::PeersOutput, String> {
     let mut result = match control::request(state_directory, ControlRequest::Peers) {
         Ok(Some(ControlReply::Peers { value })) => value,
-        Ok(Some(ControlReply::Error { message })) => return Err(message),
+        Ok(Some(ControlReply::Error { message, .. })) => return Err(message),
         Ok(Some(_)) => return Err("local service returned an unexpected response".to_owned()),
         Ok(None) => cli_peer::peers_read_only(state_directory)?,
         Err(control_error) => return Err(control_error.to_string()),
@@ -259,7 +259,7 @@ pub fn revoke(
             serial,
             changed,
         })) => render_revoke(&node_id, serial, changed, json, output, error),
-        Ok(Some(ControlReply::Error { message })) => render_error(json, &message, output, error),
+        Ok(Some(ControlReply::Error { message, .. })) => render_error(json, &message, output, error),
         Ok(Some(_)) => unexpected(json, output, error),
         Ok(None) => {
             let mut local_state = match state::open(state_directory) {

@@ -362,6 +362,13 @@ fn a_refused_tunnel_names_its_reason_and_the_remedy() -> Result<(), Error> {
         return Err("a tunnel beyond the per-peer limit was admitted".into());
     };
     assert!(full.to_string().contains("per-peer limit"), "{full}");
+    // A raised per-peer limit applies to the established session at once;
+    // the owner must not need a restart or a reconnect for it to take effect.
+    world.fleet.set_tunnel_limits(LAPTOP, 2, 64)?;
+    let second = open_tunnel(world.fleet.computer(LAPTOP)?, solis, "ssh")
+        .map_err(|error| format!("a raised per-peer limit did not apply to the live session: {error}"))?;
+    second.shutdown(std::net::Shutdown::Both)?;
+    drop(second);
     held.shutdown(std::net::Shutdown::Both)?;
     drop(held);
     let _echo = echo.join();

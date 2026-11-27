@@ -51,8 +51,9 @@ until Ctrl-C.
 
 Defaults are four concurrent tunnels per peer, sixteen total, and a two-hour idle timeout; the
 per-peer ceiling is 64, for tools that keep many SSH connections open at once.
-While the service is stopped, `supgang tunnel-limits --per-peer 4 --total 16 --idle-seconds 7200`
-sets bounded owner policy. Active transfers have no fixed lifetime cutoff; verified fresh endpoint
+`supgang tunnel-limits --per-peer 4 --total 16 --idle-seconds 7200` sets bounded owner policy. A
+changed per-peer or idle limit applies to new tunnels at once, including on peers already
+connected; a changed total applies after the service restarts. Active transfers have no fixed lifetime cutoff; verified fresh endpoint
 records may renew the same device, transport key and generation before existing authority expires.
 Revocation and membership expiry still end that authority. A changed transport key or generation
 cannot renew the session and requires a new handshake.

@@ -7,7 +7,7 @@ pub(super) fn peer_endpoint_check(directory: &std::path::Path, selector: &str) -
             .map_err(|_| "peer endpoint check could not reach the local service".to_owned())?
         {
             Some(crate::control::ControlReply::Resolve { value }) => value,
-            Some(crate::control::ControlReply::Error { message }) => return Err(message),
+            Some(crate::control::ControlReply::Error { message, .. }) => return Err(message),
             Some(_) => return Err("local peer endpoint reply is incompatible".to_owned()),
             None => crate::cli_peer::resolve(directory, &target.to_string())?,
         };
@@ -196,7 +196,7 @@ pub(super) fn run(
                 ),
             },
         ),
-        Ok(Some(control::ControlReply::Error { message })) => (
+        Ok(Some(control::ControlReply::Error { message, .. })) => (
             false,
             DoctorCheck {
                 id: "authoritative-state",

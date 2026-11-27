@@ -68,6 +68,7 @@ mod tests {
         assert!(!probe.matches(None, Some(42)));
         assert!(!probe.matches(
             Some(&ControlReply::Error {
+                code: None,
                 message: "not ready".to_owned()
             }),
             Some(42)

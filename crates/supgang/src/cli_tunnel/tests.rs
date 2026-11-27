@@ -55,6 +55,7 @@ fn connect_exit_codes_distinguish_transient_failure_from_refusal() {
     for message in [
         "the peer refused the service; check its exposure and runtime version",
         control::PEER_AT_CAPACITY,
+        control::PEER_UPSTREAM_UNAVAILABLE,
         "the peer is revoked; tunnels to it are refused",
         "every tunnel allowed to this peer is in use",
         "no known peer with that name",

@@ -135,6 +135,34 @@ fn an_unexposed_service_is_refused_without_a_retry() -> Result<(), Error> {
     Ok(())
 }
 
+/// An exposed service whose loopback server is not accepting is reported as
+/// that, not as an unexposed service, so a consumer can retry it.
+#[test]
+fn an_exposed_service_with_no_listener_is_reported_as_upstream_unavailable() -> Result<(), Error> {
+    let world = paired_at_home(
+        HomeGateway {
+            ipv4_forward: false,
+            ipv6: Ipv6Policy::DefaultDeny,
+        },
+        103,
+    )?;
+    let solis = world.fleet.computer(SOLIS)?;
+    let laptop = world.fleet.computer(LAPTOP)?;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let name = crate::tunnel_policy::encoded_name(&crate::record::ServiceName::new("ssh")?);
+    match crate::control::request(&solis.path, crate::control::ControlRequest::Expose { name, port })? {
+        Some(crate::control::ControlReply::ExposureChanged) => {}
+        other => return Err(format!("exposure refused: {other:?}").into()),
+    }
+    wait_connected(&world.fleet, LAPTOP, SOLIS, ROAMING)?.ok_or("no connection after exposure")?;
+    let refusal = open_tunnel(laptop, solis.node, "ssh")
+        .err()
+        .ok_or("a tunnel to a closed loopback port was accepted")?
+        .to_string();
+    assert!(refusal.contains("could not connect to its local server"), "{refusal}");
+    Ok(())
+}
+
 fn peer_tunnel_counts(
     computer: &super::super::sim_harness::Computer,
     peer: crate::ids::NodeId,
