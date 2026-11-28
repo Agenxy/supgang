@@ -22,9 +22,14 @@ PROMPT = b"Escrow passphrase (hidden): "
 TEST_ONLY_PASSPHRASE = b"test-only-terminal-response"
 
 
+def cargo_target_dir() -> Path:
+    configured = os.environ.get("CARGO_TARGET_DIR")
+    return Path(configured) if configured else ROOT / "target"
+
+
 class LmsHiddenPromptTest(unittest.TestCase):
     def test_prompt_hides_input_before_a_fast_response(self):
-        binary = Path(os.environ.get("SUPGANG_TEST_BIN", ROOT / "target" / "debug" / "supgang"))
+        binary = Path(os.environ.get("SUPGANG_TEST_BIN", cargo_target_dir() / "debug" / "supgang"))
         self.assertTrue(binary.is_file(), "the workspace test stage must build supgang first")
         with tempfile.TemporaryDirectory(prefix="supgang-lms-prompt-") as directory:
             path = Path(directory) / "malformed.age"
@@ -81,7 +86,7 @@ class LmsHiddenPromptTest(unittest.TestCase):
                 os.close(slave)
 
     def test_derive_public_hides_input_and_refuses_wrong_length_master(self):
-        binary = Path(os.environ.get("SUPGANG_TEST_BIN", ROOT / "target" / "debug" / "supgang"))
+        binary = Path(os.environ.get("SUPGANG_TEST_BIN", cargo_target_dir() / "debug" / "supgang"))
         self.assertTrue(binary.is_file(), "the workspace test stage must build supgang first")
         prompt = b"Master secret hex (hidden): "
         short_master = b"00112233445566778899aabbccddeeff"
@@ -136,7 +141,7 @@ class LmsHiddenPromptTest(unittest.TestCase):
             os.close(slave_fd)
 
     def test_share_verify_hides_passphrase_prompts(self):
-        binary = Path(os.environ.get("SUPGANG_TEST_BIN", ROOT / "target" / "debug" / "supgang"))
+        binary = Path(os.environ.get("SUPGANG_TEST_BIN", cargo_target_dir() / "debug" / "supgang"))
         self.assertTrue(binary.is_file(), "the workspace test stage must build supgang first")
         with tempfile.TemporaryDirectory(prefix="supgang-lms-share-prompt-") as directory:
             first = Path(directory) / "a.share.age"
@@ -233,7 +238,7 @@ class LmsHiddenPromptTest(unittest.TestCase):
                 check=True,
                 timeout=900,
             )
-            probe = ROOT / "target" / "debug" / "examples" / "lms_share_verify_prompt"
+            probe = cargo_target_dir() / "debug" / "examples" / "lms_share_verify_prompt"
         else:
             probe = Path(override)
         self.assertTrue(probe.is_file(), "lms_share_verify_prompt probe binary is missing")
@@ -361,7 +366,7 @@ class LmsHiddenPromptTest(unittest.TestCase):
                 os.close(slave_fd)
 
     def test_piped_stdout_is_refused_even_when_stdin_and_stderr_are_a_tty(self):
-        binary = Path(os.environ.get("SUPGANG_TEST_BIN", ROOT / "target" / "debug" / "supgang"))
+        binary = Path(os.environ.get("SUPGANG_TEST_BIN", cargo_target_dir() / "debug" / "supgang"))
         self.assertTrue(binary.is_file(), "the workspace test stage must build supgang first")
         with tempfile.TemporaryDirectory(prefix="supgang-lms-stdout-tty-") as directory:
             a = Path(directory) / "a"
