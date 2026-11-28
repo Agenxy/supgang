@@ -126,7 +126,7 @@ statically linked Go binary from
   home) with no access to `supgang`'s home directory, vault sockets, or any
   other bench account.
 - Bounded by a root-owned systemd slice (`/etc/systemd/system/user-1006.slice.d/50-agenxy-runner.conf`:
-  `CPUQuota=300%`, `MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`,
+  `CPUQuota=300%`, `MemoryHigh=7G`, `MemoryMax=8G`, `MemorySwapMax=0`,
   `TasksMax=2048`, `IOWeight=10`) plus `Nice=10` and `IOSchedulingClass=idle`
   on the user runner unit so shared K3 bench lanes are not starved.
 - Runs only the non-required `riscv64 (k3)` job executing `ci-core` on
