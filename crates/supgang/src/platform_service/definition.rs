@@ -96,7 +96,6 @@ pub(super) fn render_systemd(
     validate_policy(endpoints, router_mapping)?;
     let executable = systemd_argument(executable)?.replace('$', "$$");
     let command_state = systemd_argument(state_directory)?.replace('$', "$$");
-    let state_directory = systemd_argument(state_directory)?;
     let endpoint_arguments = if let Some(path) = endpoints {
         format!(" --endpoints {}", systemd_argument(path)?.replace('$', "$$"))
     } else {
@@ -105,8 +104,15 @@ pub(super) fn render_systemd(
     let anchor_argument = if anchor { " --anchor" } else { "" };
     let mapping_argument = if router_mapping { " --router-mapping" } else { "" };
     let policy_arguments = format!("{anchor_argument}{mapping_argument}{endpoint_arguments}");
+    // Unprivileged `systemd --user` units omit mount-namespace directives
+    // (`PrivateTmp`, `ProtectSystem`, `ProtectHome`, `ReadWritePaths`) and
+    // `CapabilityBoundingSet`: on systemd 256+, mount namespaces in a user
+    // manager implicitly create a single-UID `CLONE_NEWUSER` namespace that
+    // remaps host root (UID 0) on `/` and `/home` to `overflowuid` (65534),
+    // which breaks strict ancestor ownership validation, while
+    // `CapabilityBoundingSet=` without a user namespace fails with 218/CAPABILITIES.
     Ok(format!(
-        "[Unit]\nDescription=Supgang peer address discovery\nDocumentation=https://agenxy.org/projects/supgang/\n\n[Service]\nType=simple\nSyslogIdentifier=supgang\nExecStart={executable} --json --state-dir {command_state} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={state_directory}\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Supgang peer address discovery\nDocumentation=https://agenxy.org/projects/supgang/\n\n[Service]\nType=simple\nSyslogIdentifier=supgang\nExecStart={executable} --json --state-dir {command_state} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n\n[Install]\nWantedBy=default.target\n"
     ))
 }
 
@@ -175,13 +181,16 @@ mod tests {
         assert!(unit.contains(
             "ExecStart=\"/home/a b/sup%%gang\" --json --state-dir \"/home/a b/state\" supervise --endpoints \"/home/a b/endpoints.json\""
         ));
-        assert!(unit.contains("ProtectSystem=strict"));
         assert!(unit.contains("Description=Supgang peer address discovery\n"));
         assert!(unit.contains("Documentation=https://agenxy.org/projects/supgang/\n"));
         assert!(unit.contains("SyslogIdentifier=supgang\n"));
-        assert!(unit.contains("NoNewPrivileges=true"));
-        assert!(unit.contains("StandardOutput=null"));
-        assert!(unit.contains("CapabilityBoundingSet=\n"));
+        assert!(unit.contains("NoNewPrivileges=true\n"));
+        assert!(unit.contains("StandardOutput=null\n"));
+        assert!(unit.contains("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n"));
+        assert!(!unit.contains("ProtectSystem="));
+        assert!(!unit.contains("ProtectHome="));
+        assert!(!unit.contains("PrivateTmp="));
+        assert!(!unit.contains("CapabilityBoundingSet="));
         Ok(())
     }
 
@@ -195,7 +204,6 @@ mod tests {
             false,
         )?;
         assert!(unit.contains("ExecStart=\"/home/$${USER}/sg\" --json --state-dir \"/home/$$STATE\" supervise --endpoints \"/home/$${CFG}\""));
-        assert!(unit.contains("ReadWritePaths=\"/home/$STATE\""));
         Ok(())
     }
 

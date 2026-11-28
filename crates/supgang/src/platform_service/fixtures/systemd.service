@@ -12,18 +12,12 @@ UMask=0077
 StandardOutput=null
 StandardError=null
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths="/safe/state"
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictRealtime=true
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-CapabilityBoundingSet=
-AmbientCapabilities=
 
 [Install]
 WantedBy=default.target
