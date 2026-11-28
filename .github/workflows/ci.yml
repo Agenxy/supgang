@@ -367,7 +367,7 @@ jobs:
         )
       )
     runs-on: [self-hosted, linux, riscv64, k3]
-    timeout-minutes: 45
+    timeout-minutes: 150
     steps:
       - name: Enforce 70% root disk cap and prepare clean checkout
         env:
@@ -416,6 +416,7 @@ jobs:
             "https://static.crates.io/crates/portmapper/portmapper-0.20.2.crate" \
             "d36ce759df600731dd2511cd2d640bd551086b2f7b68bceb9bbcfd8c7ff86053"
       - name: Run core repository gate natively on riscv64
+        timeout-minutes: 140
         env:
           SUPGANG_QUALITY_CACHE: off
           CARGO_BUILD_JOBS: "3"
