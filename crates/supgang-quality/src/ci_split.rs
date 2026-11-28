@@ -18,6 +18,7 @@ const CLI_PACKAGE: &str = "supgang";
 const CORE_PACKAGE: &str = "supgang-core";
 const KDF_KAT_TEST_TARGET: &str = "lms_kdf_kat";
 const KDF_KAT_SOURCE: &str = "crates/supgang-cli/tests/lms_kdf_kat.rs";
+const LMS_CEREMONY_VERIFY_TEST: &str = "cli_lms_verify::tests::ceremony_file_verifies_and_wrong_inputs_refuse";
 const SCENARIO_TEST_FILTER: &str = "service::tests::scenarios::";
 
 /// Runs policy and Rust documentation checks for docs-only pull requests.
@@ -85,6 +86,8 @@ pub fn run_ci_core(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -
         "--",
         "--skip",
         SCENARIO_TEST_FILTER,
+        "--skip",
+        LMS_CEREMONY_VERIFY_TEST,
     ];
     for kat_name in &kat_tests {
         test_args.push("--skip");
@@ -107,6 +110,7 @@ pub fn run_ci_core(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -
 
 /// Runs the heavy CI split partner on the same runner OS:
 /// - the H20 KDF known-answer test in release mode (`lms_kdf_kat`);
+/// - the LMS ceremony verification test (`cli_lms_verify::tests::ceremony_file_verifies_and_wrong_inputs_refuse`);
 /// - the simulated-network scenario tests (`service::tests::scenarios::`);
 /// - release workspace build and CLI smoke test.
 pub fn run_ci_heavy(root: &Path, output: &mut dyn Write, error: &mut dyn Write) -> Result<(), String> {
@@ -141,6 +145,34 @@ pub fn run_ci_heavy(root: &Path, output: &mut dyn Write, error: &mut dyn Write) 
             "--",
             "--version",
         ],
+        output,
+        error,
+    )?;
+
+    let ceremony_matched = count_matching_core_tests(root, LMS_CEREMONY_VERIFY_TEST, &test_env)?;
+    if ceremony_matched != 1 {
+        return Err(format!(
+            "LMS ceremony verify filter {LMS_CEREMONY_VERIFY_TEST:?} matched {ceremony_matched} test(s) in {CORE_PACKAGE}, expected 1"
+        ));
+    }
+    writeln!(
+        output,
+        "Running {ceremony_matched} split LMS ceremony verify test in {CORE_PACKAGE}."
+    )
+    .map_err(|write_error| write_error.to_string())?;
+    run_cargo_with_env(
+        root,
+        &[
+            "test",
+            "--locked",
+            "--package",
+            CORE_PACKAGE,
+            "--lib",
+            "--",
+            "--exact",
+            LMS_CEREMONY_VERIFY_TEST,
+        ],
+        &test_env,
         output,
         error,
     )?;
@@ -269,6 +301,9 @@ mod tests {
     use super::{KDF_KAT_SOURCE, kdf_kat_test_names, workspace_metadata, workspace_package_names};
     use crate::workspace_root;
 
+    const LMS_CEREMONY_VERIFY_FN: &str = "ceremony_file_verifies_and_wrong_inputs_refuse";
+    const LMS_CEREMONY_VERIFY_SOURCE: &str = "crates/supgang/src/cli_lms_verify.rs";
+
     fn collect_rust_sources(directory: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
         for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
             let path = entry.map_err(|error| error.to_string())?.path();
@@ -305,6 +340,35 @@ mod tests {
                         path.display()
                     ));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lms_ceremony_verify_test_is_present_and_unique_in_workspace() -> Result<(), String> {
+        let root = workspace_root()?;
+        let verify_path = root.join(LMS_CEREMONY_VERIFY_SOURCE);
+        let verify_text = fs::read_to_string(&verify_path)
+            .map_err(|error| format!("could not read {}: {error}", verify_path.display()))?;
+        if !verify_text.contains(&format!("fn {LMS_CEREMONY_VERIFY_FN}(")) {
+            return Err(format!(
+                "expected test function {LMS_CEREMONY_VERIFY_FN:?} in {}",
+                verify_path.display()
+            ));
+        }
+        let mut sources = Vec::new();
+        collect_rust_sources(&root.join("crates"), &mut sources)?;
+        for path in sources {
+            if path == verify_path || path == root.join("crates/supgang-quality/src/ci_split.rs") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+            if text.contains(LMS_CEREMONY_VERIFY_FN) {
+                return Err(format!(
+                    "LMS ceremony verify test {LMS_CEREMONY_VERIFY_FN:?} also appears in {}, which would over-skip in ci-core",
+                    path.display()
+                ));
             }
         }
         Ok(())
