@@ -94,3 +94,54 @@ The vault (ADR 0009) needs hardware custody, so it is macOS-only until phase 3.
 - The macOS-only release-ceremony steps keep their current custody. They are
   Apple codesigning, and the LMS root (ADR 0010) on the Secure Enclave.
 - No phase may weaken a gate on any platform to make another platform pass.
+
+## Addendum: K3 self-hosted riscv64 CI runner (2026-11-28)
+
+GitHub's official `actions/runner` does not publish a `linux-riscv64` release
+binary. To run native `riscv64` CI on the lab K3 board without waiting for
+upstream `.NET` and `actions/runner` packaging, `Agenxy/supgang` uses a pinned,
+statically linked Go binary from
+`ChristopherHX/github-act-runner` (`v0.13.0`, tag commit
+`c934667526f602e5732e7072fcd53b36cf044e37`).
+
+### Supply-chain pin and update policy
+
+- Release archive (`binary-linux-riscv64.tar.gz`):
+  - SHA-512: `7b74b58737f0f5ae062c46646c0e3a5befa5ec2c2f466604e6d77b48615ca81804f3363b0e079e37087b5be53172cf3144842b2da54d70ad74e86d4e23e8fc9b`
+  - SHA-256: `be84104d5f8fcf12afe9fcc3541900f5ccd033687cfb9b32105208efa5a8234d`
+- Extracted binary (`github-act-runner`; bundled `.sh` wrappers are never installed):
+  - SHA-512: `83b124cb2067dc0b4eee68f2bd14ac135504c6f6581a910ebe1bb3d79ccfe2d5c89bc2649f89341361c70e7ed3a9166c14005044ceb779eaa22115a0a320f7c0`
+  - SHA-256: `bbd2ef2dbefcfc18e48cc57412a3c8f8936d8249766288f4bb2d322e7e7714f0`
+- Sigstore bundle (`binary-linux-riscv64.sigstore.json`) verified with `cosign verify-blob`
+  binding OIDC issuer `https://token.actions.githubusercontent.com`, identity
+  `https://github.com/ChristopherHX/github-act-runner/.github/workflows/build.yml@refs/heads/main`,
+  repository `ChristopherHX/github-act-runner`, and workflow commit SHA
+  `c934667526f602e5732e7072fcd53b36cf044e37`.
+- Auto-update is disabled. Every upgrade requires a pull request that updates
+  the pinned version, hashes, and Sigstore verification record here.
+
+### Isolation and operational bounds
+
+- Runs under a dedicated non-root Linux account (`gha-supgang`, mode `0700`
+  home) with no access to `supgang`'s home directory, vault sockets, or any
+  other bench account.
+- Bounded by a root-owned systemd slice (`/etc/systemd/system/user-1006.slice.d/50-agenxy-runner.conf`:
+  `CPUQuota=300%`, `MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=0`,
+  `TasksMax=2048`, `IOWeight=10`) plus `Nice=10` and `IOSchedulingClass=idle`
+  on the user runner unit so shared K3 bench lanes are not starved.
+- Runs only the non-required `riscv64 (k3)` job executing `ci-core` on
+  `Agenxy/supgang` org-member pull requests (`head.repo.full_name ==
+  github.repository && !head.repo.fork`) and pushes to `main`, backed by the
+  repository's `all_external_contributors` fork-PR approval policy.
+- Uses a clean per-job checkout directory wiped before and after every run, and
+  prunes Cargo build caches whenever root disk usage reaches 70%.
+
+### Removal
+
+1. On the K3, stop and disable the runner systemd unit and remove the runner
+   registration (`github-act-runner remove` or via GitHub repository
+   Settings -> Actions -> Runners).
+2. Remove the dedicated runner account, home directory, and systemd slice/unit
+   on the K3.
+3. Remove the `quality-core-riscv64` job from `.github/workflows/ci.yml` and
+   note the retirement in this ADR.
