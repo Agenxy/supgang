@@ -24,6 +24,7 @@ ifneq ($(strip $(MACOS_CODESIGN_IDENTITY)),)
 endif
 endif
 	$(CARGO_CACHE) --profile release -- $(CARGO) install --frozen --force --root "$(INSTALL_ROOT)" --path crates/supgang-cli
+	chmod 755 "$(INSTALL_BIN)"
 ifeq ($(shell uname -s),Darwin)
 	uv run --offline --script platforms/macos/build.py --beside "$(INSTALL_BIN)"
 	chmod 700 "$(INSTALL_ROOT)/bin/supgang-secure-enclave"
