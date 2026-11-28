@@ -142,7 +142,8 @@ def build_rust_helper() -> Path:
         env=env,
         check=True,
     )
-    binary = ROOT / "target" / "debug" / "examples" / "slip39_crosscheck"
+    target_dir = Path(os.environ["CARGO_TARGET_DIR"]) if os.environ.get("CARGO_TARGET_DIR") else ROOT / "target"
+    binary = target_dir / "debug" / "examples" / "slip39_crosscheck"
     if not binary.is_file():
         raise FileNotFoundError(f"built helper not found at {binary}")
     return binary

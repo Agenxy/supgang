@@ -353,6 +353,92 @@ jobs:
           fi
           printf 'Ubuntu split gate passed: core=%s heavy=%s package=%s\n' "$CORE_RESULT" "$HEAVY_RESULT" "$PACKAGE_RESULT"
 
+  quality-core-riscv64:
+    name: riscv64 (k3)
+    needs: changes
+    if: >-
+      needs.changes.outputs.full_gate == 'true' &&
+      (
+        github.event_name == 'push' ||
+        (
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          !github.event.pull_request.head.repo.fork
+        )
+      )
+    runs-on: [self-hosted, linux, riscv64, k3]
+    timeout-minutes: 150
+    steps:
+      - name: Enforce 70% root disk cap and prepare clean checkout
+        env:
+          TARGET_REPO: ${{ github.repository }}
+          TARGET_REF: ${{ github.ref }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          export PATH="$HOME/.local/bin:$PATH"
+          if [ -x "$HOME/.local/bin/prune-ci-cache.py" ]; then
+            "$HOME/.local/bin/prune-ci-cache.py"
+          fi
+          workdir="$HOME/work/supgang"
+          rm -rf "$workdir"
+          mkdir -p "$HOME/work"
+          chmod 700 "$HOME/work"
+          mkdir -p "$workdir"
+          chmod 700 "$workdir"
+          git -C "$workdir" init --quiet
+          if ! git -C "$workdir" fetch --quiet --depth 1 "https://github.com/${TARGET_REPO}.git" "$TARGET_SHA"; then
+            git -C "$workdir" fetch --quiet --depth 1 "https://github.com/${TARGET_REPO}.git" "$TARGET_REF"
+          fi
+          git -C "$workdir" checkout --quiet --detach FETCH_HEAD
+          git -C "$workdir" rev-parse HEAD
+      - name: Ensure pinned vendored crate archives
+        run: |
+          set -eu
+          cache_dir="${CARGO_HOME:-$HOME/.cargo}/registry/cache/index.crates.io-1949cf8c6b5b557f"
+          mkdir -p "$cache_dir"
+          fetch_verified() {
+            name="$1"
+            url="$2"
+            expected="$3"
+            archive="$cache_dir/$name"
+            if [ ! -f "$archive" ]; then
+              curl --fail --location --show-error --silent "$url" --output "$archive"
+            fi
+            printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -
+          }
+          fetch_verified \
+            "netwatch-0.20.2.crate" \
+            "https://static.crates.io/crates/netwatch/netwatch-0.20.2.crate" \
+            "2acf7a1ca9205d7c1fc9a1595193a8cbaa7537b4a07dca93c6ae3de7c8d0e597"
+          fetch_verified \
+            "portmapper-0.20.2.crate" \
+            "https://static.crates.io/crates/portmapper/portmapper-0.20.2.crate" \
+            "d36ce759df600731dd2511cd2d640bd551086b2f7b68bceb9bbcfd8c7ff86053"
+      - name: Run core repository gate natively on riscv64
+        timeout-minutes: 140
+        env:
+          SUPGANG_QUALITY_CACHE: off
+          CARGO_BUILD_JOBS: "3"
+          RUST_TEST_THREADS: "3"
+        run: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.cache/k3-ci-target"
+          mkdir -p "$HOME/.cache"
+          chmod 700 "$HOME/.cache"
+          cd "$HOME/work/supgang"
+          nice -n 10 ionice -c 3 cargo run --locked --package supgang-quality -- ci-core
+      - name: Clean workdir and enforce 70% root disk cap
+        if: always()
+        run: |
+          set -eu
+          export PATH="$HOME/.local/bin:$PATH"
+          rm -rf "$HOME/work/supgang"
+          if [ -x "$HOME/.local/bin/prune-ci-cache.py" ]; then
+            "$HOME/.local/bin/prune-ci-cache.py"
+          fi
+
   advisories:
     name: RustSec advisories
     runs-on: ubuntu-24.04
