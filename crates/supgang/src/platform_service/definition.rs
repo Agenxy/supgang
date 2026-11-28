@@ -105,14 +105,19 @@ pub(super) fn render_systemd(
     let mapping_argument = if router_mapping { " --router-mapping" } else { "" };
     let policy_arguments = format!("{anchor_argument}{mapping_argument}{endpoint_arguments}");
     // Unprivileged `systemd --user` units omit mount-namespace directives
-    // (`PrivateTmp`, `ProtectSystem`, `ProtectHome`, `ReadWritePaths`) and
-    // `CapabilityBoundingSet`: on systemd 256+, mount namespaces in a user
-    // manager implicitly create a single-UID `CLONE_NEWUSER` namespace that
-    // remaps host root (UID 0) on `/` and `/home` to `overflowuid` (65534),
-    // which breaks strict ancestor ownership validation, while
-    // `CapabilityBoundingSet=` without a user namespace fails with 218/CAPABILITIES.
+    // (`PrivateTmp`, `PrivateDevices`, `ProtectSystem`, `ProtectHome`,
+    // `ProtectClock`, `ProtectKernelLogs`, `ProtectKernelTunables`,
+    // `ProtectKernelModules`, `ProtectControlGroups`, `ProtectHostname`,
+    // `ReadWritePaths`) and `CapabilityBoundingSet`: on systemd 256+, mount
+    // namespaces in a user manager implicitly create a single-UID
+    // `CLONE_NEWUSER` namespace that remaps host root (UID 0) on `/` and
+    // `/home` to `overflowuid` (65534), which breaks strict ancestor ownership
+    // validation, while `CapabilityBoundingSet=` without a user namespace fails
+    // with 218/CAPABILITIES. Instead, enforce the non-namespace kernel filters
+    // that work under `NoNewPrivileges=true` (`RestrictNamespaces`,
+    // `SystemCallFilter`, `SystemCallErrorNumber`, `KeyringMode`).
     Ok(format!(
-        "[Unit]\nDescription=Supgang peer address discovery\nDocumentation=https://agenxy.org/projects/supgang/\n\n[Service]\nType=simple\nSyslogIdentifier=supgang\nExecStart={executable} --json --state-dir {command_state} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Supgang peer address discovery\nDocumentation=https://agenxy.org/projects/supgang/\n\n[Service]\nType=simple\nSyslogIdentifier=supgang\nExecStart={executable} --json --state-dir {command_state} supervise{policy_arguments}\nRestart=always\nRestartSec=5s\nUMask=0077\nStandardOutput=null\nStandardError=null\nNoNewPrivileges=true\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=true\nRestrictRealtime=true\nRestrictNamespaces=true\nSystemCallArchitectures=native\nSystemCallFilter=@system-service\nSystemCallFilter=~@privileged @resources\nSystemCallErrorNumber=EPERM\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\nKeyringMode=private\n\n[Install]\nWantedBy=default.target\n"
     ))
 }
 
@@ -186,10 +191,15 @@ mod tests {
         assert!(unit.contains("SyslogIdentifier=supgang\n"));
         assert!(unit.contains("NoNewPrivileges=true\n"));
         assert!(unit.contains("StandardOutput=null\n"));
+        assert!(unit.contains("RestrictNamespaces=true\n"));
+        assert!(unit.contains("SystemCallFilter=@system-service\n"));
+        assert!(unit.contains("SystemCallFilter=~@privileged @resources\n"));
+        assert!(unit.contains("SystemCallErrorNumber=EPERM\n"));
         assert!(unit.contains("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n"));
-        assert!(!unit.contains("ProtectSystem="));
-        assert!(!unit.contains("ProtectHome="));
+        assert!(unit.contains("KeyringMode=private\n"));
+        assert!(!unit.contains("Protect"));
         assert!(!unit.contains("PrivateTmp="));
+        assert!(!unit.contains("PrivateDevices="));
         assert!(!unit.contains("CapabilityBoundingSet="));
         Ok(())
     }
